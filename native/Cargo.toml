@@ -1,0 +1,35 @@
+[package]
+name = "soworker"
+version = "0.1.0"
+edition = "2021"
+description = "Native lightweight SoWork client (no browser, no Node)"
+
+[features]
+default = ["calls"]
+# Audio/video calls through the official LiveKit Rust SDK (needs clang++ and the libwebrtc prebuilt at build time).
+calls = ["dep:livekit", "dep:tokio", "dep:futures-util", "dep:v4l"]
+
+[dependencies]
+livekit = { version = "0.9.3", features = ["rustls-tls-native-roots", "glib-main-loop"], optional = true }
+v4l = { version = "0.14", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+rmpv = "1"
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd", "png-format"] }
+fontdue = "0.9"
+ureq = { version = "2", features = ["json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

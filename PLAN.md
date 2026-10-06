@@ -143,3 +143,10 @@ Milestones:
 
 Definition of done for the minimum (M0 to M3): walk around the real office, see colleagues move
 in real time, and be seen walking by them, using under 150 MB RAM and idle CPU near 0.
+
+## Native port (decided: fully native Rust)
+
+`native/` replaces `app/` (Node + Chrome). World view, walking, click-to-move, zones and presence are done and
+tested offline against recorded runs (~30 MB RSS in a real window vs ~270 MB). Live networking is written but
+untested. Calls: see docs/native-media-feasibility.md (official LiveKit Rust SDK needs clang++/g++ and ~85 MB
+libwebrtc; a pure-Rust audio path was built as a spike: 5 MB binary, 6.5 MB idle RSS).

@@ -1,0 +1,8 @@
+# livekit's libwebrtc is built against Chromium's libc++, so the C++ glue must be compiled with clang.
+[env]
+CXX = "clang++"
+CC = "clang"
+# Use the local libwebrtc prebuilt instead of downloading it (156 MB, no progress output) during the build.
+# Source: github.com/livekit/rust-sdks release webrtc-89d790b, webrtc-linux-x64-release.zip,
+# sha256 b167adad5291cea0e4d66a0454d9d52d2ad714e6b0ed70f4410317d3ebde70c5. Delete this line to let the build download it.
+LK_CUSTOM_WEBRTC = { value = "third_party/libwebrtc", relative = true }
