@@ -1,8 +1,8 @@
 // Calls: LiveKit room joined from the token in the `cluster` event (zone or proximity meetings).
 // Mic and camera start OFF; we join muted so walking past someone never opens your microphone.
-const bar = { info: document.getElementById('callinfo'), mic: document.getElementById('mic'), cam: document.getElementById('cam'), away: document.getElementById('away'), snd: document.getElementById('snd') };
+const bar = { info: document.getElementById('callinfo'), mic: document.getElementById('mic'), cam: document.getElementById('cam'), away: document.getElementById('away'), share: document.getElementById('share'), snd: document.getElementById('snd') };
 const tiles = document.getElementById('tiles'), mediaBox = document.getElementById('media');
-let audioBlocked = false, lk = null, lkRoom = null, lkRoomId = null, cluster = null, micOn = false, camOn = false, available = true, joining = false;
+let sharing = false, audioBlocked = false, lk = null, lkRoom = null, lkRoomId = null, cluster = null, micOn = false, camOn = false, available = true, joining = false;
 
 function loadLivekit() {
   if (lk) return Promise.resolve(lk);
@@ -22,25 +22,61 @@ function renderBar() {
   bar.mic.textContent = micOn ? 'mic on' : 'mic off'; bar.mic.className = micOn ? 'on' : 'off';
   bar.cam.textContent = camOn ? 'cam on' : 'cam off'; bar.cam.className = camOn ? 'on' : '';
   bar.away.textContent = available ? 'available' : 'away'; bar.away.className = available ? 'on' : 'off';
-  bar.mic.disabled = bar.cam.disabled = !lkRoom;
+  bar.share.textContent = sharing ? 'stop share' : 'share'; bar.share.className = sharing ? 'on' : '';
+  bar.mic.disabled = bar.cam.disabled = bar.share.disabled = !lkRoom;
   bar.snd.hidden = !(lkRoom && audioBlocked);
   dirty = true;
 }
 
-function addTile(id, track, local) {
-  removeTile(id);
+function addTile(id, track, local, screen = false) {
+  const key = id + (screen ? ':screen' : '');
+  removeTile(key);
   const el = track.attach();
   el.muted = !!local; el.playsInline = true;
-  if (local) el.style.transform = 'scaleX(-1)';
+  if (local && !screen) el.style.transform = 'scaleX(-1)';
   const t = document.createElement('div');
-  t.className = 'tile'; t.dataset.id = id;
-  const label = document.createElement('span'); label.textContent = local ? 'you' : nameOf(id);
+  t.className = 'tile' + (screen ? ' screen' : ''); t.dataset.id = id; t.dataset.key = key;
+  const label = document.createElement('span'); label.textContent = (local ? 'you' : nameOf(id)) + (screen ? ' (screen)' : '');
   t.append(el, label); tiles.appendChild(t);
+  if (screen) t.onclick = () => t.classList.toggle('big');     // click a shared screen to enlarge it
 }
-const removeTile = (id) => tiles.querySelectorAll(`.tile[data-id="${id}"]`).forEach((t) => t.remove());
+const removeTile = (key) => tiles.querySelectorAll(`.tile[data-key="${key}"]`).forEach((t) => t.remove());
 
+// ---- screen share, following SoWork's conventions: metadata.screenshare + reliable data message on topic `screenshare`
+const str = (s) => { const b = new TextEncoder().encode(s); return [0xa0 | b.length, ...b]; };   // msgpack fixstr (< 32 bytes)
+function packShare({ userId, start, trackSid }) {                                                  // msgpack map of {userId, start[, trackSid]}
+  const out = [0x80 | (trackSid ? 3 : 2), ...str('userId'), ...str(userId), ...str('start'), start ? 0xc3 : 0xc2];
+  if (trackSid) out.push(...str('trackSid'), ...str(trackSid));
+  return new Uint8Array(out);
+}
+const baseMeta = { raisedHandAt: null, audioOnly: false, allowsScreenDrawing: false, desktop: false };
+async function announceShare(start, type, trackSid) {
+  if (!lkRoom) return;
+  try {
+    await lkRoom.localParticipant.setMetadata(JSON.stringify({ ...baseMeta, screenshare: start ? { type } : null }));
+    await lkRoom.localParticipant.publishData(packShare({ userId: meId, start, trackSid }), { reliable: true, topic: 'screenshare' });
+  } catch (e) { console.warn('screenshare announce failed', e); }
+}
+async function setShare(on) {
+  if (!lkRoom) return;
+  const { Track } = lk;
+  try {
+    if (on) {
+      const pub = await lkRoom.localParticipant.setScreenShareEnabled(true,
+        { audio: true, resolution: { width: 1920, height: 1080, frameRate: 15 }, contentHint: 'detail', selfBrowserSurface: 'exclude' },
+        { screenShareEncoding: { maxBitrate: 4_000_000, maxFramerate: 15 } });
+      if (!pub) return;                                  // picker cancelled
+      sharing = true;
+      const type = pub.track?.mediaStreamTrack?.getSettings?.().displaySurface;
+      announceShare(true, type === 'monitor' ? 'screen' : type === 'browser' ? 'tab' : 'window', pub.trackSid);
+    } else {
+      await lkRoom.localParticipant.setScreenShareEnabled(false);
+    }
+  } catch (e) { if (e.name !== 'NotAllowedError') { toast = `screen share: ${e.message}`; toastUntil = performance.now() + 5000; setTimeout(() => (dirty = true), 5100); } }
+  renderBar();
+}
 async function leave() {
-  const r = lkRoom; lkRoom = null; lkRoomId = null; micOn = camOn = false;
+  const r = lkRoom; lkRoom = null; lkRoomId = null; micOn = camOn = sharing = false;
   tiles.replaceChildren(); mediaBox.replaceChildren();
   if (r) { try { await r.disconnect(); } catch {} act({ ev: 'camera', on: false }); act({ ev: 'speech', on: false }); }
   renderBar();
@@ -54,12 +90,15 @@ async function join(c) {
     room
       .on(RoomEvent.TrackSubscribed, (track, pub, p) => {
         if (track.kind === Track.Kind.Audio) mediaBox.appendChild(track.attach());
-        else addTile(p.identity, track, false);
+        else addTile(p.identity, track, false, pub.source === Track.Source.ScreenShare);
       })
-      .on(RoomEvent.TrackUnsubscribed, (track, pub, p) => { track.detach().forEach((el) => el.remove()); if (track.kind === Track.Kind.Video) removeTile(p.identity); })
-      .on(RoomEvent.ParticipantDisconnected, (p) => removeTile(p.identity))
-      .on(RoomEvent.LocalTrackPublished, (pub) => { if (pub.track?.kind === Track.Kind.Video) addTile('local', pub.track, true); })
-      .on(RoomEvent.LocalTrackUnpublished, (pub) => { if (pub.kind === Track.Kind.Video) removeTile('local'); })
+      .on(RoomEvent.TrackUnsubscribed, (track, pub, p) => { track.detach().forEach((el) => el.remove()); if (track.kind === Track.Kind.Video) removeTile(p.identity + (pub.source === Track.Source.ScreenShare ? ':screen' : '')); })
+      .on(RoomEvent.ParticipantDisconnected, (p) => { removeTile(p.identity); removeTile(p.identity + ':screen'); })
+      .on(RoomEvent.LocalTrackPublished, (pub) => { if (pub.source === Track.Source.Camera) addTile('local', pub.track, true); })
+      .on(RoomEvent.LocalTrackUnpublished, (pub) => {
+        if (pub.source === Track.Source.Camera) removeTile('local');
+        else if (pub.source === Track.Source.ScreenShare && sharing) { sharing = false; announceShare(false, null, pub.trackSid); renderBar(); }   // also fires when Chrome's own "Stop sharing" is used
+      })
       .on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         const on = new Set(speakers.map((s) => s.identity));
         for (const t of tiles.querySelectorAll('.tile')) t.classList.toggle('speaking', on.has(t.dataset.id) || (t.dataset.id === 'local' && on.has(meId)));
@@ -102,6 +141,7 @@ async function setCam(on) {
 }
 bar.snd.onclick = () => lkRoom?.startAudio().then(() => { audioBlocked = !lkRoom.canPlaybackAudio; renderBar(); });
 for (const ev of ['pointerdown', 'keydown']) addEventListener(ev, () => { if (lkRoom && audioBlocked) lkRoom.startAudio().then(() => { audioBlocked = !lkRoom?.canPlaybackAudio; renderBar(); }).catch(() => {}); });
+bar.share.onclick = () => setShare(!sharing);
 bar.mic.onclick = () => setMic(!micOn);
 bar.cam.onclick = () => setCam(!camOn);
 bar.away.onclick = () => { available = !available; act({ ev: 'mode', mode: available ? 'cluster' : 'none-away' }); renderBar(); };
