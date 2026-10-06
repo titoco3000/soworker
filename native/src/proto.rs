@@ -45,6 +45,8 @@ pub enum Net {
     Leave(String),
     Speaking(String, bool),
     Cluster(Option<ClusterInfo>),
+    /// The socket thread closed the connection after a logout request.
+    LoggedOut,
     /// Profile update for a user (name, photo, avatar config).
     UserInfo { id: String, name: Option<String>, photo: Option<Option<String>>, portrait: Option<String> },
     /// A decoded, circle-masked, premultiplied RGBA avatar picture.
@@ -60,6 +62,8 @@ pub enum Cmd {
     Available(bool),
     Camera(bool),
     Speech(bool),
+    /// Close the socket cleanly and stop reconnecting.
+    Logout,
 }
 
 fn get<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
@@ -248,6 +252,7 @@ pub fn cmd_packet(c: &Cmd) -> Vec<u8> {
         ),
         Cmd::Camera(on) => event_packet("camera_on", Some(map(vec![("cameraOn", (*on).into())])), None),
         Cmd::Speech(on) => event_packet("speech", Some(map(vec![("isSpeaking", (*on).into())])), None),
+        Cmd::Logout => Vec::new(), // handled by the socket thread, never sent
     }
 }
 

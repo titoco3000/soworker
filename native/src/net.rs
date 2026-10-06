@@ -41,6 +41,7 @@ struct Link {
     pos: Option<(f32, f32)>,
     zone: Option<String>,
     available: bool,
+    logout: bool,
 }
 
 fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver<Cmd>, dry: bool) -> Result<(), String> {
@@ -128,6 +129,17 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
             Err(e) => return Err(format!("socket: {e}")),
         }
         while let Ok(c) = cmds.try_recv() {
+            if matches!(c, Cmd::Logout) {
+                // say goodbye properly so we drop out of the room for everyone else, then stop for good
+                link.logout = true;
+                let _ = ws.close(None);
+                for _ in 0..20 {
+                    if ws.read().is_err_and(|e| !matches!(&e, tungstenite::Error::Io(io) if matches!(io.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut))) {
+                        break;
+                    }
+                }
+                return Ok(());
+            }
             match &c {
                 Cmd::Move(x, y) => link.pos = Some((*x, *y)),
                 Cmd::Zone(z) => link.zone = z.clone(),
@@ -161,9 +173,14 @@ pub fn run(mut auth: Auth, dry: bool, emit: impl Fn(Net) + Send + 'static, cmds:
             }
         }
     };
-    let mut link = Link { room_id, auto_force_id: random_id(), first: true, pos: None, zone: None, available: true };
+    let mut link = Link { room_id, auto_force_id: random_id(), first: true, pos: None, zone: None, available: true, logout: false };
     loop {
-        if let Err(e) = session(&mut auth, &mut link, &emit, &cmds, dry) {
+        let res = session(&mut auth, &mut link, &emit, &cmds, dry);
+        if link.logout {
+            emit(Net::LoggedOut);
+            return;
+        }
+        if let Err(e) = res {
             emit(Net::Disconnected);
             emit(Net::Error(e));
         }

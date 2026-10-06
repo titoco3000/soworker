@@ -1,11 +1,13 @@
 //! The window: winit for events, softbuffer to present the tiny-skia pixmap. No GPU context.
-use crate::app::State;
+use crate::app::{LoginAct, LoginPhase, State};
+use crate::login;
 use crate::net;
 use crate::calls::{MediaCmd, MediaEvent, MediaTx};
 use crate::proto::{Cmd, Net};
 use crate::meeting_ui::{self, Hit};
 use crate::render::{self, Text};
-use crate::session::Auth;
+use crate::session::{self, Auth, SessionFile};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::num::NonZeroU32;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
@@ -20,6 +22,8 @@ use winit::window::{Window, WindowId};
 pub enum UserEvent {
     Net(Net),
     Media(MediaEvent),
+    /// The browser sign-in finished: a ready session, or why it did not work.
+    Login(Result<Auth, String>),
 }
 
 struct App {
@@ -39,6 +43,15 @@ struct App {
     cursor: (f32, f32),
     mods: ModifiersState,
     exit_after: Option<f64>,
+    /// Where the saved sign-in lives (live mode only); deleted on logout.
+    session_path: String,
+    proxy: EventLoopProxy<UserEvent>,
+    dry: bool,
+    demo: bool,
+    login_cancel: Option<Arc<AtomicBool>>,
+    logout_started: Option<Instant>,
+    /// Test hook for the offline demo: behave as if the user confirmed the logout dialog after N seconds.
+    logout_after: Option<f64>,
 }
 
 impl App {
@@ -47,6 +60,23 @@ impl App {
     }
 
     fn flush(&mut self) {
+        match self.st.login_act.take() {
+            Some(LoginAct::Start) => self.begin_login(),
+            Some(LoginAct::Cancel) => {
+                if let Some(c) = &self.login_cancel {
+                    c.store(true, Ordering::Relaxed);
+                }
+            }
+            None => {}
+        }
+        if self.st.logout_requested && self.logout_started.is_none() {
+            // leave the call, close the socket cleanly, then forget the session (see finish_logout)
+            self.logout_started = Some(Instant::now());
+            if let Some(tx) = &self.media {
+                let _ = tx.send(MediaCmd::Leave);
+            }
+            let _ = self.cmds.send(Cmd::Logout);
+        }
         for c in self.st.outbox.drain(..) {
             let _ = self.cmds.send(c);
         }
@@ -63,6 +93,75 @@ impl App {
             if let Some(tx) = &self.media {
                 let _ = tx.send(m);
             }
+        }
+    }
+
+    /// Connect everything for a signed-in user: gaia socket, calls, avatar loader.
+    fn start_session(&mut self, auth: Auth) {
+        let me = auth.uid.clone();
+        self.session_path = auth.path.clone();
+        let (tx, rx) = channel();
+        self.cmds = tx;
+        let (p, dry) = (self.proxy.clone(), self.dry);
+        std::thread::spawn(move || net::run(auth, dry, move |e| drop(p.send_event(UserEvent::Net(e))), rx));
+        #[cfg(feature = "calls")]
+        if !self.dry {
+            let p = self.proxy.clone();
+            self.media = Some(crate::media::spawn(move |e| drop(p.send_event(UserEvent::Media(e)))));
+        }
+        if self.avatars.is_none() {
+            let p = self.proxy.clone();
+            self.avatars = Some(crate::avatars::spawn(move |e| drop(p.send_event(UserEvent::Net(e)))));
+        }
+        let ui = self.st.ui;
+        self.st = State::new(&me, self.dry);
+        self.st.ui = ui;
+        self.logout_started = None;
+        self.login_cancel = None;
+    }
+
+    /// Open the browser sign-in on its own thread; the outcome comes back as `UserEvent::Login`.
+    fn begin_login(&mut self) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.login_cancel = Some(cancel.clone());
+        self.st.login = Some(LoginPhase::Waiting);
+        let (path, p) = (self.session_path.clone(), self.proxy.clone());
+        std::thread::spawn(move || {
+            let known = session::load_space(&path);
+            let opts = login::Options { start_url: login::login_url(&known), origin: "https://app.sowork.com".into(), known_space: known, headless: false };
+            let res = login::capture(&opts, &cancel).and_then(|c| {
+                let find = serde_json::json!({"type": "group", "groupId": c.space.0, "alias": c.space.1, "redirect": true});
+                session::save_session(&path, &SessionFile { api_key: c.api_key, refresh_token: c.refresh_token, find })?;
+                session::save_space(&path, &c.space.0, &c.space.1);
+                Auth::load(&path)
+            });
+            let _ = p.send_event(UserEvent::Login(res));
+        });
+    }
+
+    /// Forget the saved sign-in and go back to the sign-in screen (the offline demo just quits). Called when the socket thread confirms it closed, or after a timeout.
+    fn finish_logout(&mut self, el: &ActiveEventLoop) {
+        if self.media.is_some() {
+            std::thread::sleep(Duration::from_millis(300)); // let the LiveKit leave message go out
+        }
+        if self.demo {
+            println!("logged out (offline demo: nothing to forget)");
+            return el.exit();
+        }
+        let p = self.session_path.clone();
+        match std::fs::remove_file(&p) {
+            Ok(()) => println!("logged out: removed {p}"),
+            Err(e) => eprintln!("logged out, but could not remove {p}: {e}"),
+        }
+        self.media = None; // ends the media thread
+        self.cmds = channel().0;
+        let ui = self.st.ui;
+        self.st = State::new("", self.dry);
+        self.st.ui = ui;
+        self.st.login = Some(LoginPhase::Idle);
+        self.logout_started = None;
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 
@@ -104,11 +203,19 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
     }
 
-    fn user_event(&mut self, _el: &ActiveEventLoop, ev: UserEvent) {
+    fn user_event(&mut self, el: &ActiveEventLoop, ev: UserEvent) {
         let now = self.now();
+        if matches!(ev, UserEvent::Net(Net::LoggedOut)) {
+            return self.finish_logout(el);
+        }
         match ev {
             UserEvent::Net(e) => self.st.apply(e, now),
             UserEvent::Media(e) => self.st.apply_media(e, now),
+            UserEvent::Login(Ok(auth)) => self.start_session(auth),
+            UserEvent::Login(Err(e)) => {
+                self.st.login = Some(if e.contains("cancelled") { LoginPhase::Idle } else { LoginPhase::Failed(e) });
+                self.st.dirty = true;
+            }
         }
         self.flush();
         if let Some(w) = &self.window {
@@ -165,7 +272,13 @@ impl ApplicationHandler<UserEvent> for App {
                     let s = win.inner_size();
                     let now = self.now();
                     let (c, sw, sh) = (self.cursor, s.width as f32, s.height as f32);
-                    if let Some(h) = meeting_ui::hit(&self.st, &mut self.text, c.0, c.1, sw, sh) {
+                    if self.st.login.is_some() {
+                        self.st.login_act = render::login_hit(&self.st, c.0, c.1, sw, sh);
+                    } else if self.st.confirm_logout {
+                        if let Some(choice) = render::modal_hit(&self.st, c.0, c.1, sw, sh) {
+                            self.st.logout_choice(choice);
+                        }
+                    } else if let Some(h) = meeting_ui::hit(&self.st, &mut self.text, c.0, c.1, sw, sh) {
                         match h {
                             Hit::Header => meeting_ui::begin_drag(&mut self.st, &mut self.text, c.0, c.1, sw, sh),
                             other => self.st.dock_press(other, now),
@@ -186,6 +299,7 @@ impl ApplicationHandler<UserEvent> for App {
                     Key::Named(NamedKey::ArrowLeft) => k.left = down,
                     Key::Named(NamedKey::ArrowRight) => k.right = down,
                     Key::Named(NamedKey::F3) if down && !event.repeat => self.st.show_debug = !self.st.show_debug,
+                    Key::Named(NamedKey::Escape) if down && self.st.confirm_logout => self.st.logout_choice(false),
                     Key::Character(c) => match (c.to_lowercase().as_str(), down, event.repeat) {
                         ("w", ..) => k.up = down,
                         ("s", ..) => k.down = down,
@@ -218,6 +332,15 @@ impl ApplicationHandler<UserEvent> for App {
             println!("exit-after: rss {:.1} MB, pss {:.1} MB, fps {}", rss as f64 / 1048576.0, pss as f64 / 1048576.0, self.fps);
             return el.exit();
         }
+        if self.logout_after.is_some_and(|t| now > t) && !self.st.logout_requested {
+            self.st.logout_choice(true);
+        }
+        if self.logout_started.is_some_and(|t| t.elapsed() > Duration::from_millis(2500)) {
+            return self.finish_logout(el); // the socket thread did not answer in time (offline?): leave anyway
+        }
+        if self.st.logout_requested && self.demo && self.logout_started.is_some() {
+            return self.finish_logout(el); // offline demo: there is no socket to wait for
+        }
         let redraw = self.st.update(dt, now);
         self.flush();
         if redraw {
@@ -228,6 +351,10 @@ impl ApplicationHandler<UserEvent> for App {
         // tick at ~60 Hz only while something moves; otherwise sleep until the next event
         el.set_control_flow(if self.st.is_active() {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(16))
+        } else if self.logout_started.is_some() {
+            ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100))
+        } else if let Some(t) = self.logout_after.filter(|_| !self.st.logout_requested) {
+            ControlFlow::WaitUntil(self.start + Duration::from_secs_f64(t + 0.05))
         } else if let Some(t) = self.exit_after {
             ControlFlow::WaitUntil(self.start + Duration::from_secs_f64(t + 0.05))
         } else {
@@ -236,12 +363,17 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
+const LEGACY: [&str; 4] = ["native/.session.json", ".session.json", "app/.session.json", "../app/.session.json"];
+
+/// The session file to use. Sign-ins now live outside the project (`~/.config/soworker/session.json`); one an
+/// older version left inside the project is moved there on first start.
 fn default_session() -> String {
-    ["native/.session.json", ".session.json", "app/.session.json", "../app/.session.json"]
-        .iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .unwrap_or(&"app/.session.json")
-        .to_string()
+    let target = session::default_path();
+    if let Some(from) = session::migrate_legacy(&target, &LEGACY) {
+        eprintln!("moved your saved sign-in from {from} to {target}");
+    }
+    session::ensure_private_dir(&target);
+    target
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -250,48 +382,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let dry = demo.is_some() || args.iter().any(|a| a == "--dry-run");
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().map_err(|e| e.to_string())?;
     let proxy: EventLoopProxy<UserEvent> = event_loop.create_proxy();
-    let (cmd_tx, cmd_rx) = channel();
-    let me_id = if let Some(run) = &demo {
-        // offline: feed a recorded run into the window, no network, nothing is sent
-        let me = crate::replay::own_id(run)?;
-        let events = crate::replay::load(run)?;
-        std::thread::spawn(move || {
-            let _keep = cmd_rx;
-            for e in events {
-                if proxy.send_event(UserEvent::Net(e)).is_err() {
-                    break;
-                }
-            }
-        });
-        me
-    } else {
-        let auth = Auth::load(&opt("--session").unwrap_or_else(default_session))?;
-        let me = auth.uid.clone();
-        let p2 = proxy.clone();
-        std::thread::spawn(move || net::run(auth, dry, move |e| drop(p2.send_event(UserEvent::Net(e))), cmd_rx));
-        me
-    };
-    #[cfg(feature = "calls")]
-    let media = if demo.is_none() && !dry {
-        let p = event_loop.create_proxy();
-        Some(crate::media::spawn(move |e| drop(p.send_event(UserEvent::Media(e)))))
-    } else {
-        None
-    };
-    #[cfg(not(feature = "calls"))]
-    let media: Option<MediaTx> = None;
-    // pictures are fetched from SoWork's static hosts; the offline demo never touches the network
-    let avatars = if demo.is_none() {
-        let p = event_loop.create_proxy();
-        Some(crate::avatars::spawn(move |e| drop(p.send_event(UserEvent::Net(e)))))
-    } else {
-        None
-    };
+    let path = opt("--session").unwrap_or_else(default_session);
     let mut app = App {
-        st: State::new(&me_id, dry),
-        cmds: cmd_tx,
-        media,
-        avatars,
+        st: State::new("", dry),
+        cmds: channel().0, // replaced when a session starts
+        media: None,
+        avatars: None,
         window: None,
         surface: None,
         pixmap: None,
@@ -304,6 +400,36 @@ pub fn run(args: &[String]) -> Result<(), String> {
         cursor: (0.0, 0.0),
         mods: ModifiersState::default(),
         exit_after: opt("--exit-after").and_then(|s| s.parse().ok()),
+        session_path: path.clone(),
+        proxy: proxy.clone(),
+        dry,
+        demo: demo.is_some(),
+        login_cancel: None,
+        logout_started: None,
+        logout_after: opt("--logout-after").and_then(|s| s.parse().ok()),
     };
+    if let Some(run) = &demo {
+        // offline: feed a recorded run into the window, no network, nothing is sent
+        let me = crate::replay::own_id(run)?;
+        let events = crate::replay::load(run)?;
+        app.st = State::new(&me, true);
+        std::thread::spawn(move || {
+            for e in events {
+                if proxy.send_event(UserEvent::Net(e)).is_err() {
+                    break;
+                }
+            }
+        });
+    } else if args.iter().any(|a| a == "--show-login") {
+        app.st.login = Some(LoginPhase::Idle); // layout check without touching any saved session
+    } else {
+        match Auth::load(&path) {
+            Ok(auth) => app.start_session(auth),
+            Err(e) => {
+                // no saved sign-in (or it no longer works): show the sign-in screen
+                app.st.login = Some(if std::path::Path::new(&path).exists() { LoginPhase::Failed(format!("Your saved sign-in no longer works ({e}).")) } else { LoginPhase::Idle });
+            }
+        }
+    }
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }

@@ -54,6 +54,19 @@ pub struct Keys {
     pub right: bool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum LoginPhase {
+    Idle,
+    Waiting,
+    Failed(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LoginAct {
+    Start,
+    Cancel,
+}
+
 pub struct State {
     pub world: World,
     pub me_id: String,
@@ -80,6 +93,12 @@ pub struct State {
     avatar_asked: HashMap<String, String>,
     left_zone: Option<String>,
     pub dirty: bool,
+    /// Logout flow: the confirmation dialog, then the request the window acts on.
+    pub confirm_logout: bool,
+    pub logout_requested: bool,
+    /// Some = show the sign-in screen instead of the world; `login_act` is what the user just asked for.
+    pub login: Option<LoginPhase>,
+    pub login_act: Option<LoginAct>,
     /// Diagnostics: how many zone changes we sent and cluster events we got.
     pub zone_sent: u32,
     pub clusters_seen: u32,
@@ -119,6 +138,10 @@ impl State {
             avatar_asked: HashMap::new(),
             left_zone: None,
             dirty: true,
+            confirm_logout: false,
+            logout_requested: false,
+            login: None,
+            login_act: None,
             zone_sent: 0,
             clusters_seen: 0,
             ui: 1.0,
@@ -348,6 +371,16 @@ impl State {
         }
     }
 
+    /// The logout dialog's buttons.
+    pub fn logout_choice(&mut self, confirm: bool) {
+        self.confirm_logout = false;
+        if confirm {
+            self.logout_requested = true;
+            self.status = "logging out…".into();
+        }
+        self.dirty = true;
+    }
+
     pub fn toggle_cam(&mut self) {
         if self.call.joined.is_some() {
             self.media_out.push(MediaCmd::Camera(!self.call.cam));
@@ -368,6 +401,7 @@ impl State {
                 let a = !self.available;
                 self.set_available(a);
             }
+            Act::Logout => self.confirm_logout = true,
         }
         self.dirty = true;
     }

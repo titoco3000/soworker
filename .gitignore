@@ -1,1 +1,6 @@
 app/node_modules
+# credentials must never be committed
+.session.json
+.space.json
+**/.session.json
+**/.space.json

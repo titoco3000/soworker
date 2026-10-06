@@ -7,6 +7,7 @@ use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Act {
     Away,
+    Logout,
 }
 
 pub struct Btn {
@@ -24,7 +25,35 @@ pub struct Btn {
 pub fn buttons(st: &State, _w: f32, _h: f32) -> Vec<Btn> {
     let ui = st.ui;
     let (bw, bh) = (84.0 * ui, 26.0 * ui);
-    vec![Btn { x: 10.0 * ui, y: 122.0 * ui, w: bw, h: bh, act: Act::Away, label: if st.available { "available" } else { "away" }, on: st.available, enabled: true }]
+    vec![
+        Btn { x: 10.0 * ui, y: 122.0 * ui, w: bw, h: bh, act: Act::Away, label: if st.available { "available" } else { "away" }, on: st.available, enabled: true },
+        Btn { x: 10.0 * ui + bw + 6.0 * ui, y: 122.0 * ui, w: bw, h: bh, act: Act::Logout, label: "log out", on: false, enabled: true },
+    ]
+}
+
+/// The logout confirmation dialog: card, Cancel and Log out buttons.
+pub fn modal(st: &State, w: f32, h: f32) -> (crate::meeting_ui::R, crate::meeting_ui::R, crate::meeting_ui::R) {
+    use crate::meeting_ui::R;
+    let u = st.ui;
+    let (cw, ch) = (360.0 * u, 150.0 * u);
+    let card = R { x: (w - cw) / 2.0, y: (h - ch) / 2.0, w: cw, h: ch };
+    let (bw, bh) = (96.0 * u, 32.0 * u);
+    let y = card.y + ch - bh - 16.0 * u;
+    let cancel = R { x: card.x + cw - 16.0 * u - 2.0 * bw - 8.0 * u, y, w: bw, h: bh };
+    let confirm = R { x: card.x + cw - 16.0 * u - bw, y, w: bw, h: bh };
+    (card, cancel, confirm)
+}
+
+/// `Some(true)` = Log out, `Some(false)` = Cancel (or a click outside), `None` = a click on the card itself.
+pub fn modal_hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<bool> {
+    let (card, cancel, confirm) = modal(st, w, h);
+    if confirm.contains(px, py) {
+        Some(true)
+    } else if cancel.contains(px, py) || !card.contains(px, py) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 pub fn hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<Act> {
@@ -141,7 +170,73 @@ pub fn proc_mem() -> (u64, u64) {
     (rss, pss)
 }
 
+/// The sign-in screen: card, and its single button (Start / Cancel / Try again).
+pub fn login_layout(st: &State, w: f32, h: f32) -> (crate::meeting_ui::R, crate::meeting_ui::R) {
+    use crate::meeting_ui::R;
+    let u = st.ui;
+    let (cw, ch) = (440.0 * u, 250.0 * u);
+    let card = R { x: (w - cw) / 2.0, y: (h - ch) / 2.0, w: cw, h: ch };
+    let button = R { x: card.x + 24.0 * u, y: card.y + ch - 24.0 * u - 38.0 * u, w: cw - 48.0 * u, h: 38.0 * u };
+    (card, button)
+}
+
+pub fn login_hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<crate::app::LoginAct> {
+    use crate::app::{LoginAct, LoginPhase};
+    let (_, b) = login_layout(st, w, h);
+    if !b.contains(px, py) {
+        return None;
+    }
+    Some(if st.login == Some(LoginPhase::Waiting) { LoginAct::Cancel } else { LoginAct::Start })
+}
+
+fn draw_login(st: &State, pm: &mut Pixmap, text: &mut Text) {
+    use crate::app::LoginPhase;
+    use crate::theme::*;
+    let (w, h) = (pm.width() as f32, pm.height() as f32);
+    let (card, button) = login_layout(st, w, h);
+    let (u, id) = (st.ui, Transform::identity());
+    pm.fill(Color::from_rgba8(BG[0], BG[1], BG[2], 255));
+    let c = |r: Rgb, a: u8| paint(r[0], r[1], r[2], a);
+    if let Some(p) = crate::icon::rounded_rect(card.x, card.y, card.w, card.h, RADIUS_CARD * u) {
+        pm.fill_path(&p, &c(SURFACE, 255), FillRule::Winding, id, None);
+        pm.stroke_path(&p, &c(LINE, 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
+    }
+    let x = card.x + 24.0 * u;
+    text.draw(pm, "SoWorker", x, card.y + 44.0 * u, 24.0 * u, INK, 0.0);
+    text.draw(pm, "A lightweight client for your SoWork office", x, card.y + 68.0 * u, 13.0 * u, INK_MUTED, 0.0);
+    let (lines, label): (Vec<(String, Rgb)>, &str) = match &st.login {
+        Some(LoginPhase::Waiting) => (
+            vec![("Waiting for you to sign in in the browser window…".into(), INK), ("It closes by itself once you are in.".into(), INK_MUTED)],
+            "Cancel",
+        ),
+        Some(LoginPhase::Failed(e)) => (vec![(e.clone(), DANGER)], "Try again"),
+        _ => (
+            vec![
+                ("A browser window opens on SoWork's own sign-in page.".into(), INK),
+                ("Only the sign-in token is kept on this computer.".into(), INK_MUTED),
+            ],
+            "Sign in with SoWork",
+        ),
+    };
+    for (i, (l, col)) in lines.iter().enumerate() {
+        text.draw(pm, l, x, card.y + 108.0 * u + i as f32 * 20.0 * u, 13.0 * u, *col, 0.0);
+    }
+    let waiting = st.login == Some(LoginPhase::Waiting);
+    if let Some(p) = crate::icon::rounded_rect(button.x, button.y, button.w, button.h, RADIUS_CARD * u) {
+        if !waiting {
+            pm.fill_path(&p, &c(BRAND, 255), FillRule::Winding, id, None);
+        } else {
+            pm.stroke_path(&p, &c(LINE, 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
+        }
+    }
+    let tc = if waiting { INK_MUTED } else { ON_BRAND };
+    text.draw(pm, label, button.x + button.w / 2.0, button.y + button.h / 2.0 + 5.0 * u, 14.0 * u, tc, 0.5);
+}
+
 pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
+    if st.login.is_some() {
+        return draw_login(st, pm, text);
+    }
     let (w, h) = (pm.width() as f32, pm.height() as f32);
     pm.fill(Color::from_rgba8(20, 22, 27, 255));
     let me = st.me();
@@ -300,6 +395,8 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
             (false, ..) => (38, 44, 56),
             (true, true, _) => (47, 111, 79),
             (true, false, Act::Away) => (106, 47, 58),
+            (true, false, Act::Logout) => (38, 44, 56),
+            (true, true, Act::Logout) => (38, 44, 56),
         };
         if let Some(rc) = Rect::from_xywh(b.x, b.y, b.w, b.h) {
             pm.fill_rect(rc, &paint(col.0, col.1, col.2, 255), id, None);
@@ -309,4 +406,22 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
         text.draw(pm, b.label, b.x + b.w / 2.0, b.y + b.h / 2.0 + 4.0 * ui, 12.0 * ui, tc, 0.5);
     }
     crate::meeting_ui::draw(st, pm, text, w, h);
+    if st.confirm_logout {
+        pm.fill_rect(Rect::from_xywh(0.0, 0.0, w, h).unwrap(), &paint(0, 0, 0, 140), id, None);
+        let (card, cancel, confirm) = modal(st, w, h);
+        let rc = |r: &crate::meeting_ui::R, rad: f32| crate::icon::rounded_rect(r.x, r.y, r.w, r.h, rad);
+        if let Some(p) = rc(&card, crate::theme::RADIUS_CARD * ui) {
+            pm.fill_path(&p, &paint(crate::theme::SURFACE[0], crate::theme::SURFACE[1], crate::theme::SURFACE[2], 255), FillRule::Winding, id, None);
+            pm.stroke_path(&p, &paint(crate::theme::LINE[0], crate::theme::LINE[1], crate::theme::LINE[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
+        }
+        text.draw(pm, "Log out?", card.x + 16.0 * ui, card.y + 30.0 * ui, 16.0 * ui, crate::theme::INK, 0.0);
+        text.draw(pm, "This forgets your saved sign-in on this computer.", card.x + 16.0 * ui, card.y + 56.0 * ui, 13.0 * ui, crate::theme::INK_MUTED, 0.0);
+        text.draw(pm, "You will be taken back to the sign-in screen.", card.x + 16.0 * ui, card.y + 76.0 * ui, 13.0 * ui, crate::theme::INK_MUTED, 0.0);
+        for (r, label, col) in [(&cancel, "Cancel", crate::theme::INK_MUTED), (&confirm, "Log out", crate::theme::DANGER)] {
+            if let Some(p) = rc(r, crate::theme::RADIUS_CARD * ui) {
+                pm.stroke_path(&p, &paint(crate::theme::LINE[0], crate::theme::LINE[1], crate::theme::LINE[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
+            }
+            text.draw(pm, label, r.x + r.w / 2.0, r.y + r.h / 2.0 + 5.0 * ui, 14.0 * ui, col, 0.5);
+        }
+    }
 }

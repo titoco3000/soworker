@@ -88,7 +88,7 @@ pub struct R {
     pub h: f32,
 }
 impl R {
-    fn contains(&self, px: f32, py: f32) -> bool {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
     }
 }

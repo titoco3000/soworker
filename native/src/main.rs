@@ -3,6 +3,7 @@ mod avatars;
 mod calls;
 mod icon;
 mod icons;
+mod login;
 mod meeting_ui;
 mod theme;
 #[cfg(feature = "calls")]
@@ -37,6 +38,10 @@ fn headless(args: &[String]) -> Result<(), String> {
     }
     if args.iter().any(|a| a == "--fake-call") {
         fake_call(&mut st, args);
+    }
+    st.confirm_logout = args.iter().any(|a| a == "--confirm-logout");
+    if args.iter().any(|a| a == "--login-screen") {
+        st.login = Some(match opt("--login-screen").as_deref() { Some("waiting") => app::LoginPhase::Waiting, Some("failed") => app::LoginPhase::Failed("The browser window was closed before signing in".into()), _ => app::LoginPhase::Idle });
     }
     st.update(0.0, 0.0);
     println!("world: {} floors, {} solid walls, {} soft walls, {} zones, {} props; me {:?}",
@@ -168,6 +173,25 @@ fn icon_sheet(out: &str) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--login-test") {
+        // capture a login from a local test page (see tools/login-test) without touching SoWork
+        let origin = args.get(i + 1).cloned().unwrap_or_default();
+        let opts = login::Options { start_url: format!("{origin}/s/testgroup/testoffice"), origin, known_space: None, headless: true };
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let c2 = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(40));
+            c2.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        match login::capture(&opts, &cancel) {
+            Ok(c) => println!("captured: apiKey {} chars, refresh token {} chars, space {:?}", c.api_key.len(), c.refresh_token.len(), c.space),
+            Err(e) => {
+                eprintln!("login test failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--icons") {
         icon_sheet(args.get(i + 1).map_or("icons.png", |s| s));
         return;

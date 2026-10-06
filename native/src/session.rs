@@ -15,7 +15,7 @@ pub struct SessionFile {
 }
 
 pub struct Auth {
-    path: String,
+    pub path: String,
     pub file: SessionFile,
     token: String,
     exp: Instant,
@@ -73,5 +73,107 @@ impl Auth {
             .into_json()
             .map_err(|e| e.to_string())?;
         resp["room"]["id"].as_str().map(String::from).ok_or_else(|| "gaia/find returned no room".into())
+    }
+}
+
+/// Write the session file readable by its owner only.
+pub fn save_session(path: &str, file: &SessionFile) -> Result<(), String> {
+    use std::io::Write;
+    let json = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    let mut f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).map_err(|e| e.to_string())?
+    };
+    #[cfg(not(unix))]
+    let mut f = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    f.write_all(json.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// The space (office) the user last signed in to, remembered beside the session so the next sign-in can go straight
+/// to it. It holds no credential, so logging out keeps it.
+pub fn space_path(session_path: &str) -> std::path::PathBuf {
+    std::path::Path::new(session_path).with_file_name(".space.json")
+}
+
+pub fn load_space(session_path: &str) -> Option<(String, String)> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(space_path(session_path)).ok()?).ok()?;
+    Some((v["groupId"].as_str()?.to_string(), v["alias"].as_str()?.to_string()))
+}
+
+pub fn save_space(session_path: &str, group: &str, alias: &str) {
+    let _ = std::fs::write(space_path(session_path), serde_json::json!({"groupId": group, "alias": alias}).to_string());
+}
+
+/// Where the sign-in lives by default: `$XDG_CONFIG_HOME/soworker/` (else `~/.config/soworker/`), outside any repository.
+pub fn default_path() -> String {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join("soworker").join("session.json").to_string_lossy().into_owned()
+}
+
+/// Make sure the folder for `path` exists and is private (0700).
+pub fn ensure_private_dir(path: &str) {
+    if let Some(dir) = std::path::Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+}
+
+/// Move a session an older version left inside the project (`legacy`) to `target`, along with its `.space.json`.
+/// Does nothing if `target` already exists. Returns the legacy path that was moved.
+pub fn migrate_legacy(target: &str, legacy: &[&str]) -> Option<String> {
+    if std::path::Path::new(target).exists() {
+        return None;
+    }
+    let from = legacy.iter().find(|p| std::path::Path::new(p).is_file())?;
+    ensure_private_dir(target);
+    let file: SessionFile = serde_json::from_str(&std::fs::read_to_string(from).ok()?).ok()?;
+    save_session(target, &file).ok()?; // written with mode 600
+    if let Some((g, a)) = load_space(from) {
+        save_space(target, &g, &a);
+        let _ = std::fs::remove_file(space_path(from));
+    }
+    std::fs::remove_file(from).ok()?;
+    Some((*from).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrates_a_legacy_session_to_a_private_location() {
+        let base = std::env::temp_dir().join(format!("soworker-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("repo")).unwrap();
+        let legacy = base.join("repo/.session.json").to_string_lossy().into_owned();
+        let target = base.join("cfg/soworker/session.json").to_string_lossy().into_owned();
+        let file = SessionFile { api_key: "k".into(), refresh_token: "r".into(), find: serde_json::json!({"type": "group"}) };
+        save_session(&legacy, &file).unwrap();
+        save_space(&legacy, "g", "a");
+        assert_eq!(migrate_legacy(&target, &[&legacy]).as_deref(), Some(legacy.as_str()));
+        assert!(!std::path::Path::new(&legacy).exists(), "the copy inside the project is gone");
+        assert!(!space_path(&legacy).exists());
+        let moved: SessionFile = serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
+        assert_eq!(moved.refresh_token, "r");
+        assert_eq!(load_space(&target), Some(("g".into(), "a".into())));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(base.join("cfg/soworker")).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        // a second run must not overwrite an existing target
+        save_session(&legacy, &SessionFile { refresh_token: "other".into(), ..file }).unwrap();
+        assert!(migrate_legacy(&target, &[&legacy]).is_none());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

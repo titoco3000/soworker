@@ -21,8 +21,12 @@ cargo build --release --no-default-features    # tiny build without calls (~5 MB
 `cargo run` (debug) is fine for development: the dev profile optimizes dependencies, so a frame costs
 ~8 ms instead of ~52 ms (release: ~1.5 ms, measured with `--replay <run> --shot x.png --bench 60`).
 
-Session: reads `native/.session.json`, `.session.json`, `app/.session.json` (same file the Node prototype
-uses, created by `node app/import-token.mjs <run>`) or `--session <file>`.
+Sign-in: with no saved session the app shows a sign-in screen. The button opens Chrome (app-style window, throwaway
+profile) on SoWork's own login page, watches it over the DevTools protocol, takes the Firebase refresh token from the
+page once you are signed in (and the office from the address), then closes Chrome and deletes its profile. The token
+is saved as `~/.config/soworker/session.json` (folder 700, file 600, outside the repository); `.space.json` beside it
+remembers the office so the next sign-in goes straight to it. A session an older version left in `native/` or `app/` is
+moved there on first start. Log out forgets the token and returns to the sign-in screen. Use `--session <file>` for another path. (The Node prototype in `app/` still keeps its own `app/.session.json`, git-ignored.)
 
 Meeting dock: ported from omoffice (frontend/src/features/meetings): draggable card snapping to 8 slots or full window,
 gallery grid or pinned view with a scrolling sidebar, hover buttons per tile (mute / camera off / pin), controls row
