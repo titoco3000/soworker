@@ -1,9 +1,12 @@
 //! Application state and per-frame logic: input, walking, click-to-move, zones, presence.
 //! Pure logic (no window, no sockets) so it runs the same in the window, in tests and in headless replays.
+use crate::avatars;
 use crate::calls::{MediaCmd, MediaEvent};
+use crate::meeting_ui::{Ctl, Dock, Hit, TileBtn};
 use crate::proto::{ClusterInfo, Cmd, Net, User};
 use crate::world::{tile, World, T};
 use std::collections::HashMap;
+use tiny_skia::Pixmap;
 
 pub const SPEED: f32 = 800.0; // world units / second, same as the official client
 const TICK: f64 = 0.205; // official client sends `move` about every 205 ms while walking
@@ -18,6 +21,8 @@ pub struct Avatar {
     pub ty: f32,
     pub state: String,
     pub speaking: bool,
+    pub photo: Option<String>,
+    pub portrait: Option<String>,
 }
 
 pub struct Tile {
@@ -34,6 +39,9 @@ pub struct CallUi {
     pub mic: bool,
     pub cam: bool,
     pub share: bool,
+    pub peer_muted: std::collections::HashSet<String>,
+    /// A call we left on purpose: ignore further tokens for this room until the server moves us elsewhere.
+    pub ignore_room: Option<String>,
     pub tiles: Vec<Tile>,
     pub speakers: std::collections::HashSet<String>,
 }
@@ -65,6 +73,12 @@ pub struct State {
     pub outbox: Vec<Cmd>,
     pub media_out: Vec<MediaCmd>,
     pub call: CallUi,
+    pub dock: Dock,
+    /// Circle-masked avatar pictures by user id, and what we already asked the loader for.
+    pub pics: HashMap<String, Pixmap>,
+    pub avatar_req: Vec<(String, String)>,
+    avatar_asked: HashMap<String, String>,
+    left_zone: Option<String>,
     pub dirty: bool,
     /// Diagnostics: how many zone changes we sent and cluster events we got.
     pub zone_sent: u32,
@@ -99,6 +113,11 @@ impl State {
             outbox: vec![],
             media_out: vec![],
             call: CallUi::default(),
+            dock: Dock::default(),
+            pics: HashMap::new(),
+            avatar_req: vec![],
+            avatar_asked: HashMap::new(),
+            left_zone: None,
             dirty: true,
             zone_sent: 0,
             clusters_seen: 0,
@@ -116,7 +135,17 @@ impl State {
     }
 
     fn avatar(u: User) -> Avatar {
-        Avatar { tx: u.x, ty: u.y, id: u.id, name: u.name, x: u.x, y: u.y, state: u.state, speaking: false }
+        Avatar { tx: u.x, ty: u.y, id: u.id, name: u.name, x: u.x, y: u.y, state: u.state, speaking: false, photo: u.photo, portrait: u.portrait }
+    }
+
+    /// Ask the loader for a user's picture when we know where it is and have not asked for that URL yet.
+    fn want_avatar(&mut self, id: &str) {
+        let Some(u) = self.users.get(id) else { return };
+        let Some(url) = avatars::source_url(u.photo.as_deref(), u.portrait.as_deref()) else { return };
+        if self.avatar_asked.get(id) != Some(&url) {
+            self.avatar_asked.insert(id.to_string(), url.clone());
+            self.avatar_req.push((id.to_string(), url));
+        }
     }
 
     pub fn say(&mut self, msg: impl Into<String>, now: f64) {
@@ -145,6 +174,9 @@ impl State {
                 self.cur_zone = None;
                 self.world.rebuild_if_dirty();
                 self.check_spawn();
+                for id in self.users.keys().cloned().collect::<Vec<_>>() {
+                    self.want_avatar(&id);
+                }
             }
             Net::Move(id, x, y) if id != self.me_id => {
                 if let Some(u) = self.users.get_mut(&id) {
@@ -161,7 +193,22 @@ impl State {
                 }
             }
             Net::Join(u) if u.id != self.me_id => {
-                self.users.insert(u.id.clone(), Self::avatar(u));
+                let id = u.id.clone();
+                self.users.insert(id.clone(), Self::avatar(u));
+                self.want_avatar(&id);
+            }
+            Net::UserInfo { id, name, photo, portrait } => {
+                if let Some(u) = self.users.get_mut(&id) {
+                    if let Some(n) = name { u.name = n; }
+                    if let Some(p) = photo { u.photo = p; }
+                    if portrait.is_some() { u.portrait = portrait; }
+                }
+                self.want_avatar(&id);
+            }
+            Net::Avatar { id, size, rgba } => {
+                if let Some(p) = tiny_skia::IntSize::from_wh(size, size).and_then(|s| Pixmap::from_vec(rgba, s)) {
+                    self.pics.insert(id, p);
+                }
             }
             Net::Leave(id) if id != self.me_id => {
                 self.users.remove(&id);
@@ -247,6 +294,10 @@ impl State {
     /// Join or leave the LiveKit room that matches the latest `cluster` event.
     fn sync_call(&mut self) {
         let want = self.cluster.as_ref().and_then(|c| c.token.clone());
+        if want.as_ref().map(|t| &t.room_id) != self.call.ignore_room.as_ref() && want.is_some() {
+            self.call.ignore_room = None; // the server moved us to a different conversation
+        }
+        let want = want.filter(|t| Some(&t.room_id) != self.call.ignore_room.as_ref());
         match (want, &self.call.want) {
             (Some(t), cur) if cur.as_deref() != Some(t.room_id.as_str()) => {
                 self.call.want = Some(t.room_id.clone());
@@ -266,6 +317,37 @@ impl State {
         }
     }
 
+    /// A click on the meeting dock. Header drags are handled by the window.
+    pub fn dock_press(&mut self, hit: Hit, now: f64) {
+        self.dirty = true;
+        match hit {
+            Hit::Ctl(Ctl::FullToggle) => self.dock.full = !self.dock.full,
+            Hit::Ctl(Ctl::Chat) => self.dock.chat_open = !self.dock.chat_open,
+            Hit::Ctl(Ctl::Mic) => self.toggle_mic(),
+            Hit::Ctl(Ctl::Cam) => self.toggle_cam(),
+            Hit::Ctl(Ctl::Share) => self.toggle_share(),
+            Hit::Ctl(Ctl::Lock) => self.say("Locking a meeting is not something SoWork supports", now),
+            Hit::Ctl(Ctl::Send) => self.say("Chat is not available in this client yet", now),
+            Hit::Ctl(Ctl::Leave) => {
+                // leaving = tell the server we are in no zone, drop the call, and do not rejoin until we walk out and back
+                self.call.ignore_room = self.call.want.clone().or_else(|| self.call.joined.clone());
+                self.call.want = None;
+                self.media_out.push(MediaCmd::Leave);
+                if self.cur_zone_id.is_some() {
+                    self.left_zone = self.cur_zone_id.clone();
+                    self.outbox.push(Cmd::Zone(None));
+                }
+            }
+            Hit::TileBtn(id, TileBtn::Pin) => {
+                self.dock.pinned = if self.dock.pinned.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+            }
+            // stubs, as requested: the buttons exist (as in omoffice) but acting on other people is not implemented
+            Hit::TileBtn(_, TileBtn::Mute) => self.say("Muting another person is not implemented yet", now),
+            Hit::TileBtn(_, TileBtn::CameraOff) => self.say("Turning off another person's camera is not implemented yet", now),
+            _ => {}
+        }
+    }
+
     pub fn toggle_cam(&mut self) {
         if self.call.joined.is_some() {
             self.media_out.push(MediaCmd::Camera(!self.call.cam));
@@ -282,9 +364,6 @@ impl State {
     pub fn press(&mut self, act: crate::render::Act) {
         use crate::render::Act;
         match act {
-            Act::Mic => self.toggle_mic(),
-            Act::Cam => self.toggle_cam(),
-            Act::Share => self.toggle_share(),
             Act::Away => {
                 let a = !self.available;
                 self.set_available(a);
@@ -308,6 +387,9 @@ impl State {
                 self.call.share = false;
                 self.call.tiles.clear();
                 self.call.speakers.clear();
+                self.call.peer_muted.clear();
+                self.dock.pinned = None;
+                self.dock.last_auto = None;
                 for u in self.users.values_mut() {
                     u.speaking = false;
                 }
@@ -324,6 +406,9 @@ impl State {
                 self.call.cam = on;
             }
             MediaEvent::ShareState(on) => self.call.share = on,
+            MediaEvent::PeerMuted(id, m) => {
+                if m { self.call.peer_muted.insert(id); } else { self.call.peer_muted.remove(&id); }
+            }
             MediaEvent::Speakers(ids) => {
                 let was = self.users.get(&self.me_id).is_some_and(|m| m.speaking);
                 self.call.speakers = ids.into_iter().collect();
@@ -339,10 +424,25 @@ impl State {
                 let Some(img) = tiny_skia::IntSize::from_wh(w, h).and_then(|s| tiny_skia::Pixmap::from_vec(rgba, s)) else { return };
                 match self.call.tiles.iter_mut().find(|t| t.key == key) {
                     Some(t) => (t.name, t.img) = (name, img),
-                    None => self.call.tiles.push(Tile { key, name, img }),
+                    None => {
+                        // a screen share starting is pinned once by default (omoffice MeetingPanel)
+                        if key.ends_with(":screen") && self.dock.last_auto.as_deref() != Some(key.as_str()) {
+                            self.dock.pinned = Some(format!("content:{key}"));
+                            self.dock.last_auto = Some(key.clone());
+                        }
+                        self.call.tiles.push(Tile { key, name, img })
+                    }
                 }
             }
-            MediaEvent::VideoGone(key) => self.call.tiles.retain(|t| t.key != key),
+            MediaEvent::VideoGone(key) => {
+                self.call.tiles.retain(|t| t.key != key);
+                if self.dock.last_auto.as_deref() == Some(key.as_str()) {
+                    self.dock.last_auto = None;
+                }
+                if self.dock.pinned.as_deref() == Some(format!("content:{key}").as_str()) {
+                    self.dock.pinned = None;
+                }
+            }
         }
     }
 
@@ -423,7 +523,11 @@ impl State {
                 m.state = if self.moving { "walk" } else { "idle" }.into();
             }
             // meeting zone: tell the server when we enter or leave one
-            let z = self.world.zone_at(p.0, p.1).map(|z| z.id.clone());
+            let real = self.world.zone_at(p.0, p.1).map(|z| z.id.clone());
+            if real.is_none() || real != self.left_zone {
+                self.left_zone = None; // walked out of the zone we left: a new visit may start a call again
+            }
+            let z = if real.is_some() && real == self.left_zone { None } else { real };
             if self.cur_zone.as_ref() != Some(&z) {
                 let first = self.cur_zone.is_none();
                 self.cur_zone = Some(z.clone());

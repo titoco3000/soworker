@@ -10,6 +10,10 @@ pub struct User {
     pub x: f32,
     pub y: f32,
     pub state: String,
+    /// `uploadedPhotoURL` (an S3 profile photo), if the user set one.
+    pub photo: Option<String>,
+    /// SoWork's compact character string (`characterA!body:~v1+typeB!...`), used to build the portrait URL.
+    pub portrait: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +45,10 @@ pub enum Net {
     Leave(String),
     Speaking(String, bool),
     Cluster(Option<ClusterInfo>),
+    /// Profile update for a user (name, photo, avatar config).
+    UserInfo { id: String, name: Option<String>, photo: Option<Option<String>>, portrait: Option<String> },
+    /// A decoded, circle-masked, premultiplied RGBA avatar picture.
+    Avatar { id: String, size: u32, rgba: Vec<u8> },
 }
 
 /// Commands from the UI to the socket thread.
@@ -68,6 +76,23 @@ fn num(v: Option<&Value>) -> f32 {
     present(v).and_then(Value::as_f64).unwrap_or(0.0) as f32
 }
 
+/// `characterConfig` -> SoWork's compact string: slots sorted, each `slot:~item+variant` with the
+/// `<bodyType>_<slot>_` prefix replaced by `~`. Verified against the portrait URLs the official client requests.
+pub fn portrait_string(cfg: &Value) -> Option<String> {
+    let body = present(get(cfg, "bodyType"))?.as_str()?;
+    let slots = present(get(cfg, "slots"))?.as_map()?;
+    let mut parts: Vec<(String, String)> = slots
+        .iter()
+        .filter_map(|(k, v)| {
+            let (slot, val) = (k.as_str()?, v.as_str()?);
+            let prefix = format!("{body}_{slot}_");
+            Some((slot.to_string(), val.strip_prefix(&prefix).map_or(val.to_string(), |r| format!("~{r}"))))
+        })
+        .collect();
+    parts.sort();
+    Some(format!("{body}!{}", parts.iter().map(|(s, v)| format!("{s}:{v}")).collect::<Vec<_>>().join("!")))
+}
+
 fn user(v: &Value) -> User {
     User {
         id: text(get(v, "id")),
@@ -79,6 +104,8 @@ fn user(v: &Value) -> User {
             .and_then(Value::as_str)
             .unwrap_or("idle")
             .to_string(),
+        photo: present(get(v, "uploadedPhotoURL")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from),
+        portrait: present(get(v, "characterConfig")).and_then(portrait_string),
     }
 }
 
@@ -140,6 +167,18 @@ pub fn events(name: &str, p: &Value) -> Vec<Net> {
                     .collect()
             })
             .unwrap_or_default(),
+        "update_info" => vec![Net::UserInfo {
+            id: text(get(p, "userId")),
+            name: present(get(p, "name")).and_then(Value::as_str).map(String::from),
+            photo: Some(present(get(p, "uploadedPhotoURL")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from)),
+            portrait: None,
+        }],
+        "update" => vec![Net::UserInfo {
+            id: text(get(p, "userId")),
+            name: None,
+            photo: None,
+            portrait: present(get(p, "characterConfig")).and_then(portrait_string),
+        }],
         "user_disconnect" | "leave" => vec![Net::Leave(text(get(p, "userId")))],
         "cluster" => {
             let (cid, conv) = (text(get(p, "clusterId")), text(get(p, "conversationId")));
@@ -217,4 +256,44 @@ pub fn init_packets() -> Vec<Vec<u8>> {
         event_packet("should_update", Some(map(vec![("v", true.into()), ("t", 0.into()), ("lastObjectId", "".into())])), None),
         event_packet("active_app", Some(map(vec![("activeApp", Value::Nil)])), None),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rebuild portrait strings from the recording's character configs and compare them with the portrait URLs
+    /// the official client requested in the same run. Skipped when the recording is not on this machine.
+    #[test]
+    fn portrait_strings_match_the_official_clients_urls() {
+        let run = std::env::var("SOWORKER_RUN").unwrap_or_else(|_| "../recorder/logs/2026-10-06T12-48-44-206Z".into());
+        let Ok(text) = std::fs::read_to_string(format!("{run}/events.jsonl")) else { return };
+        let mut wanted = std::collections::HashSet::new();
+        let mut made = std::collections::HashSet::new();
+        for line in text.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            if v["k"] == "req" {
+                if let Some(rest) = v["url"].as_str().and_then(|u| u.split("/portrait/v1/meeting!idle/").nth(1)) {
+                    wanted.insert(rest.to_string());
+                }
+            }
+            if v["k"] == "ws.in" && v["op"] == 2 {
+                use base64::Engine;
+                let Some(b) = v["data"].as_str().and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok()) else { continue };
+                if let Some((2, Some((name, p)))) = parse_packet(&b) {
+                    if name == "room" {
+                        for u in present(get(&p, "users")).and_then(Value::as_map).into_iter().flatten() {
+                            if let Some(s) = present(get(&u.1, "characterConfig")).and_then(portrait_string) {
+                                made.insert(s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let hits = wanted.iter().filter(|w| made.contains(*w)).count();
+        println!("official client requested {} idle portraits; {} of them rebuilt exactly", wanted.len(), hits);
+        assert!(!wanted.is_empty() && hits > 0, "no portrait string matched");
+        assert!(made.iter().any(|m| wanted.contains(m)));
+    }
 }

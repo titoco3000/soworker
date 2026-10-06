@@ -3,6 +3,7 @@ use crate::app::State;
 use crate::net;
 use crate::calls::{MediaCmd, MediaEvent, MediaTx};
 use crate::proto::{Cmd, Net};
+use crate::meeting_ui::{self, Hit};
 use crate::render::{self, Text};
 use crate::session::Auth;
 use std::num::NonZeroU32;
@@ -25,6 +26,7 @@ struct App {
     st: State,
     cmds: Sender<Cmd>,
     media: Option<MediaTx>,
+    avatars: Option<std::sync::mpsc::Sender<(String, String)>>,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     pixmap: Option<tiny_skia::Pixmap>,
@@ -47,6 +49,11 @@ impl App {
     fn flush(&mut self) {
         for c in self.st.outbox.drain(..) {
             let _ = self.cmds.send(c);
+        }
+        for req in self.st.avatar_req.drain(..) {
+            if let Some(tx) = &self.avatars {
+                let _ = tx.send(req);
+            }
         }
         for m in self.st.media_out.drain(..) {
             eprintln!("[{:6.1}] media command: {}", self.start.elapsed().as_secs_f64(), match &m {
@@ -119,21 +126,51 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
-            WindowEvent::CursorMoved { position, .. } => self.cursor = (position.x as f32, position.y as f32),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x as f32, position.y as f32);
+                if let Some(win) = &self.window {
+                    let s = win.inner_size();
+                    let (c, w, h) = (self.cursor, s.width as f32, s.height as f32);
+                    if self.st.dock.drag.is_some() {
+                        meeting_ui::drag_to(&mut self.st, c.0, c.1);
+                    } else {
+                        meeting_ui::update_hover(&mut self.st, &mut self.text, c.0, c.1, w, h);
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                if let Some(win) = &self.window {
+                    let s = win.inner_size();
+                    meeting_ui::end_drag(&mut self.st, s.width as f32, s.height as f32);
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32,
                 };
                 if dy != 0.0 {
-                    self.st.zoom(dy > 0.0);
+                    let consumed = self.window.as_ref().is_some_and(|win| {
+                        let sz = win.inner_size();
+                        let c = self.cursor;
+                        meeting_ui::wheel(&mut self.st, &mut self.text, c.0, c.1, sz.width as f32, sz.height as f32, dy)
+                    });
+                    if !consumed {
+                        self.st.zoom(dy > 0.0);
+                    }
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 if let Some(win) = &self.window {
                     let s = win.inner_size();
                     let now = self.now();
-                    if let Some(act) = render::hit(&self.st, self.cursor.0, self.cursor.1, s.width as f32, s.height as f32) {
+                    let (c, sw, sh) = (self.cursor, s.width as f32, s.height as f32);
+                    if let Some(h) = meeting_ui::hit(&self.st, &mut self.text, c.0, c.1, sw, sh) {
+                        match h {
+                            Hit::Header => meeting_ui::begin_drag(&mut self.st, &mut self.text, c.0, c.1, sw, sh),
+                            other => self.st.dock_press(other, now),
+                        }
+                    } else if let Some(act) = render::hit(&self.st, self.cursor.0, self.cursor.1, s.width as f32, s.height as f32) {
                         self.st.press(act);
                     } else if let Some((wx, wy)) = self.st.to_world(self.cursor.0, self.cursor.1, s.width as f32, s.height as f32) {
                         self.st.click(wx, wy, self.mods.shift_key(), now);
@@ -243,10 +280,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
     #[cfg(not(feature = "calls"))]
     let media: Option<MediaTx> = None;
+    // pictures are fetched from SoWork's static hosts; the offline demo never touches the network
+    let avatars = if demo.is_none() {
+        let p = event_loop.create_proxy();
+        Some(crate::avatars::spawn(move |e| drop(p.send_event(UserEvent::Net(e)))))
+    } else {
+        None
+    };
     let mut app = App {
         st: State::new(&me_id, dry),
         cmds: cmd_tx,
         media,
+        avatars,
         window: None,
         surface: None,
         pixmap: None,

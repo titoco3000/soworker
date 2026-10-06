@@ -23,6 +23,8 @@ pub enum MediaEvent {
     MicState(bool),
     CameraState(bool),
     ShareState(bool),
+    /// A remote participant muted or unmuted their microphone.
+    PeerMuted(String, bool),
 }
 
 /// Sender for media commands. Without the `calls` feature it is a stub, so the UI code compiles either way.

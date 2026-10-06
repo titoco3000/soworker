@@ -143,11 +143,20 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
         RoomEvent::ActiveSpeakersChanged { speakers } => {
             emit(MediaEvent::Speakers(speakers.iter().map(|p| p.identity().to_string()).collect()));
         }
+        RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(_), publication, participant } => {
+            emit(MediaEvent::PeerMuted(participant.identity().to_string(), publication.is_muted()));
+        }
+        RoomEvent::TrackMuted { participant: Participant::Remote(p), publication } if publication.source() == TrackSource::Microphone => {
+            emit(MediaEvent::PeerMuted(p.identity().to_string(), true));
+        }
+        RoomEvent::TrackUnmuted { participant: Participant::Remote(p), publication } if publication.source() == TrackSource::Microphone => {
+            emit(MediaEvent::PeerMuted(p.identity().to_string(), false));
+        }
         RoomEvent::TrackSubscribed { track: RemoteTrack::Video(v), publication, participant } => {
             let screen = publication.source() == TrackSource::Screenshare;
             let key = format!("{}{}", participant.identity(), if screen { ":screen" } else { "" });
             let name = participant.name();
-            let (max_w, emit2) = (if screen { 480u32 } else { 240 }, emit.clone());
+            let (max_w, emit2) = (if screen { 960u32 } else { 480 }, emit.clone());
             let k = key.clone();
             let task = tokio::spawn(async move {
                 let mut stream = NativeVideoStream::new(v.rtc_track());
@@ -268,7 +277,7 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
         yuyv_to_i420(data, w, h, &mut i420);
         if last_preview.elapsed() >= Duration::from_millis(100) {
             last_preview = Instant::now();
-            let (pw, ph, rgba) = thumbnail(&mut i420, 160);
+            let (pw, ph, rgba) = thumbnail(&mut i420, 480);
             emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
         }
         source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });

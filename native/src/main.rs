@@ -1,5 +1,10 @@
 mod app;
+mod avatars;
 mod calls;
+mod icon;
+mod icons;
+mod meeting_ui;
+mod theme;
 #[cfg(feature = "calls")]
 mod media;
 mod mapobj;
@@ -17,6 +22,7 @@ use render::Text;
 /// Headless mode: replay a recorder run, optionally walk/click, and write a PNG.
 /// soworker --replay recorder/logs/<run> --shot out.png [--script "r:1500,d:600"] [--click X,Y] [--size 1000x700]
 fn headless(args: &[String]) -> Result<(), String> {
+    let args = args;
     let opt = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
     let run = opt("--replay").ok_or("--replay <run dir>")?;
     let out = opt("--shot").unwrap_or_else(|| "shot.png".into());
@@ -30,9 +36,7 @@ fn headless(args: &[String]) -> Result<(), String> {
         st.apply(e, 0.0);
     }
     if args.iter().any(|a| a == "--fake-call") {
-        st.call.joined = Some("test".into());
-        st.call.mic = true;
-        st.call.cam = true;
+        fake_call(&mut st, args);
     }
     st.update(0.0, 0.0);
     println!("world: {} floors, {} solid walls, {} soft walls, {} zones, {} props; me {:?}",
@@ -86,8 +90,88 @@ fn headless(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Synthetic content for layout checks: other attendees, avatar pictures, video frames, a screen share.
+fn fake_call(st: &mut State, args: &[String]) {
+    use calls::MediaEvent;
+    let has = |f: &str| args.iter().any(|a| a == f);
+    let opt = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
+    let nothers: usize = opt("--others").and_then(|s| s.parse().ok()).unwrap_or(2);
+    st.call.joined = Some("test".into());
+    st.call.cam = true;
+    st.call.mic = !has("--muted");
+    let mut ids: Vec<(String, String)> = st.users.values().filter(|u| u.id != st.me_id).map(|u| (u.id.clone(), u.name.clone())).collect();
+    ids.sort();
+    ids.truncate(nothers);
+    st.cluster = Some(proto::ClusterInfo {
+        id: "c".into(),
+        conversation_id: "v".into(),
+        users: ids.iter().cloned().chain(std::iter::once((st.me_id.clone(), "me".into()))).collect(),
+        token: None,
+        unsupported: None,
+    });
+    // gradient pictures cut to circles, standing in for avatars loaded from the network
+    let all: Vec<String> = st.users.keys().cloned().collect();
+    for (k, id) in all.iter().enumerate() {
+        let mut rgba = vec![0u8; (avatars::SIZE * avatars::SIZE * 4) as usize];
+        let r = avatars::SIZE as f32 / 2.0;
+        for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
+            let (x, y) = ((i as u32 % avatars::SIZE) as f32, (i as u32 / avatars::SIZE) as f32);
+            let inside = (x - r).hypot(y - r) <= r;
+            let (a, c) = (if inside { 255u8 } else { 0 }, [(x * 2.5) as u8 ^ (k as u8 * 40), (y * 2.5) as u8, 150 + (k as u8 * 20) % 100]);
+            px.copy_from_slice(&[c[0] / 255 * a / 1 * 0 + (c[0] as u32 * a as u32 / 255) as u8, (c[1] as u32 * a as u32 / 255) as u8, (c[2] as u32 * a as u32 / 255) as u8, a]);
+        }
+        st.apply(proto::Net::Avatar { id: id.clone(), size: avatars::SIZE, rgba }, 0.0);
+    }
+    let frame = |w: u32, h: u32, seed: u8| -> Vec<u8> {
+        (0..w * h).flat_map(|i| { let (x, y) = (i % w, i / w); [(x * 255 / w) as u8 ^ seed, (y * 255 / h) as u8, seed.wrapping_mul(7), 255] }).collect()
+    };
+    st.apply_media(MediaEvent::Video { key: "me".into(), name: "you".into(), w: 480, h: 270, rgba: frame(480, 270, 40) }, 0.0);
+    if let Some((id, name)) = ids.first() {
+        st.apply_media(MediaEvent::Video { key: id.clone(), name: name.clone(), w: 480, h: 270, rgba: frame(480, 270, 140) }, 0.0);
+    }
+    if let Some((id, _)) = ids.get(1) {
+        st.call.peer_muted.insert(id.clone());
+        st.call.speakers.insert(id.clone());
+    }
+    if has("--screen") {
+        let who = ids.first().map(|(i, _)| i.clone()).unwrap_or_default();
+        st.apply_media(MediaEvent::Video { key: format!("{who}:screen"), name: "Screen".into(), w: 960, h: 540, rgba: frame(960, 540, 200) }, 0.0);
+    }
+    if let Some(p) = opt("--pin") {
+        st.dock.pinned = Some(match p.parse::<usize>() {
+            Ok(0) => "self".to_string(),
+            Ok(n) => ids.get(n - 1).map(|(i, _)| i.clone()).unwrap_or_default(),
+            Err(_) => p,
+        });
+    }
+    st.dock.full = has("--dock-full");
+    st.dock.chat_open = has("--chat");
+    if let Some(h) = opt("--hover") {
+        st.dock.hover.tile = Some(match h.parse::<usize>() {
+            Ok(0) => "self".to_string(),
+            Ok(n) => ids.get(n - 1).map(|(i, _)| i.clone()).unwrap_or_default(),
+            Err(_) => h,
+        });
+    }
+}
+
+fn icon_sheet(out: &str) {
+    use icons::*;
+    let mut pm = tiny_skia::Pixmap::new(420, 80).unwrap();
+    pm.fill(tiny_skia::Color::from_rgba8(26, 30, 38, 255));
+    for (i, s) in [MIC, MIC_OFF, VIDEO, VIDEO_OFF, MONITOR, PHONE_OFF, STOP_CIRCLE, LOCK, UNLOCK, MAXIMIZE, MINIMIZE, MESSAGE_CIRCLE].iter().enumerate() {
+        icon::draw(&mut pm, s, 10.0 + i as f32 * 34.0, 10.0, 24.0, theme::INK);
+        icon::draw(&mut pm, s, 10.0 + i as f32 * 34.0, 48.0, 16.0, theme::BRAND);
+    }
+    let _ = pm.save_png(out);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--icons") {
+        icon_sheet(args.get(i + 1).map_or("icons.png", |s| s));
+        return;
+    }
     if args.iter().any(|a| a == "--replay") {
         if let Err(e) = headless(&args) {
             eprintln!("error: {e}");

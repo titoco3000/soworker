@@ -6,9 +6,6 @@ use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, 
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Act {
-    Mic,
-    Cam,
-    Share,
     Away,
 }
 
@@ -23,23 +20,11 @@ pub struct Btn {
     pub enabled: bool,
 }
 
-/// The button bar, bottom right. Used both for drawing and for hit testing.
-pub fn buttons(st: &State, w: f32, h: f32) -> Vec<Btn> {
+/// The one remaining on-map button: available / away (SoWork specific; calls live in the meeting dock).
+pub fn buttons(st: &State, _w: f32, _h: f32) -> Vec<Btn> {
     let ui = st.ui;
-    let (bw, bh, gap) = (84.0 * ui, 26.0 * ui, 6.0 * ui);
-    let joined = st.call.joined.is_some();
-    let specs = [
-        (Act::Mic, if st.call.mic { "mic on" } else { "mic off" }, st.call.mic, joined),
-        (Act::Cam, if st.call.cam { "cam on" } else { "cam off" }, st.call.cam, joined),
-        (Act::Share, if st.call.share { "stop share" } else { "share" }, st.call.share, joined),
-        (Act::Away, if st.available { "available" } else { "away" }, st.available, true),
-    ];
-    let x0 = w - 10.0 * ui - specs.len() as f32 * (bw + gap) + gap;
-    specs
-        .into_iter()
-        .enumerate()
-        .map(|(i, (act, label, on, enabled))| Btn { x: x0 + i as f32 * (bw + gap), y: h - bh - 10.0 * ui, w: bw, h: bh, act, label, on, enabled })
-        .collect()
+    let (bw, bh) = (84.0 * ui, 26.0 * ui);
+    vec![Btn { x: 10.0 * ui, y: 122.0 * ui, w: bw, h: bh, act: Act::Away, label: if st.available { "available" } else { "away" }, on: st.available, enabled: true }]
 }
 
 pub fn hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<Act> {
@@ -252,8 +237,20 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
     for u in order {
         let (sx, sy, r) = (xf(u.x), yf(u.y), (40.0 * sc).max(6.0 * ui));
         let (cr, cg, cb) = hue_rgb(&u.id);
-        if let Some(c) = PathBuilder::from_circle(sx, sy, r) {
-            pm.fill_path(&c, &paint(cr, cg, cb, 255), FillRule::Winding, id, None);
+        match st.pics.get(&u.id) {
+            Some(p) => {
+                // the picture is already cut to a circle; draw it scaled to the avatar size
+                let s = (2.0 * r) / p.width() as f32;
+                let tf = Transform::from_scale(s, s).post_translate(sx - r, sy - r);
+                pm.draw_pixmap(0, 0, p.as_ref(), &PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() }, tf, None);
+            }
+            None => {
+                if let Some(c) = PathBuilder::from_circle(sx, sy, r) {
+                    pm.fill_path(&c, &paint(cr, cg, cb, 255), FillRule::Winding, id, None);
+                }
+                let ch = u.name.trim().chars().next().map_or("?".to_string(), |c| c.to_uppercase().to_string());
+                text.draw(pm, &ch, sx, sy + r * 0.38, r * 1.1, [255, 255, 255], 0.5);
+            }
         }
         if u.speaking {
             if let Some(c) = PathBuilder::from_circle(sx, sy, r + 4.0) {
@@ -267,22 +264,6 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
         }
         let label = if u.state == "walk" { format!("{} ·", u.name) } else { u.name.clone() };
         text.draw(pm, &label, sx, sy - r - 4.0 * ui, 11.0 * ui, [221, 221, 238], 0.5);
-    }
-
-    // video tiles, top right
-    let mut ty = 10.0 * ui;
-    for t in &st.call.tiles {
-        let who = t.key.trim_end_matches(":screen");
-        let tx = w - t.img.width() as f32 - 10.0 * ui;
-        pm.draw_pixmap(tx as i32, ty as i32, t.img.as_ref(), &PixmapPaint::default(), id, None);
-        if st.call.speakers.contains(who) {
-            if let Some(r) = Rect::from_xywh(tx, ty, t.img.width() as f32, t.img.height() as f32) {
-                pm.stroke_path(&PathBuilder::from_rect(r), &paint(127, 214, 168, 255), &Stroke { width: 3.0, ..Stroke::default() }, id, None);
-            }
-        }
-        let label = if t.key.ends_with(":screen") { format!("{} (screen)", t.name) } else { t.name.clone() };
-        text.shadowed(pm, &label, tx + 6.0 * ui, ty + t.img.height() as f32 - 6.0 * ui, 12.0 * ui, [255, 255, 255], 0.0);
-        ty += t.img.height() as f32 + 6.0 * ui;
     }
 
     // HUD
@@ -314,22 +295,11 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
             by += 16.0 * ui;
         }
     }
-    let others = st.cluster.as_ref().map_or(0, |c| c.users.iter().filter(|(i, _)| *i != st.me_id).count());
-    let call = match (&st.call.joined, &st.cluster) {
-        (Some(_), _) => format!("in a call with {others} other(s)"),
-        (None, Some(c)) if c.unsupported.is_some() => "meeting uses an unsupported provider".to_string(),
-        (None, Some(_)) => format!("joining a call with {others} other(s)…"),
-        _ => String::new(),
-    };
-    if !call.is_empty() {
-        text.shadowed(pm, &call, w - 10.0 * ui, h - 48.0 * ui, 12.0 * ui, [127, 214, 168], 1.0);
-    }
     for b in buttons(st, w, h) {
         let col = match (b.enabled, b.on, b.act) {
             (false, ..) => (38, 44, 56),
             (true, true, _) => (47, 111, 79),
-            (true, false, Act::Mic | Act::Away) => (106, 47, 58),
-            (true, false, _) => (38, 48, 63),
+            (true, false, Act::Away) => (106, 47, 58),
         };
         if let Some(rc) = Rect::from_xywh(b.x, b.y, b.w, b.h) {
             pm.fill_rect(rc, &paint(col.0, col.1, col.2, 255), id, None);
@@ -338,4 +308,5 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
         let tc = if b.enabled { [220, 230, 240] } else { [110, 120, 135] };
         text.draw(pm, b.label, b.x + b.w / 2.0, b.y + b.h / 2.0 + 4.0 * ui, 12.0 * ui, tc, 0.5);
     }
+    crate::meeting_ui::draw(st, pm, text, w, h);
 }

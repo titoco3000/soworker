@@ -24,8 +24,14 @@ cargo build --release --no-default-features    # tiny build without calls (~5 MB
 Session: reads `native/.session.json`, `.session.json`, `app/.session.json` (same file the Node prototype
 uses, created by `node app/import-token.mjs <run>`) or `--session <file>`.
 
+Meeting dock: ported from omoffice (frontend/src/features/meetings): draggable card snapping to 8 slots or full window,
+gallery grid or pinned view with a scrolling sidebar, hover buttons per tile (mute / camera off / pin), controls row
+(leave, lock, camera, mic, share screen) and the chat toggle. Dark palette from omoffice. Stubs: muting or switching off
+someone else's camera, lock, and chat (layout only). Avatars: the user's uploaded photo, else SoWork's character portrait
+(`app.sowork.com/portrait/v1/meeting!idle/...`), else the first letter; used on the map and in tiles.
+
 Keys: WASD/arrows walk, left click walks there (routes around walls), Shift+click teleports, R respawns,
-B toggles available/away, buttons bottom-right (mic, cam, share, available/away; they enable once you are in a call), M mic (calls start muted), C camera, F3 debug panel, wheel zooms.
+B toggles available/away, the meeting dock buttons (mic, cam, share screen, leave) once you are in a call, the available/away button under the top-left text, M mic (calls start muted), C camera, F3 debug panel, wheel zooms.
 
 Modules: `session` (Firebase refresh), `net` (gaia socket thread), `proto` (Socket.IO/msgpack events),
 `mapobj` (protobuf map objects), `world` (collision, A*, zones), `app` (state/logic), `render` (tiny-skia),
