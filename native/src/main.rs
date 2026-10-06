@@ -39,6 +39,14 @@ fn headless(args: &[String]) -> Result<(), String> {
     if args.iter().any(|a| a == "--fake-call") {
         fake_call(&mut st, args);
     }
+    if let Some(n) = opt("--away").and_then(|s| s.parse::<usize>().ok()) {
+        // mark the n-th other user away (cluster_mode none-away), as SoWork shows a user who went away
+        let mut ids: Vec<String> = st.users.keys().filter(|i| **i != st.me_id).cloned().collect();
+        ids.sort();
+        for id in ids.into_iter().take(n) {
+            st.apply(proto::Net::Mode { id, mode: "none-away".into() }, 0.0);
+        }
+    }
     st.confirm_logout = args.iter().any(|a| a == "--confirm-logout");
     if args.iter().any(|a| a == "--login-screen") {
         st.login = Some(match opt("--login-screen").as_deref() { Some("waiting") => app::LoginPhase::Waiting, Some("failed") => app::LoginPhase::Failed("The browser window was closed before signing in".into()), _ => app::LoginPhase::Idle });

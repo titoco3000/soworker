@@ -30,8 +30,8 @@ moved there on first start. Log out forgets the token and returns to the sign-in
 
 Meeting dock: ported from omoffice (frontend/src/features/meetings): draggable card snapping to 8 slots or full window,
 gallery grid or pinned view with a scrolling sidebar, hover buttons per tile (mute / camera off / pin), controls row
-(leave, lock, camera, mic, share screen) and the chat toggle. Dark palette from omoffice. Stubs: muting or switching off
-someone else's camera, lock, and chat (layout only). Avatars: the user's uploaded photo, else SoWork's character portrait
+(leave, lock, camera, mic, share screen) and the chat toggle. Dark palette from omoffice. Mute button sends SoWork's `ask-to-mute` request and we honour it when asked; available/away also sets SoWork's presence
+status (docs/presence-and-mute.md). Stubs: switching off someone else's camera (SoWork has no such thing), lock, chat (layout only). Avatars: the user's uploaded photo, else SoWork's character portrait
 (`app.sowork.com/portrait/v1/meeting!idle/...`), else the first letter; used on the map and in tiles.
 
 Keys: WASD/arrows walk, left click walks there (routes around walls), Shift+click teleports, R respawns,

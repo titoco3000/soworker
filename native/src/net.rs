@@ -140,6 +140,15 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
                 }
                 return Ok(());
             }
+            if let Cmd::Presence { away } = c {
+                if !dry {
+                    if let Ok(token) = auth.id_token() {
+                        let (uid, away) = (auth.uid.clone(), away);
+                        std::thread::spawn(move || rest_presence(&token, &uid, away)); // keep the socket loop responsive
+                    }
+                }
+                continue;
+            }
             match &c {
                 Cmd::Move(x, y) => link.pos = Some((*x, *y)),
                 Cmd::Zone(z) => link.zone = z.clone(),
@@ -150,6 +159,28 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
                 ws.send(Message::Binary(cmd_packet(&c))).map_err(|e| e.to_string())?;
             }
         }
+    }
+}
+
+/// SoWork's own sequence for a status change (observed in the recording): for "away" first cancel any scheduled
+/// status clear and store "never clear", then set the status; "available" is just the status update.
+fn rest_presence(token: &str, uid: &str, away: bool) {
+    let post = |path: &str, body: serde_json::Value| {
+        let r = ureq::post(&format!("https://api.sowork.com/api/v1/{path}"))
+            .set("authorization", &format!("Bearer {token}"))
+            .set("source", "web")
+            .set("version", CLIENT_VERSION)
+            .send_json(body);
+        if let Err(e) = r {
+            eprintln!("presence: {path} failed: {e}");
+        }
+    };
+    if away {
+        post("user-presence/scheduleClear", serde_json::json!({"type": "cancel"}));
+        post("user/updateUiSettings", serde_json::json!({"userId": uid, "data": {"presenceStatus": {"clearAfter": "never"}}}));
+        post("user-presence/update", serde_json::json!({"status": "busy"}));
+    } else {
+        post("user-presence/update", serde_json::json!({"status": "online"}));
     }
 }
 

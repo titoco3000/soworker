@@ -1,0 +1,19 @@
+# opened at +130.582s
+# wss://chat.sowork.com/ws?token=<JWT>&device_id=b4ab7801-ef85-46d2-a818-5684a9fd66b4&group_id=v0XvoIt3uK40pdF0mQDB&client=web
+131.963 IN  {"type":"connection.ready","data":{"connection_id":"ef041249-dee1-4f89-90d9-7dd3d22718b4","channels":["019fdd45-cafa-7ad9-be02-2fa77379428e","019ff5fb-36d3-7e72-86fb-d921516249aa","01a06236-a07e-7017-9e25-969273dbfe73","01a09198-98e7-79d3-839b-0bc27d6a13da"],"scope_group_ids":["v0XvoIt3uK40pdF0mQDB","__global__"],"position":"1791307970655-0"}}
+131.963 OUT {"type":"activity.report","data":{"idle_seconds":1,"locked":false,"notifiable":false}}
+134.373 OUT {"type":"activity.report","data":{"idle_seconds":4,"locked":false,"notifiable":true}}
+153.626 IN  {"type":"heartbeat"}
+183.585 IN  {"type":"heartbeat"}
+190.307 OUT {"type":"activity.report","data":{"idle_seconds":1,"locked":false,"notifiable":true}}
+213.588 IN  {"type":"heartbeat"}
+243.600 IN  {"type":"heartbeat"}
+250.307 OUT {"type":"activity.report","data":{"idle_seconds":6,"locked":false,"notifiable":true}}
+273.651 IN  {"type":"heartbeat"}
+303.605 IN  {"type":"heartbeat"}
+310.307 OUT {"type":"activity.report","data":{"idle_seconds":0,"locked":false,"notifiable":true}}
+310.700 OUT {"type":"activity.report","data":{"idle_seconds":1,"locked":false,"notifiable":false}}
+312.695 OUT {"type":"activity.report","data":{"idle_seconds":0,"locked":false,"notifiable":true}}
+333.596 IN  {"type":"heartbeat"}
+363.675 IN  {"type":"heartbeat"}
+370.307 OUT {"type":"activity.report","data":{"idle_seconds":4,"locked":false,"notifiable":true}}

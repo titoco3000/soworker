@@ -332,19 +332,27 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
     for u in order {
         let (sx, sy, r) = (xf(u.x), yf(u.y), (40.0 * sc).max(6.0 * ui));
         let (cr, cg, cb) = hue_rgb(&u.id);
+        let away = if u.id == st.me_id { !st.available } else { u.away() };
+        let alpha = if away { 0.45 } else { 1.0 };
         match st.pics.get(&u.id) {
             Some(p) => {
                 // the picture is already cut to a circle; draw it scaled to the avatar size
                 let s = (2.0 * r) / p.width() as f32;
                 let tf = Transform::from_scale(s, s).post_translate(sx - r, sy - r);
-                pm.draw_pixmap(0, 0, p.as_ref(), &PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() }, tf, None);
+                pm.draw_pixmap(0, 0, p.as_ref(), &PixmapPaint { opacity: alpha, quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() }, tf, None);
             }
             None => {
                 if let Some(c) = PathBuilder::from_circle(sx, sy, r) {
-                    pm.fill_path(&c, &paint(cr, cg, cb, 255), FillRule::Winding, id, None);
+                    pm.fill_path(&c, &paint(cr, cg, cb, (255.0 * alpha) as u8), FillRule::Winding, id, None);
                 }
                 let ch = u.name.trim().chars().next().map_or("?".to_string(), |c| c.to_uppercase().to_string());
                 text.draw(pm, &ch, sx, sy + r * 0.38, r * 1.1, [255, 255, 255], 0.5);
+            }
+        }
+        if away {
+            // small amber dot: out of calls / busy
+            if let Some(c) = PathBuilder::from_circle(sx + r * 0.72, sy + r * 0.72, (r * 0.28).max(3.0)) {
+                pm.fill_path(&c, &paint(240, 170, 60, 255), FillRule::Winding, id, None);
             }
         }
         if u.speaking {

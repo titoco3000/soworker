@@ -23,6 +23,15 @@ pub struct Avatar {
     pub speaking: bool,
     pub photo: Option<String>,
     pub portrait: Option<String>,
+    pub status: String,
+    pub mode: String,
+}
+
+impl Avatar {
+    /// Away = out of calls (`none-away`) or set to busy.
+    pub fn away(&self) -> bool {
+        self.mode == "none-away" || self.status == "busy"
+    }
 }
 
 pub struct Tile {
@@ -158,7 +167,7 @@ impl State {
     }
 
     fn avatar(u: User) -> Avatar {
-        Avatar { tx: u.x, ty: u.y, id: u.id, name: u.name, x: u.x, y: u.y, state: u.state, speaking: false, photo: u.photo, portrait: u.portrait }
+        Avatar { tx: u.x, ty: u.y, id: u.id, name: u.name, x: u.x, y: u.y, state: u.state, speaking: false, photo: u.photo, portrait: u.portrait, status: u.status, mode: u.mode }
     }
 
     /// Ask the loader for a user's picture when we know where it is and have not asked for that URL yet.
@@ -239,6 +248,16 @@ impl State {
             Net::Speaking(id, on) if id != self.me_id => {
                 if let Some(u) = self.users.get_mut(&id) {
                     u.speaking = on;
+                }
+            }
+            Net::Presence { id, status } => {
+                if let Some(u) = self.users.get_mut(&id) {
+                    u.status = status;
+                }
+            }
+            Net::Mode { id, mode } => {
+                if let Some(u) = self.users.get_mut(&id) {
+                    u.mode = mode;
                 }
             }
             Net::Cluster(c) => {
@@ -365,8 +384,14 @@ impl State {
                 self.dock.pinned = if self.dock.pinned.as_deref() == Some(id.as_str()) { None } else { Some(id) };
             }
             // stubs, as requested: the buttons exist (as in omoffice) but acting on other people is not implemented
-            Hit::TileBtn(_, TileBtn::Mute) => self.say("Muting another person is not implemented yet", now),
-            Hit::TileBtn(_, TileBtn::CameraOff) => self.say("Turning off another person's camera is not implemented yet", now),
+            Hit::TileBtn(id, TileBtn::Mute) => {
+                if id != "self" && !self.call.peer_muted.contains(&id) {
+                    let name = self.users.get(&id).map_or_else(|| "them".to_string(), |u| u.name.clone());
+                    self.media_out.push(MediaCmd::AskToMute(id));
+                    self.say(format!("Asked {name} to mute"), now);
+                }
+            }
+            Hit::TileBtn(_, TileBtn::CameraOff) => self.say("SoWork has no way to switch off someone else's camera (it can only ask them to turn it on)", now),
             _ => {}
         }
     }
@@ -440,6 +465,14 @@ impl State {
                 self.call.cam = on;
             }
             MediaEvent::ShareState(on) => self.call.share = on,
+            MediaEvent::AskedToMute { from } => {
+                // like the official client: only act if our mic is actually on
+                if self.call.mic {
+                    let who = self.users.get(&from).map_or_else(|| "Someone".to_string(), |u| u.name.clone());
+                    self.media_out.push(MediaCmd::Mic(false));
+                    self.say(format!("{who} asked you to mute"), now);
+                }
+            }
             MediaEvent::PeerMuted(id, m) => {
                 if m { self.call.peer_muted.insert(id); } else { self.call.peer_muted.remove(&id); }
             }
@@ -487,7 +520,8 @@ impl State {
 
     pub fn set_available(&mut self, a: bool) {
         self.available = a;
-        self.outbox.push(Cmd::Available(a));
+        self.outbox.push(Cmd::Available(a)); // gaia cluster_mode
+        self.outbox.push(Cmd::Presence { away: !a }); // REST presence status, as SoWork's own client does
         self.dirty = true;
     }
 

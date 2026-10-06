@@ -1,7 +1,7 @@
 //! Calls on the official LiveKit Rust SDK: join with the token from gaia's `cluster` event,
 //! audio through the SDK's platform audio (mic capture + playout + echo cancellation),
 //! remote video decoded by libwebrtc and delivered as small RGBA frames.
-use crate::calls::{MediaCmd, MediaEvent};
+use crate::calls::{ask_to_mute_payload, ask_to_mute_target, MediaCmd, MediaEvent, ASK_TO_MUTE};
 use futures_util::StreamExt;
 use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
 use livekit::prelude::*;
@@ -69,6 +69,7 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                     MediaCmd::Mic(on) => if let Some(s) = session.as_mut() { set_mic(s, on, &emit).await; },
                     MediaCmd::Camera(on) => if let Some(s) = session.as_mut() { set_camera(s, on, &emit).await; },
                     MediaCmd::Share(on) => if let Some(s) = session.as_mut() { set_share(s, on, &emit).await; },
+                    MediaCmd::AskToMute(target) => if let Some(s) = session.as_ref() { ask_to_mute(s, &target, &emit).await; },
                 }
             }
             ev = async { match session.as_mut() { Some(s) => s.events.recv().await, None => std::future::pending().await } } => {
@@ -137,9 +138,23 @@ async fn set_mic(s: &mut Session, on: bool, emit: &Emit) {
     emit(MediaEvent::MicState(on && s.mic.is_some()));
 }
 
+/// Mute someone else: a reliable data message on SoWork's `ask-to-mute` topic. The receiving client decides
+/// (it checks the target id, that its mic is on, and that our role may ask).
+async fn ask_to_mute(s: &Session, target: &str, emit: &Emit) {
+    let packet = DataPacket { payload: ask_to_mute_payload(target), topic: Some(ASK_TO_MUTE.into()), reliable: true, ..Default::default() };
+    if let Err(e) = s.room.local_participant().publish_data(packet).await {
+        emit(MediaEvent::Error(format!("could not ask to mute: {e}")));
+    }
+}
+
 /// Returns true when the session is over.
 fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
     match ev {
+        RoomEvent::DataReceived { payload, topic: Some(topic), participant: Some(from), .. } if topic == ASK_TO_MUTE => {
+            if ask_to_mute_target(&payload).is_some_and(|t| t == s.room.local_participant().identity().to_string()) {
+                emit(MediaEvent::AskedToMute { from: from.identity().to_string() });
+            }
+        }
         RoomEvent::ActiveSpeakersChanged { speakers } => {
             emit(MediaEvent::Speakers(speakers.iter().map(|p| p.identity().to_string()).collect()));
         }

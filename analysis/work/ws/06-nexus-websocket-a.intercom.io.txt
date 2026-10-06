@@ -1,9 +1,4 @@
-# opened at +130.065s
-# wss://nexus-websocket-a.intercom.io/pubsub/5-97Q-YOKf_l18pxZBIK8mI3CcLh9N3af1Ep9feCwW6oKKeKrSRfIAb9C2WvaylnWjgnV1LKChQMRZCM7-9Ao5YTwk3tRImY77HZLB?X-Nexus-New-Client=true&X-Nexus-Version=0.21.0&user_role=user
-131.336 OUT {"eventName":"nx.Subscribe","nx.Topics":["*"]}
-131.336 OUT {"eventName":"nx.Subscribe","nx.Topics":["*"]}
-176.335 OUT {"eventName":"nx.Ping","eventGuid":"1791291101316","eventData":{"sendTime":1791291101316,"endpoint":"https://nexus-websocket-a.intercom.io/pubsub/5-97Q-YOKf_l18pxZBIK8mI3CcLh9N3af1Ep9feCwW6oKKeKrSRfIAb9C2WvaylnWjgnV1LKChQMRZCM7-9Ao5YTwk3tRImY77HZLB"}}
-176.441 IN  {"eventName":"ACK","eventData":null,"eventGuid":1791291101,"nx.Topics":null,"nx.Destination":null}
-195.250 OUT {"eventName":"nx.UserPresence"}
-221.443 OUT {"eventName":"nx.Ping","eventGuid":"1791291146423","eventData":{"sendTime":1791291146423,"endpoint":"https://nexus-websocket-a.intercom.io/pubsub/5-97Q-YOKf_l18pxZBIK8mI3CcLh9N3af1Ep9feCwW6oKKeKrSRfIAb9C2WvaylnWjgnV1LKChQMRZCM7-9Ao5YTwk3tRImY77HZLB"}}
-221.552 IN  {"eventName":"ACK","eventData":null,"eventGuid":1791291146,"nx.Topics":null,"nx.Destination":null}
+# opened at +343.690s
+# wss://nexus-websocket-a.intercom.io/pubsub/5-GpdjJ2gZgHWCt31M5MKeUXkfo89de4RJhJWNKwdS0cKtidmpFUuz1SvtJqKBQKBWy68126jKpx8NaXmXffSpN9NZwyABu8gFh1ZK?X-Nexus-New-Client=true&X-Nexus-Version=0.21.0&user_role=user
+345.079 OUT {"eventName":"nx.Subscribe","nx.Topics":["*"]}
+345.079 OUT {"eventName":"nx.Subscribe","nx.Topics":["*"]}

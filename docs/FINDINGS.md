@@ -160,3 +160,5 @@ files in `analysis/work/`.
   path for both: any `cluster` event with a token joins its LiveKit room, a null cluster leaves.
 - Calls join muted and camera off; mic/camera need an explicit click (privacy: walking past someone must not
   open the microphone).
+
+- Presence and muting others: see [presence-and-mute.md](presence-and-mute.md).

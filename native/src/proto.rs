@@ -11,6 +11,9 @@ pub struct User {
     pub y: f32,
     pub state: String,
     /// `uploadedPhotoURL` (an S3 profile photo), if the user set one.
+    /// Presence status (`online`, `busy`, ...) and cluster mode (`cluster`, `none-away`, ...): together they say who is away.
+    pub status: String,
+    pub mode: String,
     pub photo: Option<String>,
     /// SoWork's compact character string (`characterA!body:~v1+typeB!...`), used to build the portrait URL.
     pub portrait: Option<String>,
@@ -45,6 +48,8 @@ pub enum Net {
     Leave(String),
     Speaking(String, bool),
     Cluster(Option<ClusterInfo>),
+    Presence { id: String, status: String },
+    Mode { id: String, mode: String },
     /// The socket thread closed the connection after a logout request.
     LoggedOut,
     /// Profile update for a user (name, photo, avatar config).
@@ -62,6 +67,8 @@ pub enum Cmd {
     Available(bool),
     Camera(bool),
     Speech(bool),
+    /// Tell SoWork our status over REST (`true` = away/busy, `false` = online); the gaia `cluster_mode` goes separately.
+    Presence { away: bool },
     /// Close the socket cleanly and stop reconnecting.
     Logout,
 }
@@ -108,6 +115,8 @@ fn user(v: &Value) -> User {
             .and_then(Value::as_str)
             .unwrap_or("idle")
             .to_string(),
+        status: present(get(v, "presence")).and_then(|x| get(x, "status")).and_then(Value::as_str).unwrap_or("online").to_string(),
+        mode: present(get(v, "clusterMode")).and_then(Value::as_str).unwrap_or("cluster").to_string(),
         photo: present(get(v, "uploadedPhotoURL")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from),
         portrait: present(get(v, "characterConfig")).and_then(portrait_string),
     }
@@ -164,6 +173,7 @@ pub fn events(name: &str, p: &Value) -> Vec<Net> {
                                     .into(),
                             ),
                             3 => Net::Join(user(present(get(d, "user"))?)),
+                            10 => Net::Mode { id, mode: text(get(d, "mode")) },
                             6 => Net::Speaking(id, present(get(d, "isSpeaking")).and_then(Value::as_bool).unwrap_or(false)),
                             _ => return None,
                         })
@@ -171,6 +181,10 @@ pub fn events(name: &str, p: &Value) -> Vec<Net> {
                     .collect()
             })
             .unwrap_or_default(),
+        "presence" => vec![Net::Presence {
+            id: text(get(p, "userId")),
+            status: present(get(p, "presence")).and_then(|x| get(x, "status")).and_then(Value::as_str).unwrap_or("online").to_string(),
+        }],
         "update_info" => vec![Net::UserInfo {
             id: text(get(p, "userId")),
             name: present(get(p, "name")).and_then(Value::as_str).map(String::from),
@@ -252,7 +266,7 @@ pub fn cmd_packet(c: &Cmd) -> Vec<u8> {
         ),
         Cmd::Camera(on) => event_packet("camera_on", Some(map(vec![("cameraOn", (*on).into())])), None),
         Cmd::Speech(on) => event_packet("speech", Some(map(vec![("isSpeaking", (*on).into())])), None),
-        Cmd::Logout => Vec::new(), // handled by the socket thread, never sent
+        Cmd::Presence { .. } | Cmd::Logout => Vec::new(), // handled by the socket thread, never sent as a packet
     }
 }
 
