@@ -9,13 +9,15 @@ node app/server.mjs --dry-run                    # watch only: connects, shows t
 node app/server.mjs                              # live: your avatar walks for real, colleagues see it
 ```
 
-Needs Node >= 22 and Chrome (opens a `--app` window). WASD or arrow keys to walk, mouse wheel to zoom.
+Needs Node >= 22 and Chrome (opens a `--app` window). WASD or arrow keys to walk, left click anywhere to walk there (routes around walls; any key cancels), mouse wheel to zoom, F3 toggles the debug panel (fps, page JS heap, bridge and Chrome memory).
 
 How it works: `server.mjs` is a small bridge that signs in with the refresh token, finds the room
 (`gaia/find`), opens the gaia socket (`lib/gaia.mjs`) and streams the world and people to
 `public/client.js` over Server-Sent Events. The page does movement (800 units/s, 5 `move`/s while
 walking) and collision (floor tiles are walkable, walls are tile-edge segments) locally, like the
 official client, and posts positions back to the bridge.
+
+Tests without touching SoWork: `node app/test/fake-bridge.mjs recorder/logs/<run>` serves an offline world, `node app/test/click.mjs <port> <dx> <dy>` clicks in headless Chrome.
 
 Behaviour to know about:
 - Connecting uses `joinType=force`, which kicks any other open SoWork session of the same account.

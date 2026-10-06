@@ -10,8 +10,11 @@ import { fileURLToPath } from 'node:url';
 import { Auth } from './lib/auth.mjs';
 import { Gaia, CLIENT_VERSION } from './lib/gaia.mjs';
 import { World } from './lib/world.mjs';
+import { chromeMemory } from './lib/stats.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+// Flags that trim Chrome's idle memory (measured: ~248 MB -> ~210 MB for this page, see test/mem.mjs)
+const LEAN_CHROME = ['--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--disable-default-apps', '--disable-component-update', '--mute-audio', '--disable-features=Translate,MediaRouter,OptimizationHints'];
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const DRY = args.includes('--dry-run');
@@ -29,11 +32,12 @@ if (!found.room) throw new Error('gaia/find failed: ' + JSON.stringify(found).sl
 const world = new World();
 const users = new Map(); // id -> {id,name,x,y,state}
 let roomName = found.room.name;
+let roomSpawn = null;
 let worldTimer = null;
 const sse = new Set();
 
 const publish = (obj) => { const line = `data: ${JSON.stringify(obj)}\n\n`; for (const r of sse) r.write(line); };
-const fullState = () => ({ t: 'world', me: auth.uid, room: roomName, dry: DRY, ...world.snapshot(), users: [...users.values()] });
+const fullState = () => ({ t: 'world', me: auth.uid, room: roomName, dry: DRY, spawn: roomSpawn, ...world.snapshot(), users: [...users.values()] });
 const scheduleWorld = () => { clearTimeout(worldTimer); worldTimer = setTimeout(() => publish(fullState()), 300); };
 const userOf = (u) => ({ id: u.id, name: u.name ?? '?', x: u.x ?? 0, y: u.y ?? 0, state: u.characterState?.state ?? 'idle' });
 
@@ -43,6 +47,7 @@ gaia.on('connected', () => console.log('gaia connected'));
 gaia.on('disconnected', () => { console.log('gaia disconnected'); publish({ t: 'status', text: 'reconnecting' }); });
 gaia.on('room', (r) => {
   roomName = r.name;
+  roomSpawn = r.spawns?.[0] ?? null;
   users.clear();
   for (const u of Object.values(r.users ?? {})) users.set(u.id, userOf(u));
   if (!users.has(auth.uid)) { const s = r.spawns?.[0] ?? { x: 0, y: 0 }; users.set(auth.uid, { id: auth.uid, name: auth.name, x: s.x, y: s.y, state: 'idle' }); }
@@ -63,6 +68,13 @@ for (const ev of ['user_disconnect', 'leave']) {
   gaia.on(ev, (p) => { if (p?.userId && p.userId !== auth.uid && users.delete(p.userId)) publish({ t: 'leave', id: p.userId }); });
 }
 await gaia.connect();
+
+// ---- memory stats for the debug panel (see lib/stats.mjs)
+setInterval(() => {
+  if (!sse.size) return;
+  const m = process.memoryUsage();
+  publish({ t: 'stats', bridgeRss: m.rss, bridgeHeap: m.heapUsed, ...chromeMemory(join(here, '.chrome')) });
+}, 2000).unref();
 
 // ---- HTTP: static client, SSE stream, actions
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
@@ -98,7 +110,7 @@ createServer(async (req, res) => {
   const url = `http://127.0.0.1:${PORT}/`;
   console.log(`SoWorker at ${url}${DRY ? ' (dry run: nothing is sent)' : ''}`);
   if (!args.includes('--no-open')) {
-    spawn(opt('--chrome', 'google-chrome-stable'), [`--app=${url}`, `--user-data-dir=${join(here, '.chrome')}`, '--window-size=1000,700', '--no-first-run', '--disable-extensions'], { stdio: 'ignore', detached: true }).unref();
+    spawn(opt('--chrome', 'google-chrome-stable'), [`--app=${url}`, `--user-data-dir=${join(here, '.chrome')}`, '--window-size=1000,700', ...LEAN_CHROME], { stdio: 'ignore', detached: true }).unref();
   }
 });
 process.on('SIGINT', () => { gaia.close(); process.exit(0); });
