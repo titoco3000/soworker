@@ -1,0 +1,8 @@
+# opened at +74.888s
+# wss://nexus-websocket-a.intercom.io/pubsub/5-97Q-YOKf_l18pxZBIK8mI3CcLh9N3af1Ep9feCwW6oKKeKrSRfIAb9C2WvaylnWjgnV1LKChQMRZCM7-9Ao5YTwk3tRImY77HZLB?X-Nexus-New-Client=true&X-Nexus-Version=0.21.0&user_role=user
+75.249 OUT {"eventName":"nx.Subscribe","nx.Topics":["*"]}
+75.249 OUT {"eventName":"nx.UserPresence"}
+75.249 OUT {"eventName":"nx.Subscribe","nx.Topics":["*"]}
+120.249 OUT {"eventName":"nx.Ping","eventGuid":"1791291045229","eventData":{"sendTime":1791291045229,"endpoint":"https://nexus-websocket-a.intercom.io/pubsub/5-97Q-YOKf_l18pxZBIK8mI3CcLh9N3af1Ep9feCwW6oKKeKrSRfIAb9C2WvaylnWjgnV1LKChQMRZCM7-9Ao5YTwk3tRImY77HZLB"}}
+120.484 IN  {"eventName":"ACK","eventData":null,"eventGuid":1791291045,"nx.Topics":null,"nx.Destination":null}
+131.120 CLOSE

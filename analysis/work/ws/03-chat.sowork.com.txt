@@ -1,0 +1,29 @@
+# opened at +73.634s
+# wss://chat.sowork.com/ws?token=<JWT>&device_id=fb0860e2-5836-4893-aedd-b90a49e43d53&group_id=v0XvoIt3uK40pdF0mQDB&client=web
+74.518 IN  {"type":"connection.ready","data":{"connection_id":"8a399b29-daa0-43b6-a69f-4abae072ec62","channels":["019fdd45-cafa-7ad9-be02-2fa77379428e","019ff5fb-36d3-7e72-86fb-d921516249aa","01a06236-a07e-7017-9e25-969273dbfe73","01a09198-98e7-79d3-839b-0bc27d6a13da"],"scope_group_ids":["v0XvoIt3uK40pdF0mQDB","__global__"],"position":"1791290998977-0"}}
+74.518 OUT {"type":"activity.report","data":{"idle_seconds":1,"locked":false,"notifiable":false}}
+79.190 OUT {"type":"activity.report","data":{"idle_seconds":0,"locked":false,"notifiable":true}}
+79.861 OUT {"type":"activity.report","data":{"idle_seconds":1,"locked":false,"notifiable":false}}
+81.408 OUT {"type":"activity.report","data":{"idle_seconds":1,"locked":false,"notifiable":true}}
+85.359 IN  {"type":"heartbeat"}
+102.614 OUT {"type":"activity.report","data":{"idle_seconds":1,"locked":false,"notifiable":false}}
+107.835 OUT {"type":"activity.report","data":{"idle_seconds":6,"locked":false,"notifiable":true}}
+109.440 OUT {"type":"activity.report","data":{"idle_seconds":2,"locked":false,"notifiable":false}}
+110.166 OUT {"type":"activity.report","data":{"idle_seconds":2,"locked":false,"notifiable":true}}
+114.017 OUT {"type":"activity.report","data":{"idle_seconds":0,"locked":false,"notifiable":false}}
+115.526 IN  {"type":"heartbeat"}
+118.798 OUT {"type":"activity.report","data":{"idle_seconds":5,"locked":false,"notifiable":true}}
+120.432 OUT {"type":"activity.report","data":{"idle_seconds":2,"locked":false,"notifiable":false}}
+132.174 OUT {"type":"activity.report","data":{"idle_seconds":0,"locked":false,"notifiable":true}}
+133.467 OUT {"type":"activity.report","data":{"idle_seconds":0,"locked":false,"notifiable":true}}
+145.370 IN  {"type":"heartbeat"}
+175.341 IN  {"type":"heartbeat"}
+193.462 OUT {"type":"activity.report","data":{"idle_seconds":1,"locked":false,"notifiable":true}}
+194.739 OUT {"type":"activity.report","data":{"idle_seconds":0,"locked":false,"notifiable":false}}
+200.894 OUT {"type":"activity.report","data":{"idle_seconds":6,"locked":false,"notifiable":true}}
+201.004 OUT {"type":"activity.report","data":{"idle_seconds":0,"locked":false,"notifiable":false}}
+205.328 IN  {"type":"heartbeat"}
+207.121 OUT {"type":"activity.report","data":{"idle_seconds":0,"locked":false,"notifiable":true}}
+221.728 OUT {"type":"activity.report","data":{"idle_seconds":2,"locked":false,"notifiable":false}}
+235.338 IN  {"type":"heartbeat"}
+237.175 OUT {"type":"activity.report","data":{"idle_seconds":17,"locked":false,"notifiable":true}}

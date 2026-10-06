@@ -1,0 +1,5 @@
+# opened at +3.830s
+# wss://nexus-websocket-a.intercom.io/pubsub/5-TfKzZlROwyEACV5duzK-dhi6nMPcPnp9mtMbklZJHoy70tnSc90ic_ZrYLKkjtdRl1HqyxX5XojbWKH1oix0xB46tfnkwonbvf8M?X-Nexus-New-Client=true&X-Nexus-Version=0.21.0&user_role=visitor
+4.241 OUT {"eventName":"nx.Subscribe","nx.Topics":["*"]}
+4.241 OUT {"eventName":"nx.UserPresence"}
+4.241 OUT {"eventName":"nx.Subscribe","nx.Topics":["*"]}
