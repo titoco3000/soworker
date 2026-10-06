@@ -33,3 +33,11 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# `cargo run` (debug) stays usable: dependencies (tiny-skia, fontdue: all the pixel work) are optimized
+# even in debug builds, our own code gets light optimization but keeps debug assertions and symbols.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

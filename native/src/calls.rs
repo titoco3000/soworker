@@ -24,3 +24,15 @@ pub enum MediaEvent {
     CameraState(bool),
     ShareState(bool),
 }
+
+/// Sender for media commands. Without the `calls` feature it is a stub, so the UI code compiles either way.
+#[cfg(feature = "calls")]
+pub type MediaTx = tokio::sync::mpsc::UnboundedSender<MediaCmd>;
+#[cfg(not(feature = "calls"))]
+pub struct MediaTx;
+#[cfg(not(feature = "calls"))]
+impl MediaTx {
+    pub fn send(&self, _: MediaCmd) -> Result<(), ()> {
+        Ok(())
+    }
+}

@@ -73,6 +73,13 @@ fn headless(args: &[String]) -> Result<(), String> {
     println!("me after: {:?}; zone: {:?}; outbox cmds: {}", st.me().map(|m| (m.x as i32, m.y as i32)), st.cur_zone_id, st.outbox.len());
     let mut pm = tiny_skia::Pixmap::new(w, h).ok_or("pixmap")?;
     let mut text = Text::new();
+    if let Some(n) = opt("--bench").and_then(|s| s.parse::<u32>().ok()) {
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            render::draw(&st, &mut pm, &mut text, 60);
+        }
+        println!("bench: {:.2} ms/frame over {n} frames at {w}x{h}", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
+    }
     render::draw(&st, &mut pm, &mut text, 60);
     pm.save_png(&out).map_err(|e| e.to_string())?;
     println!("wrote {out}");

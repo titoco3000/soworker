@@ -18,6 +18,9 @@ cargo build --release --no-default-features    # tiny build without calls (~5 MB
 ./target/release/soworker --replay <run dir> --shot out.png [--click X,Y] [--script "r:1500,d:600"]
 ```
 
+`cargo run` (debug) is fine for development: the dev profile optimizes dependencies, so a frame costs
+~8 ms instead of ~52 ms (release: ~1.5 ms, measured with `--replay <run> --shot x.png --bench 60`).
+
 Session: reads `native/.session.json`, `.session.json`, `app/.session.json` (same file the Node prototype
 uses, created by `node app/import-token.mjs <run>`) or `--session <file>`.
 

@@ -1,7 +1,7 @@
 //! The window: winit for events, softbuffer to present the tiny-skia pixmap. No GPU context.
 use crate::app::State;
 use crate::net;
-use crate::calls::{MediaCmd, MediaEvent};
+use crate::calls::{MediaCmd, MediaEvent, MediaTx};
 use crate::proto::{Cmd, Net};
 use crate::render::{self, Text};
 use crate::session::Auth;
@@ -24,7 +24,7 @@ pub enum UserEvent {
 struct App {
     st: State,
     cmds: Sender<Cmd>,
-    media: Option<tokio::sync::mpsc::UnboundedSender<MediaCmd>>,
+    media: Option<MediaTx>,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     pixmap: Option<tiny_skia::Pixmap>,
@@ -242,7 +242,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         None
     };
     #[cfg(not(feature = "calls"))]
-    let media = None;
+    let media: Option<MediaTx> = None;
     let mut app = App {
         st: State::new(&me_id, dry),
         cmds: cmd_tx,
