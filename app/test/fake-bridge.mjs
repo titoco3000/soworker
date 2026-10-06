@@ -2,7 +2,7 @@
 // Offline test bridge: serves public/ and a world built from a recorder run (no SoWork contact, no credentials).
 // Usage: node app/test/fake-bridge.mjs recorder/logs/<run> [port]
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { readFileSync, appendFileSync } from 'node:fs';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decode } from '../lib/msgpack.mjs';
@@ -21,14 +21,17 @@ for (const e of L) {
 const spawn = { x: 3260, y: 980 };
 const state = { t: 'world', me: 'me', spawn, room: 'offline test', dry: true, ...world.snapshot(),
   users: [{ id: 'me', name: 'Test Me', x: Number(process.env.START_X ?? 3750), y: Number(process.env.START_Y ?? 3560), state: 'idle' }, { id: 'o', name: 'Other', x: 3900, y: 3560, state: 'idle' }] };
-createServer((req, res) => {
+const clients = new Set();
+createServer(async (req, res) => {
+  if (req.url.startsWith('/_push')) { for (const c of clients) c.write(`data: ${decodeURIComponent(req.url.split('?')[1])}\n\n`); return res.writeHead(204).end(); }
   if (req.url === '/events') {
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); clients.add(res);
     res.write(`data: ${JSON.stringify(state)}\n\n`);
     setInterval(() => res.write(`data: ${JSON.stringify({ t: 'stats', bridgeRss: 61e6, bridgeHeap: 9e6, chromePss: 250e6, chromeProcs: 7 })}\n\n`), 1000);
     return;
   }
-  if (req.url === '/act') { global.acts = (global.acts ?? 0) + 1; return res.writeHead(204).end(); }
+  if (req.url === '/act') { let b = ''; for await (const c of req) b += c; appendFileSync(process.env.ACT_LOG ?? '/tmp/claude-1000/acts.log', b + '\n'); return res.writeHead(204).end(); }
+  if (req.url === '/vendor/livekit-client.umd.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(join(here, '..', 'node_modules/livekit-client/dist/livekit-client.umd.js'))); }
   let f = req.url.split('?')[0]; if (f === '/') f = '/index.html';
   try { const b = readFileSync(join(here, '..', 'public', f)); res.writeHead(200, { 'content-type': { '.html': 'text/html', '.js': 'text/javascript' }[extname(f)] }); res.end(b); }
   catch { res.writeHead(404).end(); }

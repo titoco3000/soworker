@@ -4,6 +4,7 @@ const SPEED = 800;                        // world units per second, same as the
 const TICK_MS = 205;                      // official client sends `move` about every 205 ms while walking
 const MARGIN = 28;                        // keep this far from a walled tile edge
 const N = 1, E = 2, S = 4, W = 8;
+const ZK = 1.1;                           // meeting zone half-extent = ZK x stored size, centred on x,y (fitted on the recording: 98.8% of samples)
 
 const cv = document.getElementById('c'), ctx = cv.getContext('2d'), hud = document.getElementById('hud'), dbg = document.getElementById('dbg');
 const params = new URLSearchParams(location.search);
@@ -25,6 +26,7 @@ es.onmessage = (m) => {
   if (e.t !== 'stats' || showDebug) dirty = true;   // stats ticks only matter while the panel is visible
   if (e.t === 'world') {
     meId = e.me; room = e.room; dry = e.dry; status = ''; spawn = e.spawn;
+    if (typeof onCluster === 'function') onCluster(e.cluster ?? null);
     world.floors = new Set(e.floors.map(([i, j]) => `${i},${j}`));
     world.walls = new Map(e.walls.map(([i, j, m]) => [`${i},${j}`, m]));
     world.soft = new Map(e.soft.map(([i, j, m]) => [`${i},${j}`, m]));
@@ -44,6 +46,8 @@ es.onmessage = (m) => {
   else if (e.t === 'join') users.set(e.user.id, { ...e.user, tx: e.user.x, ty: e.user.y });
   else if (e.t === 'leave') users.delete(e.id);
   else if (e.t === 'status') status = e.text;
+  else if (e.t === 'cluster') onCluster(e.cluster);
+  else if (e.t === 'speaking') { const u = users.get(e.id); if (u) u.speaking = e.on; }
   else if (e.t === 'stats') stats = e;
 };
 
@@ -165,6 +169,25 @@ if (params.get('script')) {
   }
 }
 
+// ---- meeting zones: the client decides which zone it stands in and tells the server (which answers with a `cluster`)
+let curZone;                              // undefined = not reported yet
+function zoneAt(x, y) {
+  let best = null, bd = Infinity;
+  for (const z of world.zones) {
+    if (z.kind !== 'meeting') continue;
+    const dx = Math.abs(x - z.x) / (z.sx * ZK), dy = Math.abs(y - z.y) / (z.sy * ZK);
+    if (dx <= 1 && dy <= 1 && Math.max(dx, dy) < bd) { best = z.id; bd = Math.max(dx, dy); }
+  }
+  return best;
+}
+function updateZone(me) {
+  const z = zoneAt(me.x, me.y);
+  if (z === (curZone ?? null) && curZone !== undefined) return;
+  const first = curZone === undefined;
+  curZone = z;
+  if (!first || z) act({ ev: 'zone', zoneId: z });
+}
+
 // ---- frame loop
 let prev = performance.now();
 function frame(now) {
@@ -188,6 +211,7 @@ function frame(now) {
       act({ ev: 'move', x: me.x, y: me.y }); act({ ev: 'state', state: me.state }); lastSend = now; lastSent = [me.x, me.y];
     } else if (moving && now - lastSend >= TICK_MS) { act({ ev: 'move', x: me.x, y: me.y }); lastSend = now; lastSent = [me.x, me.y]; }
     me.tx = me.x; me.ty = me.y;
+    updateZone(me);
   }
   let active = moving || !!path;
   for (const u of users.values()) {            // glide remote avatars toward their last reported position
@@ -243,15 +267,17 @@ function draw(me) {
     }
     ctx.stroke();
   };
-  edges(world.soft, '#74809c', Math.max(1.5, 2.5 * scale));      // walk-through walls: faint
+  edges(world.soft, '#74809c', Math.max(1.5, 2.5 * scale));  // walk-through walls: faint
   edges(world.walls, '#e8c36a', Math.max(2, 5 * scale));     // solid walls
   ctx.fillStyle = '#4a5a6e';
   for (const [ax, ay] of world.assets) { const sx = X(ax), sy = Y(ay); if (sx > -5 && sx < w + 5 && sy > -5 && sy < h + 5) ctx.fillRect(sx - 1, sy - 1, 3, 3); }
   ctx.font = '11px system-ui'; ctx.textAlign = 'center';
   for (const z of world.zones) {
+    const zx = X(z.x - z.sx * ZK), zy = Y(z.y - z.sy * ZK), zw = z.sx * ZK * 2 * scale, zh = z.sy * ZK * 2 * scale;
+    if (z.id === curZone) { ctx.fillStyle = 'rgba(217,87,127,0.18)'; ctx.fillRect(zx, zy, zw, zh); }
     ctx.strokeStyle = z.kind === 'meeting' ? '#d9577f' : '#667'; ctx.lineWidth = 1;
-    ctx.strokeRect(X(z.x - z.sx / 2), Y(z.y - z.sy / 2), z.sx * scale, z.sy * scale);
-    if (z.name) { ctx.fillStyle = '#d9577f'; ctx.fillText(z.name, X(z.x), Y(z.y - z.sy / 2) - 3); }
+    ctx.strokeRect(zx, zy, zw, zh);
+    if (z.name) { ctx.fillStyle = '#d9577f'; ctx.fillText(z.name, X(z.x), zy - 3); }
   }
   if (path && me) {
     ctx.strokeStyle = '#7fd6a8'; ctx.lineWidth = 2; ctx.setLineDash([5, 5]); ctx.beginPath(); ctx.moveTo(X(me.x), Y(me.y));
@@ -263,7 +289,8 @@ function draw(me) {
     const sx = X(u.x), sy = Y(u.y), r = Math.max(6, 40 * scale);
     ctx.fillStyle = `hsl(${hue(u.id)} 60% 55%)`;
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.fill();
-    if (u.id === meId) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke(); }
+    if (u.speaking) { ctx.strokeStyle = '#7fd6a8'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(sx, sy, r + 4, 0, 7); ctx.stroke(); }
+    if (u.id === meId) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.stroke(); }
     ctx.fillStyle = '#dde'; ctx.fillText(u.name + (u.state === 'walk' ? ' ·' : ''), sx, sy - r - 4);
   }
   hud.textContent = `${room}${dry ? '  [dry run]' : ''}\n${users.size} people${status ? '  ' + status : ''}` + (performance.now() < toastUntil ? `\n${toast}` : '') + (me ? `\n${Math.round(me.x)}, ${Math.round(me.y)}` : '');
@@ -271,4 +298,4 @@ function draw(me) {
   if (showDebug) dbg.textContent = debugText();
 }
 requestAnimationFrame(frame);
-window.__test = { users, world, get me() { return users.get(meId); } };
+window.__test = { users, world, zoneAt, get curZone() { return curZone; }, get me() { return users.get(meId); } };

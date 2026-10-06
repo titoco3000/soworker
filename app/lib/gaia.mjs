@@ -14,6 +14,7 @@ export class Gaia extends EventEmitter {
     this.mediaRegion = mediaRegion;
     this.autoForceId = randomBytes(16).toString('base64url').slice(0, 21);
     this.clusterMode = 'none-connecting';
+    this.meetingZoneId = null;
     this.pos = null;
     this.firstConnect = true;
     this.closed = false;
@@ -23,7 +24,7 @@ export class Gaia extends EventEmitter {
     const token = await this.auth.idToken();
     const q = new URLSearchParams({
       roomId: this.roomId, mediaRegion: this.mediaRegion, password: '', clientVersion: CLIENT_VERSION,
-      autoForceId: this.autoForceId, clusterMode: this.clusterMode, meetingZoneId: '',
+      autoForceId: this.autoForceId, clusterMode: this.clusterMode, meetingZoneId: this.meetingZoneId ?? '',
       ...(this.firstConnect ? { joinType: 'force' } : {}),
       ...(this.pos ? { x: String(this.pos.x), y: String(this.pos.y) } : {}),
       EIO: '4', transport: 'websocket',
@@ -42,7 +43,7 @@ export class Gaia extends EventEmitter {
       try { p = decode(Buffer.from(m.data)); } catch (e) { return this.emit('error', e); }
       if (p.type === 0) {
         this.emit('connected');
-        if (reconnecting) this.emit_('user_reconnected', { clusterMode: this.clusterMode, zoneId: null, shouldUpdate: true });
+        if (reconnecting) this.emit_('user_reconnected', { clusterMode: this.clusterMode, zoneId: this.meetingZoneId, shouldUpdate: true });
         this.emit_('sync_time', { clientTime: Date.now() }, 0);
       } else if (p.type === 4) this.emit('error', new Error('connect error: ' + JSON.stringify(p.data)));
       else if (p.type === 2) this.#event(p.data[0], p.data[1]);
@@ -72,5 +73,8 @@ export class Gaia extends EventEmitter {
   // ---- actions (same messages the web client sends)
   move(x, y) { this.pos = { x, y }; this.emit_('move', { x, y }); }
   characterState(state) { this.emit_('character_state', { characterState: { state } }); }
+  setMeetingZone(zoneId) { this.meetingZoneId = zoneId; this.emit_('set_meeting_zone', { zoneId }); }
+  cameraOn(on) { this.emit_('camera_on', { cameraOn: !!on }); }
+  speech(on) { this.emit_('speech', { isSpeaking: !!on }); }
   setClusterMode(mode) { this.clusterMode = mode; this.emit_('cluster_mode', { mode }); }
 }

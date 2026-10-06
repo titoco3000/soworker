@@ -4,6 +4,7 @@ Plain top-down client for our SoWork office: floors, walls, meeting zones, peopl
 No calls, chat or avatars yet.
 
 ```
+cd app && npm install                            # once: livekit-client
 node app/import-token.mjs recorder/logs/<run>   # once: saves the Firebase refresh token (app/.session.json, mode 600)
 node app/server.mjs --dry-run                    # watch only: connects, shows the office, never sends anything
 node app/server.mjs                              # live: your avatar walks for real, colleagues see it
@@ -21,8 +22,10 @@ Tests without touching SoWork: `node app/test/fake-bridge.mjs recorder/logs/<run
 
 Behaviour to know about:
 - Connecting uses `joinType=force`, which kicks any other open SoWork session of the same account.
-- Live mode sets your status to away (`cluster_mode none-away`) because there is no audio or video.
-- Not implemented: furniture collision, meeting zones (`set_meeting_zone`), LiveKit calls, chat,
-  avatar art, token re-import without a recorder run (first login still needs the official page).
+- Live mode sets you available (`cluster_mode cluster`) so calls can reach you; the away button switches to `none-away`.
+- Calls: walking into a meeting zone (or, if the server groups by proximity, standing near someone while
+  available) makes the server send a LiveKit token; the page joins with `livekit-client` (loaded on demand)
+  **muted, camera off**. Buttons / keys: M mic, C camera, available/away toggle. Untested live.
+- Not implemented: furniture collision, screen share, chat, avatar art, token re-import without a recorder run (first login still needs the official page).
 - Tauri was the plan but this machine lacks the WebKitGTK dev packages; the page is plain
   HTML/JS and ports over unchanged once the bridge logic moves into Rust.

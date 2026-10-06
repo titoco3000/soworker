@@ -145,3 +145,18 @@ files in `analysis/work/`.
   share it.
 - `analysis/scratch/` holds the agents' decoder scripts (msgpack, protobuf, walk stats).
   `ws_msgpack.py` and `decode_obj.py` are the useful ones; the rest are throwaway.
+
+## Meetings (zone and proximity), implemented in app/
+
+- **Zone containment, solved by fitting** (`83` position samples from the recording): a zone is a
+  rectangle centred on its `x,y` with half-extent about `1.1 x sizeX/sizeY` (98.8% of samples
+  classified correctly; the naive `size/2` rectangle got 69%). The page computes the zone, sends
+  `set_meeting_zone`, and the server answers with `cluster` carrying the LiveKit token.
+  Only 3 of 20 zones were visited, so the 1.1 factor may need a small adjustment.
+- **Proximity (hypothesis, untested):** the official client only uses `shouldBeConnectedTo` (users within
+  850 units, available, outside zones) to draw "connecting" placeholders; there is no client request that
+  starts a proximity call. So the server most likely groups them itself from `move` positions and
+  `cluster_mode`, and announces the result through the same `cluster` event. Our client therefore uses one
+  path for both: any `cluster` event with a token joins its LiveKit room, a null cluster leaves.
+- Calls join muted and camera off; mic/camera need an explicit click (privacy: walking past someone must not
+  open the microphone).

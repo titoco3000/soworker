@@ -14,7 +14,7 @@ import { chromeMemory } from './lib/stats.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Flags that trim Chrome's idle memory (measured: ~248 MB -> ~210 MB for this page, see test/mem.mjs)
-const LEAN_CHROME = ['--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--disable-default-apps', '--disable-component-update', '--mute-audio', '--disable-features=Translate,MediaRouter,OptimizationHints'];
+const LEAN_CHROME = ['--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--disable-default-apps', '--disable-component-update', '--autoplay-policy=no-user-gesture-required', '--disable-features=Translate,MediaRouter,OptimizationHints'];
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const DRY = args.includes('--dry-run');
@@ -33,11 +33,12 @@ const world = new World();
 const users = new Map(); // id -> {id,name,x,y,state}
 let roomName = found.room.name;
 let roomSpawn = null;
+let cluster = null; // latest `cluster` event as the page needs it
 let worldTimer = null;
 const sse = new Set();
 
 const publish = (obj) => { const line = `data: ${JSON.stringify(obj)}\n\n`; for (const r of sse) r.write(line); };
-const fullState = () => ({ t: 'world', me: auth.uid, room: roomName, dry: DRY, spawn: roomSpawn, ...world.snapshot(), users: [...users.values()] });
+const fullState = () => ({ t: 'world', me: auth.uid, room: roomName, dry: DRY, spawn: roomSpawn, cluster, ...world.snapshot(), users: [...users.values()] });
 const scheduleWorld = () => { clearTimeout(worldTimer); worldTimer = setTimeout(() => publish(fullState()), 300); };
 const userOf = (u) => ({ id: u.id, name: u.name ?? '?', x: u.x ?? 0, y: u.y ?? 0, state: u.characterState?.state ?? 'idle' });
 
@@ -53,14 +54,24 @@ gaia.on('room', (r) => {
   if (!users.has(auth.uid)) { const s = r.spawns?.[0] ?? { x: 0, y: 0 }; users.set(auth.uid, { id: auth.uid, name: auth.name, x: s.x, y: s.y, state: 'idle' }); }
   const me = users.get(auth.uid);
   gaia.pos = { x: me.x, y: me.y };
-  if (!DRY) gaia.setClusterMode('none-away'); // we have no audio/video: show as away, not as available
+  if (!DRY) gaia.setClusterMode('cluster'); // available: the server may put us into proximity and zone calls
   scheduleWorld();
+});
+gaia.on('cluster', (c) => {
+  const t = c?.token;
+  cluster = c?.clusterId && c?.conversationId
+    ? { id: c.clusterId, conversationId: c.conversationId, users: (c.users ?? []).map((u) => ({ id: u.id, name: u.name })),
+        token: t?.provider === 'livekit' ? { token: t.token, apiHost: t.apiHost, roomId: t.roomId } : null,
+        unsupported: t && t.provider !== 'livekit' ? t.provider : null }
+    : null;
+  publish({ t: 'cluster', cluster });
 });
 gaia.on('object', (o) => { world.apply(o); scheduleWorld(); });
 gaia.on('s', (batch) => {
   for (const [code, p] of batch) {
     if (code === 1 && p.userId !== auth.uid) { const u = users.get(p.userId); if (u) { u.x = p.x; u.y = p.y; publish({ t: 'move', id: u.id, x: p.x, y: p.y }); } }
     else if (code === 2 && p.userId !== auth.uid) { const u = users.get(p.userId); if (u) { u.state = p.characterState?.state ?? 'idle'; publish({ t: 'state', id: u.id, state: u.state }); } }
+    else if (code === 6 && p.userId !== auth.uid) publish({ t: 'speaking', id: p.userId, on: !!p.isSpeaking });
     else if (code === 3 && p.user && p.user.id !== auth.uid) { const u = userOf(p.user); users.set(u.id, u); publish({ t: 'join', user: u }); }
   }
 });
@@ -94,10 +105,18 @@ createServer(async (req, res) => {
       if (!DRY) {
         if (a.ev === 'move' && Number.isFinite(a.x) && Number.isFinite(a.y)) gaia.move(a.x, a.y);
         else if (a.ev === 'state' && ['idle', 'walk'].includes(a.state)) gaia.characterState(a.state);
+        else if (a.ev === 'zone') gaia.setMeetingZone(typeof a.zoneId === 'string' ? a.zoneId : null);
+        else if (a.ev === 'mode' && ['cluster', 'none-away'].includes(a.mode)) gaia.setClusterMode(a.mode);
+        else if (a.ev === 'camera') gaia.cameraOn(a.on);
+        else if (a.ev === 'speech') gaia.speech(a.on);
       }
     } catch {}
     res.writeHead(204).end();
     return;
+  }
+  if (req.url === '/vendor/livekit-client.umd.js') {
+    res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'max-age=86400' });
+    return res.end(readFileSync(join(here, 'node_modules/livekit-client/dist/livekit-client.umd.js')));
   }
   let file = req.url.split('?')[0];
   if (file === '/') file = '/index.html';
