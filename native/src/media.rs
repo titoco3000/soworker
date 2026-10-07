@@ -124,6 +124,7 @@ async fn close(mut s: Session, emit: &Emit) {
     emit(MediaEvent::CameraState(false));
     emit(MediaEvent::ShareState(false));
     emit(MediaEvent::VideoGone("me".into()));
+    emit(MediaEvent::VideoGone("me:screen".into()));
     for (key, t) in s.video_tasks.drain() {
         t.abort();
         emit(MediaEvent::VideoGone(key));
@@ -393,12 +394,13 @@ async fn announce_share(s: &Session, start: bool, sid: Option<&TrackSid>) {
     let _ = lp.publish_data(DataPacket { payload, topic: Some("screenshare".into()), reliable: true, ..Default::default() }).await;
 }
 
-fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
+fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
     let Some(mut cap) = DesktopCapturer::new(DesktopCapturerOptions::new(DesktopCaptureSourceType::Generic)) else {
         return drop(ready.send(Err("screen capture is not available here".into())));
     };
     let (ready, dead) = (std::sync::Mutex::new(Some(ready)), Arc::new(AtomicBool::new(false)));
-    let dead2 = dead.clone();
+    let (dead2, stop2) = (dead.clone(), stop.clone());
+    let mut last_preview = Instant::now() - Duration::from_secs(1);
     cap.start_capture(None, move |res| match res {
         Ok(frame) => {
             if let Some(r) = ready.lock().ok().and_then(|mut g| g.take()) {
@@ -409,6 +411,12 @@ fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, ready: tokio:
             let (sy, su, sv) = i420.strides();
             let (dy, du, dv) = i420.data_mut();
             yuv_helper::argb_to_i420(frame.data(), frame.stride(), dy, sy, du, su, dv, sv, w, h);
+            if last_preview.elapsed() >= Duration::from_millis(150) && !stop2.load(Ordering::Relaxed) {
+                // our own share, as a tile in the meeting like everyone else's (key ends in ":screen" so it is pinned by default)
+                last_preview = Instant::now();
+                let (pw, ph, rgba) = thumbnail(&mut i420, 960);
+                emit(MediaEvent::Video { key: "me:screen".into(), name: "you".into(), w: pw, h: ph, rgba });
+            }
             source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });
         }
         Err(livekit::webrtc::desktop_capturer::CaptureError::Permanent) => {
@@ -429,8 +437,8 @@ async fn set_share(s: &mut Session, on: bool, emit: &Emit) {
     if on && s.share.is_none() {
         let source = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
         let (stop, (tx, rx)) = (Arc::new(AtomicBool::new(false)), tokio::sync::oneshot::channel());
-        let (src2, stop2) = (source.clone(), stop.clone());
-        std::thread::spawn(move || screen_thread(src2, stop2, tx));
+        let (src2, stop2, emit2) = (source.clone(), stop.clone(), emit.clone());
+        std::thread::spawn(move || screen_thread(src2, stop2, emit2, tx));
         // on Wayland this waits for the user to choose a screen or window in the portal dialog
         let first = tokio::time::timeout(Duration::from_secs(90), rx).await;
         match first {
@@ -460,6 +468,7 @@ async fn set_share(s: &mut Session, on: bool, emit: &Emit) {
             Err(e) => {
                 stop.store(true, Ordering::Relaxed);
                 emit(MediaEvent::Error(format!("screen share publish: {e}")));
+                emit(MediaEvent::VideoGone("me:screen".into()));
             }
         }
     } else if !on {
@@ -467,6 +476,7 @@ async fn set_share(s: &mut Session, on: bool, emit: &Emit) {
             c.stop.store(true, Ordering::Relaxed);
             let _ = s.room.local_participant().unpublish_track(&c.sid).await;
             announce_share(s, false, Some(&c.sid)).await;
+            emit(MediaEvent::VideoGone("me:screen".into()));
         }
     }
     emit(MediaEvent::ShareState(s.share.is_some()));

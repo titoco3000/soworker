@@ -170,7 +170,7 @@ pub fn tiles(st: &State) -> Vec<TileSpec> {
         v.push(TileSpec {
             id: format!("content:{}", t.key),
             video_key: Some(t.key.clone()),
-            name: "Screen share".into(),
+            name: if t.key.starts_with("me:") { "Your screen".into() } else { "Screen share".into() },
             initial: String::new(),
             user: None,
             is_self: false,
