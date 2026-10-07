@@ -5,8 +5,11 @@ edition = "2021"
 description = "Native lightweight SoWork client (no browser, no Node)"
 
 [features]
-default = ["calls"]
+default = ["calls", "portal", "overlay"]
 # Audio/video calls through the official LiveKit Rust SDK (needs clang++ and the libwebrtc prebuilt at build time).
+portal = ["dep:zbus"]
+# a small always-on-top "you are live" pill through the wlr layer-shell protocol (Wayland)
+overlay = ["dep:smithay-client-toolkit", "dep:wayland-client"]
 calls = ["dep:livekit", "dep:tokio", "dep:futures-util", "dep:v4l"]
 
 [dependencies]
@@ -25,6 +28,9 @@ ureq = { version = "2", features = ["json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "0.26"
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+zbus = { version = "5", optional = true }
+smithay-client-toolkit = { version = "0.19", optional = true }
+wayland-client = { version = "0.31", optional = true }
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
 

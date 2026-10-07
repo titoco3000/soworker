@@ -17,10 +17,13 @@ mod proto;
 mod render;
 mod replay;
 mod roster;
+mod notify;
+mod overlay;
 mod session;
 mod sound;
 mod waves;
 mod sidebar;
+mod talk;
 mod window;
 mod world;
 
@@ -267,6 +270,25 @@ fn main() {
                 eprintln!("login test failed: {e}");
                 std::process::exit(1);
             }
+        }
+        return;
+    }
+    if args.iter().any(|a| a == "--overlay-test") {
+        // show the "you are live" pill for a few seconds, to check it works on this desktop
+        let h = overlay::Handle::new();
+        println!("{}", if h.is_layer() { "layer-shell overlay: look at the top-right corner" } else { "no layer-shell here: using notifications" });
+        h.show(overlay::Overlay::Live { listeners: 2 });
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        h.show(overlay::Overlay::Muted);
+        std::thread::sleep(std::time::Duration::from_millis(3000));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--talk") {
+        // push to talk from a desktop shortcut: `soworker --talk` (toggle), `--talk down`, `--talk up`
+        let act = args.get(i + 1).filter(|a| !a.starts_with("--")).map_or("toggle", |s| s.as_str());
+        if let Err(e) = talk::send(act) {
+            eprintln!("{e}");
+            std::process::exit(1);
         }
         return;
     }

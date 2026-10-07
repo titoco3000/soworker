@@ -39,6 +39,35 @@ person's menu); see docs/chat-and-waves.md. `--replay <run> --fake-roster --fake
 Wave sounds: SoWork's own `sendWave` / `receiveWave` clips (assets/sounds, from app.sowork.com/static/media, volume 0.2 as
 in its client), played through `pw-play`, `paplay` or `aplay` (no audio library is linked).
 
+Push to talk: `Super+'` held (configurable) opens the mic; with the window hidden bind `soworker --talk` to a key in your desktop
+settings, and a "Press Super+' to talk" notification reminds you when you are muted in a meeting and the window is out of focus
+(docs/push-to-talk.md). While your mic is open and the window is out of focus, an always-on-top pill in the top-right
+corner shows "Mic on · N listening" (`soworker --overlay-test` to try it).
+
+Push to talk setup on COSMIC (once): COSMIC has no global-shortcut portal, so bind `soworker --talk` to a key yourself.
+Press once to open the mic, again to close it (a desktop shortcut cannot report the key release). From a terminal, with
+`BIN` set to your built binary:
+
+```
+BIN=$PWD/target/release/soworker        # run from native/ after `cargo build --release`
+f=~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom
+cp "$f" "$f.bak"                         # undo with: mv "$f.bak" "$f"
+sed -i '$ d' "$f"                        # drop the closing }
+cat >> "$f" <<EOF
+    (
+        modifiers: [
+            Super,
+        ],
+        key: "apostrophe",
+    ): Spawn("$BIN --talk"),
+}
+EOF
+```
+
+COSMIC reloads the file by itself (or use Settings > Keyboard > Custom shortcuts to add the same thing by hand). Change
+`Super` / `apostrophe` for another key, and set `talkKey` in `~/.config/soworker/settings.json` to the same keys (e.g.
+`"Super+'"`) so the in-app hint matches. Test it with `soworker --talk` in a terminal while the app is running.
+
 Meeting dock: ported from omoffice (frontend/src/features/meetings): draggable card snapping to 8 slots or full window,
 gallery grid or pinned view with a scrolling sidebar, hover buttons per tile (mute / camera off / pin), controls row
 (leave, lock, camera, mic, share screen) and the chat toggle. Dark palette from omoffice. Mute button sends SoWork's `ask-to-mute` request and we honour it when asked; available/away also sets SoWork's presence

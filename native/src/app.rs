@@ -99,6 +99,16 @@ pub struct State {
     pub chat_out: Vec<crate::chat::ChatCmd>,
     /// UI sounds to play; the window drains this.
     pub sounds: Vec<crate::sound::Sound>,
+    /// Window focus, the push-to-talk key's name, whether we opened the mic for a held key, and a pending "Press F1 to talk" notification.
+    pub focused: bool,
+    pub talk_key: String,
+    talk_held: bool,
+    last_overlay: Option<crate::overlay::Overlay>,
+    last_hint: f64,
+    pub hint_out: bool,
+    /// What the always-on-top pill should show next (the window drains this), and whether it is showing now.
+    pub overlay_out: Option<crate::overlay::Overlay>,
+    overlay_shown: bool,
     pub cluster: Option<ClusterInfo>,
     pub scale: f32,
     pub keys: Keys,
@@ -150,6 +160,14 @@ impl State {
             chat: Default::default(),
             chat_out: vec![],
             sounds: vec![],
+            focused: true,
+            talk_key: crate::talk::DEFAULT_KEY.into(),
+            talk_held: false,
+            last_overlay: None,
+            last_hint: -1e9,
+            hint_out: false,
+            overlay_out: None,
+            overlay_shown: false,
             cluster: None,
             scale: 0.35,
             keys: Keys::default(),
@@ -312,6 +330,7 @@ impl State {
                 let before = self.cluster.as_ref().map(|c| c.conversation_id.clone());
                 self.cluster = c;
                 self.sync_call();
+                self.sync_overlay(); // the number of listeners may have changed
                 let after = self.cluster.as_ref().map(|c| c.conversation_id.clone());
                 if after != before && after.is_some() && self.chat.open && self.chat.tab == crate::chatui::Tab::Area {
                     let tab = self.chat.tab.clone();
@@ -409,6 +428,64 @@ impl State {
                 self.call.want = None;
                 self.media_out.push(MediaCmd::Leave);
             }
+            _ => {}
+        }
+    }
+
+    /// Ask for a "Press F1 to talk" notification, unless we are unmuted or just showed one.
+    fn hint_talk(&mut self, now: f64) {
+        if self.call.mic || now - self.last_hint < 60.0 {
+            return;
+        }
+        self.last_hint = now;
+        self.hint_out = true;
+    }
+
+    /// Keep the always-on-top pill in step: it shows while the mic is open and the window is out of sight, so you can
+    /// see that you are live (and how many are listening); when the mic closes it says "Muted" briefly.
+    fn sync_overlay(&mut self) {
+        use crate::overlay::Overlay;
+        let live = !self.focused && self.call.joined.is_some() && self.call.mic;
+        if live {
+            let listeners = self.cluster.as_ref().map_or(0, |c| c.users.iter().filter(|(i, _)| *i != self.me_id).count());
+            let o = Overlay::Live { listeners };
+            if !self.overlay_shown || self.overlay_out.is_some() || self.last_overlay.as_ref() != Some(&o) {
+                self.last_overlay = Some(o.clone());
+                self.overlay_out = Some(o);
+            }
+            self.overlay_shown = true;
+        } else if self.overlay_shown {
+            self.overlay_shown = false;
+            self.last_overlay = None;
+            self.overlay_out = Some(if self.focused { Overlay::Hide } else { Overlay::Muted });
+        }
+    }
+
+    /// The window gained or lost focus. Leaving it during a meeting while muted reminds the user of the talk key.
+    pub fn set_focused(&mut self, focused: bool, now: f64) {
+        self.focused = focused;
+        self.sync_overlay();
+        if !focused && self.call.joined.is_some() {
+            self.hint_talk(now);
+        }
+    }
+
+    /// Push to talk. `Down`/`Up` hold the mic open (only if it was muted); `Toggle` is for shortcuts that cannot report a release.
+    pub fn talk(&mut self, act: crate::talk::TalkAct, now: f64) {
+        use crate::talk::TalkAct;
+        if self.call.joined.is_none() {
+            return self.say("Not in a meeting", now);
+        }
+        match act {
+            TalkAct::Down if !self.call.mic => {
+                self.talk_held = true;
+                self.media_out.push(MediaCmd::Mic(true));
+            }
+            TalkAct::Up if self.talk_held => {
+                self.talk_held = false;
+                self.media_out.push(MediaCmd::Mic(false));
+            }
+            TalkAct::Toggle => self.toggle_mic(),
             _ => {}
         }
     }
@@ -546,6 +623,9 @@ impl State {
             MediaEvent::Joined(r) => {
                 eprintln!("[{now:6.1}] livekit joined {r}");
                 self.call.joined = Some(r);
+                if !self.focused {
+                    self.hint_talk(now); // we joined while the window is out of sight: say how to unmute
+                }
             }
             MediaEvent::Left => {
                 eprintln!("[{now:6.1}] livekit left");
@@ -566,7 +646,10 @@ impl State {
                 eprintln!("[{now:6.1}] media error: {e}");
                 self.say(e, now)
             }
-            MediaEvent::MicState(on) => self.call.mic = on,
+            MediaEvent::MicState(on) => {
+                self.call.mic = on;
+                self.sync_overlay();
+            }
             MediaEvent::CameraState(on) => {
                 if on != self.call.cam {
                     self.outbox.push(Cmd::Camera(on)); // gaia shows the camera indicator to others

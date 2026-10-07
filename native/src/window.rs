@@ -26,11 +26,25 @@ fn app_icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(img.to_vec(), img.width(), img.height()).ok()
 }
 
+/// Does this key event name the configured push-to-talk combination (`Super+'`, `F1`, `Ctrl+Alt+Space`...)? The
+/// modifiers must be held when the key goes down; on release only the key counts, since the modifiers often let go first.
+fn is_talk_key(k: &Key, mods: &ModifiersState, down: bool, combo: &crate::talk::Combo) -> bool {
+    let key_ok = match k {
+        Key::Named(NamedKey::Space) => combo.key == "space" || combo.key == " ",
+        Key::Named(n) => format!("{n:?}").eq_ignore_ascii_case(&combo.key),
+        Key::Character(c) => c.as_str().eq_ignore_ascii_case(&combo.key),
+        _ => false,
+    };
+    key_ok && (!down || (mods.control_key() == combo.ctrl && mods.alt_key() == combo.alt && mods.shift_key() == combo.shift && mods.super_key() == combo.sup))
+}
+
 pub enum UserEvent {
     Net(Net),
     Media(MediaEvent),
     /// The browser sign-in finished: a ready session, or why it did not work.
     Login(Result<Auth, String>),
+    /// Push to talk from outside the window (desktop shortcut or portal).
+    Talk(crate::talk::TalkAct),
 }
 
 struct App {
@@ -39,6 +53,8 @@ struct App {
     media: Option<MediaTx>,
     avatars: Option<std::sync::mpsc::Sender<(String, String)>>,
     chat: Option<std::sync::mpsc::Sender<crate::chat::ChatCmd>>,
+    /// The always-on-top "you are live" pill, started the first time it is needed.
+    overlay: Option<crate::overlay::Handle>,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     pixmap: Option<tiny_skia::Pixmap>,
@@ -87,6 +103,14 @@ impl App {
         }
         for c in self.st.outbox.drain(..) {
             let _ = self.cmds.send(c);
+        }
+        if let Some(o) = self.st.overlay_out.take() {
+            if !self.demo {
+                self.overlay.get_or_insert_with(crate::overlay::Handle::new).show(o);
+            }
+        }
+        if std::mem::take(&mut self.st.hint_out) && !self.demo {
+            crate::notify::talk_hint(&self.st.talk_key);
         }
         for snd in self.st.sounds.drain(..) {
             if !self.demo {
@@ -239,6 +263,7 @@ impl ApplicationHandler<UserEvent> for App {
         match ev {
             UserEvent::Net(e) => self.st.apply(e, now),
             UserEvent::Media(e) => self.st.apply_media(e, now),
+            UserEvent::Talk(a) => self.st.talk(a, now),
             UserEvent::Login(Ok(auth)) => self.start_session(auth),
             UserEvent::Login(Err(e)) => {
                 self.st.login = Some(if e.contains("cancelled") { LoginPhase::Idle } else { LoginPhase::Failed(e) });
@@ -342,6 +367,14 @@ impl ApplicationHandler<UserEvent> for App {
                     self.flush();
                     return;
                 }
+                if is_talk_key(&event.logical_key, &self.mods, down, &crate::talk::Combo::parse(&self.st.talk_key)) {
+                    if !event.repeat {
+                        let now = self.now();
+                        self.st.talk(if down { crate::talk::TalkAct::Down } else { crate::talk::TalkAct::Up }, now);
+                    }
+                    self.flush();
+                    return;
+                }
                 let k = &mut self.st.keys;
                 match &event.logical_key {
                     Key::Named(NamedKey::ArrowUp) => k.up = down,
@@ -367,7 +400,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.st.dirty = true;
             }
-            WindowEvent::Focused(false) => self.st.keys = Default::default(),
+            WindowEvent::Focused(f) => {
+                let now = self.now();
+                self.st.set_focused(f, now);
+                if !f {
+                    self.st.keys = Default::default();
+                }
+            }
             _ => {}
         }
         self.flush();
@@ -441,6 +480,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         media: None,
         avatars: None,
         chat: None,
+        overlay: None,
         window: None,
         surface: None,
         pixmap: None,
@@ -461,6 +501,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
         logout_started: None,
         logout_after: opt("--logout-after").and_then(|s| s.parse().ok()),
     };
+    app.st.talk_key = crate::talk::key_label();
+    if demo.is_none() {
+        let p = proxy.clone();
+        crate::talk::listen(move |a| drop(p.send_event(UserEvent::Talk(a))));
+        let p = proxy.clone();
+        crate::talk::portal(move |a| drop(p.send_event(UserEvent::Talk(a))), app.st.talk_key.clone());
+    }
     if let Some(run) = &demo {
         // offline: feed a recorded run into the window, no network, nothing is sent
         let me = crate::replay::own_id(run)?;
@@ -489,6 +536,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn talk_combo_needs_its_modifiers_on_press_but_not_on_release() {
+        use winit::keyboard::{Key, ModifiersState};
+        let combo = crate::talk::Combo::parse("Super+'");
+        let key = Key::Character("'".into());
+        assert!(super::is_talk_key(&key, &ModifiersState::SUPER, true, &combo));
+        assert!(!super::is_talk_key(&key, &ModifiersState::empty(), true, &combo), "a bare ' is just typing");
+        assert!(!super::is_talk_key(&key, &(ModifiersState::SUPER | ModifiersState::SHIFT), true, &combo));
+        assert!(super::is_talk_key(&key, &ModifiersState::empty(), false, &combo), "Super may already be up on release");
+        assert!(super::is_talk_key(&Key::Named(winit::keyboard::NamedKey::F1), &ModifiersState::empty(), true, &crate::talk::Combo::parse("F1")));
+    }
+
     #[test]
     fn the_app_icon_decodes() {
         assert!(super::app_icon().is_some());

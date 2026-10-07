@@ -13,10 +13,11 @@ fn data_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
 }
 
-/// The entry text for a binary at `exe`. Paths with spaces are quoted as the Desktop Entry spec asks.
-pub fn entry_for(exe: &str) -> String {
+/// The entry text for a binary at `exe` with its icon file at `icon`. Paths with spaces are quoted as the Desktop Entry
+/// spec asks. The icon is given by its full path: that works in every launcher, with no icon-theme lookup or cache.
+pub fn entry_for(exe: &str, icon: &str) -> String {
     let exec = if exe.contains(' ') { format!("\"{exe}\"") } else { exe.to_string() };
-    ENTRY.replace("@EXEC@", &exec)
+    ENTRY.replace("@EXEC@", &exec).replace("@ICON@", icon)
 }
 
 fn write_if_changed(path: &std::path::Path, bytes: &[u8]) -> bool {
@@ -31,7 +32,7 @@ pub fn ensure() {
     let icon = data.join("icons/hicolor/256x256/apps/soworker.png");
     let entry = data.join("applications/soworker.desktop");
     let icon_new = write_if_changed(&icon, ICON);
-    let entry_new = write_if_changed(&entry, entry_for(&exe.to_string_lossy()).as_bytes());
+    let entry_new = write_if_changed(&entry, entry_for(&exe.to_string_lossy(), &icon.to_string_lossy()).as_bytes());
     if icon_new || entry_new {
         println!("installed the SoWorker launcher entry and icon under {}", data.display());
         // best effort: let the desktop notice right away
@@ -46,9 +47,9 @@ mod tests {
 
     #[test]
     fn entry_points_at_the_binary_and_matches_the_app_id() {
-        let e = entry_for("/home/me/soworker/native/target/release/soworker");
+        let e = entry_for("/home/me/soworker/native/target/release/soworker", "/home/me/.local/share/icons/soworker.png");
         assert!(e.contains("Exec=/home/me/soworker/native/target/release/soworker\n"));
-        assert!(e.contains("Icon=soworker") && e.contains("StartupWMClass=soworker"));
-        assert!(entry_for("/a b/soworker").contains("Exec=\"/a b/soworker\"\n"));
+        assert!(e.contains("Icon=/home/me/.local/share/icons/soworker.png\n") && e.contains("StartupWMClass=soworker"));
+        assert!(entry_for("/a b/soworker", "/i.png").contains("Exec=\"/a b/soworker\"\n"));
     }
 }
