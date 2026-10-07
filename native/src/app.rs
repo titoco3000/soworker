@@ -35,6 +35,14 @@ impl Avatar {
     }
 }
 
+/// Someone who waved at us and has not been answered yet.
+#[derive(Clone, Debug)]
+pub struct WaveIn {
+    pub from: String,
+    pub name: String,
+    pub at: f64,
+}
+
 pub struct Tile {
     pub key: String,
     pub name: String,
@@ -86,6 +94,9 @@ pub struct State {
     /// The office's member list (online and offline) and what the sidebar is showing.
     pub roster: Vec<crate::roster::Member>,
     pub sidebar: crate::sidebar::Ui,
+    pub waves: Vec<WaveIn>,
+    pub chat: crate::chatui::Chat,
+    pub chat_out: Vec<crate::chat::ChatCmd>,
     pub cluster: Option<ClusterInfo>,
     pub scale: f32,
     pub keys: Keys,
@@ -93,7 +104,6 @@ pub struct State {
     pub path_goal: (f32, f32),
     pub available: bool,
     pub dry: bool,
-    pub show_debug: bool,
     pub status: String,
     pub toast: Option<(String, f64)>,
     pub outbox: Vec<Cmd>,
@@ -134,6 +144,9 @@ impl State {
             users: HashMap::new(),
             roster: vec![],
             sidebar: Default::default(),
+            waves: vec![],
+            chat: Default::default(),
+            chat_out: vec![],
             cluster: None,
             scale: 0.35,
             keys: Keys::default(),
@@ -141,7 +154,6 @@ impl State {
             path_goal: (0.0, 0.0),
             available: true,
             dry,
-            show_debug: true,
             status: "connecting…".into(),
             toast: None,
             outbox: vec![],
@@ -267,6 +279,21 @@ impl State {
                 }
             }
             Net::Roster(members) => self.roster = members,
+            Net::Emote { sender, recipient, emote } => {
+                if emote == "wave" && recipient == self.me_id && sender != self.me_id && !self.waves.iter().any(|w| w.from == sender) {
+                    let name = self.name_of(&sender, None);
+                    self.say(format!("{name} waved at you"), now);
+                    self.waves.push(WaveIn { from: sender, name, at: now });
+                }
+            }
+            Net::Waves(notes) => {
+                // the notification list is the truth, except for a wave that arrived over gaia a moment ago
+                let fresh: Vec<WaveIn> = self.waves.iter().filter(|w| now - w.at < 20.0 && !notes.iter().any(|n| n.from == w.from)).cloned().collect();
+                self.waves = notes.into_iter().map(|n| WaveIn { name: if n.name.is_empty() { self.name_of(&n.from, None) } else { n.name }, from: n.from, at: now }).collect();
+                self.waves.dedup_by(|a, b| a.from == b.from);
+                self.waves.extend(fresh);
+            }
+            Net::Chat(ev) => self.apply_chat(ev, now),
             Net::Mode { id, mode } => {
                 if let Some(u) = self.users.get_mut(&id) {
                     u.mode = mode;
@@ -278,8 +305,14 @@ impl State {
                     None => "none (left / alone)".to_string(),
                     Some(c) => format!("{} user(s), token: {}", c.users.len(), if c.token.is_some() { "livekit" } else { c.unsupported.as_deref().unwrap_or("missing") }),
                 });
+                let before = self.cluster.as_ref().map(|c| c.conversation_id.clone());
                 self.cluster = c;
                 self.sync_call();
+                let after = self.cluster.as_ref().map(|c| c.conversation_id.clone());
+                if after != before && after.is_some() && self.chat.open && self.chat.tab == crate::chatui::Tab::Area {
+                    let tab = self.chat.tab.clone();
+                    self.select_tab(tab); // asks for the new meeting's chat
+                }
             }
             _ => {}
         }
@@ -318,10 +351,15 @@ impl State {
         self.dirty = true;
     }
 
+    /// Left and right edge of the map: between the sidebar and the chat panel.
+    pub fn map_edges(&self, w: f32) -> (f32, f32) {
+        (crate::sidebar::width(self), w - crate::chatui::width(self))
+    }
+
     /// Screen x of the map's centre: the window minus the sidebar on the left.
     pub fn view_x(&self, w: f32) -> f32 {
-        let sb = crate::sidebar::width(self);
-        sb + (w - sb) / 2.0
+        let (l, r) = self.map_edges(w);
+        l + (r - l) / 2.0
     }
 
     /// Screen position -> world position for a window of the given size, camera centred on me.
@@ -382,12 +420,11 @@ impl State {
         self.dirty = true;
         match hit {
             Hit::Ctl(Ctl::FullToggle) => self.dock.full = !self.dock.full,
-            Hit::Ctl(Ctl::Chat) => self.dock.chat_open = !self.dock.chat_open,
+            Hit::Ctl(Ctl::Chat) => self.toggle_chat(),
             Hit::Ctl(Ctl::Mic) => self.toggle_mic(),
             Hit::Ctl(Ctl::Cam) => self.toggle_cam(),
             Hit::Ctl(Ctl::Share) => self.toggle_share(),
             Hit::Ctl(Ctl::Lock) => self.say("Locking a meeting is not something SoWork supports", now),
-            Hit::Ctl(Ctl::Send) => self.say("Chat is not available in this client yet", now),
             Hit::Ctl(Ctl::Leave) => {
                 // leaving = tell the server we are in no zone, drop the call, and do not rejoin until we walk out and back
                 self.call.ignore_room = self.call.want.clone().or_else(|| self.call.joined.clone());
@@ -457,8 +494,39 @@ impl State {
                 }
             }
             Hit::Wave(key) => {
-                let who = join_target(self, &key).map_or_else(|| "them".to_string(), |t| t.1);
-                self.say(format!("Waving at {who} is not implemented yet"), now);
+                // a person, or everyone else in a meeting
+                let targets: Vec<String> = match key.strip_prefix("zone:") {
+                    Some(z) => crate::sidebar::people(self).into_iter().filter(|p| p.online && !p.me && p.zone.as_deref() == Some(z)).map(|p| p.id).collect(),
+                    None => vec![key.clone()],
+                };
+                let names: Vec<String> = targets.iter().map(|t| self.name_of(t, None)).collect();
+                for t in targets {
+                    self.outbox.push(Cmd::Wave(t));
+                }
+                self.sidebar.open = None;
+                if !names.is_empty() {
+                    self.say(format!("Waved at {}", names.join(", ")), now);
+                }
+            }
+            Hit::Message(key) => {
+                self.sidebar.open = None;
+                self.open_dm(&key);
+            }
+            Hit::Chat => self.toggle_chat(),
+            Hit::WaveAccept(from) => {
+                // accepting a wave means going to the person, as the official client does
+                if let Some(((x, y), name)) = join_target(self, &from) {
+                    self.say(format!("Walking to {name}"), now);
+                    self.click(x, y, false, now);
+                } else {
+                    self.say("Cannot find where they are", now);
+                }
+                self.waves.retain(|w| w.from != from);
+                self.outbox.push(Cmd::WaveDone(from));
+            }
+            Hit::WaveDismiss(from) => {
+                self.waves.retain(|w| w.from != from);
+                self.outbox.push(Cmd::WaveDone(from));
             }
             Hit::Panel => {}
         }

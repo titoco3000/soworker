@@ -14,6 +14,7 @@ pub struct SessionFile {
     pub find: serde_json::Value,
 }
 
+#[derive(Clone)]
 pub struct Auth {
     pub path: String,
     pub file: SessionFile,

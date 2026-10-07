@@ -1,5 +1,5 @@
 //! The gaia socket on its own thread: Engine.IO/Socket.IO over a TLS WebSocket, msgpack packets.
-use crate::proto::{cmd_packet, connect_packet, event_packet, events, init_packets, parse_packet, Cmd, Net};
+use crate::proto::{cmd_packet, connect_packet, emote_packet, event_packet, events, init_packets, parse_packet, Cmd, Net};
 use crate::session::{Auth, CLIENT_VERSION};
 use std::io::ErrorKind;
 use std::net::TcpStream;
@@ -10,7 +10,7 @@ use tungstenite::{client::IntoClientRequest, Message};
 
 type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 
-fn tls_stream(host: &str) -> Result<Tls, String> {
+pub fn tls_stream(host: &str) -> Result<Tls, String> {
     let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
     let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()
@@ -87,7 +87,8 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
         if !link.group_id.is_empty() && link.roster_at.map_or(true, |t| t.elapsed() >= ROSTER_EVERY) {
             link.roster_at = Some(Instant::now());
             if let Ok(token) = auth.id_token() {
-                crate::roster::fetch_async(token, link.group_id.clone(), link.roster_tx.clone());
+                crate::roster::fetch_async(token.clone(), link.group_id.clone(), link.roster_tx.clone());
+                crate::waves::pending_async(token, auth.uid.clone(), link.roster_tx.clone());
             }
         }
         match ws.read() {
@@ -156,6 +157,28 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
                 }
                 return Ok(());
             }
+            match &c {
+                Cmd::Wave(to) => {
+                    if !dry {
+                        if let Ok(token) = auth.id_token() {
+                            let to = to.clone();
+                            std::thread::spawn(move || crate::waves::send(&token, &to));
+                        }
+                        ws.send(Message::Binary(emote_packet(&auth.uid, to))).map_err(|e| e.to_string())?;
+                    }
+                    continue;
+                }
+                Cmd::WaveDone(from) => {
+                    if !dry {
+                        if let Ok(token) = auth.id_token() {
+                            let (uid, from) = (auth.uid.clone(), from.clone());
+                            std::thread::spawn(move || crate::waves::clear(&token, &uid, &from));
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             if let Cmd::Presence { away } = c {
                 if !dry {
                     if let Ok(token) = auth.id_token() {
@@ -200,7 +223,7 @@ fn rest_presence(token: &str, uid: &str, away: bool) {
     }
 }
 
-fn urlenc(s: &str) -> String {
+pub fn urlenc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),

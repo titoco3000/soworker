@@ -224,14 +224,15 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
     }
     let u = st.ui;
     let d = &st.dock;
-    let sb = crate::sidebar::width(st); // the dock lives on the map, right of the sidebar
-    let (dw, dh) = if d.full { (w - sb, h) } else { ((500.0 * u).min(0.7 * (w - sb)), (300.0 * u).min(0.7 * h)) };
+    let (sb, right) = st.map_edges(w); // the dock lives on the map, between the sidebar and the chat panel
+    let mw = right - sb;
+    let (dw, dh) = if d.full { (mw, h) } else { ((500.0 * u).min(0.7 * mw), (300.0 * u).min(0.7 * h)) };
     let (dx, dy) = if d.full {
         (sb, 0.0)
     } else if let Some(dr) = d.drag {
         dr.pos
     } else {
-        let (x, y) = slot_pos(d.slot, dw, dh, w - sb, h, 16.0 * u);
+        let (x, y) = slot_pos(d.slot, dw, dh, mw, h, 16.0 * u);
         (x + sb, y)
     };
     let dock = R { x: dx, y: dy, w: dw, h: dh };
@@ -515,7 +516,7 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, w: f32, h: f32) {
                 if st.call.share { theme::INK } else { theme::INK_MUTED },
                 !joined,
             ),
-            Ctl::Chat => (icons::MESSAGE_CIRCLE, None, if st.dock.chat_open { theme::BRAND } else { theme::INK_MUTED }, false),
+            Ctl::Chat => (icons::MESSAGE_CIRCLE, None, if st.chat.open { theme::BRAND } else { theme::INK_MUTED }, false),
             _ => continue,
         };
         stroke_rr(pm, *r, radius, theme::LINE, 1.0);
@@ -604,9 +605,9 @@ pub fn drag_to(st: &mut State, px: f32, py: f32) {
 pub fn end_drag(st: &mut State, w: f32, h: f32) {
     if let Some(d) = st.dock.drag.take() {
         let u = st.ui;
-        let sb = crate::sidebar::width(st);
-        let (dw, dh) = ((500.0 * u).min(0.7 * (w - sb)), (300.0 * u).min(0.7 * h));
-        st.dock.slot = nearest_slot(d.pos.0 - sb + dw / 2.0, d.pos.1 + dh / 2.0, w - sb, h);
+        let (sb, right) = st.map_edges(w);
+        let (dw, dh) = ((500.0 * u).min(0.7 * (right - sb)), (300.0 * u).min(0.7 * h));
+        st.dock.slot = nearest_slot(d.pos.0 - sb + dw / 2.0, d.pos.1 + dh / 2.0, right - sb, h);
         st.dirty = true;
     }
 }

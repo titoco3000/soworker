@@ -8,12 +8,6 @@ use crate::theme::*;
 use std::collections::HashMap;
 use tiny_skia::{FillRule, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Act {
-    Away,
-    Logout,
-}
-
 /// What the user is doing in the sidebar (kept in `State`).
 #[derive(Default)]
 pub struct Ui {
@@ -31,6 +25,14 @@ pub struct Person {
     pub me: bool,
     pub zone: Option<String>,
     pub last_online: Option<i64>,
+    pub unread: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MenuBtn {
+    Join { enabled: bool },
+    Wave,
+    Message,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -38,23 +40,30 @@ pub enum Row {
     Section(String),
     Group { key: String, title: String, count: usize },
     Person { p: Person, indent: bool },
-    /// The Join / Wave buttons under the open row.
-    Menu { key: String, can_join: bool },
+    /// The buttons under the open row.
+    Menu { key: String, buttons: Vec<MenuBtn> },
+    /// Someone waved at us: Accept (walk to them) or Dismiss.
+    Wave { from: String, name: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
     Away,
     Logout,
+    Chat,
     Row(String),
     Join(String),
     Wave(String),
+    Message(String),
+    WaveAccept(String),
+    WaveDismiss(String),
     /// A click on the panel itself: swallowed so it does not walk the avatar.
     Panel,
 }
 
 pub const WIDTH: f32 = 252.0;
 const HEADER: f32 = 92.0;
+const FOOTER: f32 = 28.0;
 const PAD: f32 = 12.0;
 
 pub fn width(st: &State) -> f32 {
@@ -81,6 +90,7 @@ pub fn people(st: &State) -> Vec<Person> {
                 me,
                 zone: if me { st.cur_zone_id.clone() } else { u.zone.clone() },
                 last_online: None,
+                unread: st.unread_dm(&u.id),
             }
         })
         .collect();
@@ -96,6 +106,7 @@ pub fn people(st: &State) -> Vec<Person> {
             me: m.id == st.me_id,
             zone: m.zone.clone().filter(|_| m.online),
             last_online: m.last_online,
+            unread: st.unread_dm(&m.id),
         });
     }
     out
@@ -132,9 +143,22 @@ pub fn rows(st: &State) -> Vec<Row> {
 
     let open = st.sidebar.open.as_deref();
     let mut out = Vec::new();
-    let menu = |out: &mut Vec<Row>, key: &str, can_join: bool| {
+    if !st.waves.is_empty() {
+        out.push(Row::Section(format!("WAVES · {}", st.waves.len())));
+        for w in &st.waves {
+            out.push(Row::Wave { from: w.from.clone(), name: w.name.clone() });
+        }
+    }
+    let menu = |out: &mut Vec<Row>, key: &str, buttons: Vec<MenuBtn>| {
         if open == Some(key) {
-            out.push(Row::Menu { key: key.to_string(), can_join });
+            out.push(Row::Menu { key: key.to_string(), buttons });
+        }
+    };
+    let person_menu = |p: &Person| {
+        if p.online {
+            vec![MenuBtn::Join { enabled: join_target(st, &p.id).is_some() }, MenuBtn::Wave, MenuBtn::Message]
+        } else {
+            vec![MenuBtn::Message]
         }
     };
     if !groups.is_empty() {
@@ -142,13 +166,12 @@ pub fn rows(st: &State) -> Vec<Row> {
         for (z, ps) in groups {
             let key = zone_key(&z);
             out.push(Row::Group { key: key.clone(), title: zone_title(st, &z), count: ps.len() });
-            let can_join = join_target(st, &key).is_some();
-            menu(&mut out, &key, can_join);
+            menu(&mut out, &key, vec![MenuBtn::Join { enabled: join_target(st, &key).is_some() }, MenuBtn::Wave]);
             for p in ps {
                 let key = p.id.clone();
-                let can_join = !p.me && join_target(st, &key).is_some();
+                let buttons = person_menu(&p);
                 out.push(Row::Person { p, indent: true });
-                menu(&mut out, &key, can_join);
+                menu(&mut out, &key, buttons);
             }
         }
     }
@@ -156,15 +179,17 @@ pub fn rows(st: &State) -> Vec<Row> {
         out.push(Row::Section(format!("ONLINE · {}", loose.len())));
         for p in loose {
             let key = p.id.clone();
-            let can_join = !p.me && join_target(st, &key).is_some();
+            let buttons = person_menu(&p);
             out.push(Row::Person { p, indent: false });
-            menu(&mut out, &key, can_join);
+            menu(&mut out, &key, buttons);
         }
     }
     if !offline.is_empty() {
         out.push(Row::Section(format!("OFFLINE · {}", offline.len())));
         for p in offline {
+            let key = p.id.clone();
             out.push(Row::Person { p, indent: false });
+            menu(&mut out, &key, vec![MenuBtn::Message]);
         }
     }
     out
@@ -188,6 +213,7 @@ pub fn join_target(st: &State, key: &str) -> Option<((f32, f32), String)> {
 fn row_h(r: &Row) -> f32 {
     match r {
         Row::Section(_) => 30.0,
+        Row::Wave { .. } => 66.0,
         _ => 34.0,
     }
 }
@@ -195,6 +221,7 @@ fn row_h(r: &Row) -> f32 {
 pub struct Layout {
     pub panel: R,
     pub away: R,
+    pub chat: R,
     pub logout: R,
     pub list: R,
     pub items: Vec<(Row, R)>,
@@ -204,11 +231,13 @@ pub struct Layout {
 pub fn layout(st: &State, h: f32) -> Layout {
     let u = st.ui;
     let panel = R { x: 0.0, y: 0.0, w: WIDTH * u, h };
-    let bw = (panel.w - 3.0 * PAD * u) / 2.0;
+    let gap = 8.0 * u;
+    let bw = (panel.w - 2.0 * PAD * u - 2.0 * gap) / 3.0;
     let by = (HEADER - 36.0) * u;
     let away = R { x: PAD * u, y: by, w: bw, h: 28.0 * u };
-    let logout = R { x: PAD * u * 2.0 + bw, y: by, w: bw, h: 28.0 * u };
-    let list = R { x: 0.0, y: HEADER * u, w: panel.w, h: (h - HEADER * u).max(0.0) };
+    let chat = R { x: PAD * u + bw + gap, y: by, w: bw, h: 28.0 * u };
+    let logout = R { x: PAD * u + 2.0 * (bw + gap), y: by, w: bw, h: 28.0 * u };
+    let list = R { x: 0.0, y: HEADER * u, w: panel.w, h: (h - (HEADER + FOOTER) * u).max(0.0) };
     let rows = rows(st);
     let total: f32 = rows.iter().map(|r| row_h(r) * u).sum::<f32>() + 8.0 * u;
     let max_scroll = (total - list.h).max(0.0);
@@ -223,14 +252,23 @@ pub fn layout(st: &State, h: f32) -> Layout {
             (r, rect)
         })
         .collect();
-    Layout { panel, away, logout, list, items, max_scroll }
+    Layout { panel, away, chat, logout, list, items, max_scroll }
 }
 
-/// The two menu buttons inside a Menu row.
-fn menu_buttons(rect: &R, u: f32) -> (R, R) {
-    let bw = (rect.w - 3.0 * PAD * u) / 2.0;
+/// The buttons of a Menu row, side by side.
+fn menu_buttons(rect: &R, u: f32, buttons: &[MenuBtn]) -> Vec<(MenuBtn, R)> {
+    let gap = 6.0 * u;
+    let n = buttons.len().max(1) as f32;
+    let bw = (rect.w - 2.0 * PAD * u - (n - 1.0) * gap) / n;
     let (y, h) = (rect.y + 3.0 * u, rect.h - 6.0 * u);
-    (R { x: PAD * u, y, w: bw, h }, R { x: PAD * u * 2.0 + bw, y, w: bw, h })
+    buttons.iter().enumerate().map(|(i, b)| (*b, R { x: PAD * u + i as f32 * (bw + gap), y, w: bw, h })).collect()
+}
+
+/// Accept and Dismiss inside a Wave row.
+fn wave_buttons(rect: &R, u: f32) -> (R, R) {
+    let bw = (rect.w - 2.0 * PAD * u - 8.0 * u) / 2.0;
+    let (y, h) = (rect.y + rect.h - 30.0 * u, 24.0 * u);
+    (R { x: PAD * u, y, w: bw, h }, R { x: PAD * u + bw + 8.0 * u, y, w: bw, h })
 }
 
 pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Hit> {
@@ -240,6 +278,9 @@ pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Hit> {
     }
     if l.away.contains(px, py) {
         return Some(Hit::Away);
+    }
+    if l.chat.contains(px, py) {
+        return Some(Hit::Chat);
     }
     if l.logout.contains(px, py) {
         return Some(Hit::Logout);
@@ -251,13 +292,22 @@ pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Hit> {
             }
             return Some(match row {
                 Row::Group { key, .. } => Hit::Row(key.clone()),
-                Row::Person { p, .. } if p.online && !p.me => Hit::Row(p.id.clone()),
-                Row::Menu { key, can_join } => {
-                    let (join, wave) = menu_buttons(rect, st.ui);
-                    if join.contains(px, py) && *can_join {
-                        Hit::Join(key.clone())
-                    } else if wave.contains(px, py) {
-                        Hit::Wave(key.clone())
+                Row::Person { p, .. } if !p.me => Hit::Row(p.id.clone()),
+                Row::Menu { key, buttons } => menu_buttons(rect, st.ui, buttons)
+                    .into_iter()
+                    .find(|(_, r)| r.contains(px, py))
+                    .map_or(Hit::Panel, |(b, _)| match b {
+                        MenuBtn::Join { enabled: true } => Hit::Join(key.clone()),
+                        MenuBtn::Join { enabled: false } => Hit::Panel,
+                        MenuBtn::Wave => Hit::Wave(key.clone()),
+                        MenuBtn::Message => Hit::Message(key.clone()),
+                    }),
+                Row::Wave { from, .. } => {
+                    let (accept, dismiss) = wave_buttons(rect, st.ui);
+                    if accept.contains(px, py) {
+                        Hit::WaveAccept(from.clone())
+                    } else if dismiss.contains(px, py) {
+                        Hit::WaveDismiss(from.clone())
                     } else {
                         Hit::Panel
                     }
@@ -290,7 +340,7 @@ fn ago(now_ms: i64, then: Option<i64>) -> String {
     }
 }
 
-fn fit(text: &mut Text, s: &str, px: f32, max_w: f32) -> String {
+pub fn fit(text: &mut Text, s: &str, px: f32, max_w: f32) -> String {
     if text.width(s, px) <= max_w {
         return s.to_string();
     }
@@ -318,6 +368,22 @@ fn dot(pm: &mut Pixmap, x: f32, y: f32, r: f32, col: Rgb) {
     if let Some(c) = PathBuilder::from_circle(x, y, r) {
         pm.fill_path(&c, &paint(col[0], col[1], col[2], 255), FillRule::Winding, Transform::identity(), None);
     }
+}
+
+/// Proportional memory of this whole process in MB, re-read at most once a second (smaps is not free).
+fn pss_mb() -> f64 {
+    thread_local!(static LAST: std::cell::Cell<Option<(std::time::Instant, u64)>> = const { std::cell::Cell::new(None) });
+    LAST.with(|c| {
+        let bytes = match c.get() {
+            Some((t, b)) if t.elapsed() < std::time::Duration::from_secs(1) => b,
+            _ => {
+                let b = crate::render::proc_mem().1;
+                c.set(Some((std::time::Instant::now(), b)));
+                b
+            }
+        };
+        bytes as f64 / 1_048_576.0
+    })
 }
 
 const AMBER: Rgb = [240, 170, 60];
@@ -380,21 +446,46 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, now_ms: i64) {
                 } else {
                     String::new()
                 };
-                let rw = text.width(&right, 11.0 * u);
+                if p.unread > 0 {
+                    let label = p.unread.to_string();
+                    let bw = (text.width(&label, 11.0 * u) + 12.0 * u).max(18.0 * u);
+                    let badge = R { x: rect.w - PAD * u - 6.0 * u - bw, y: mid - 8.0 * u, w: bw, h: 16.0 * u };
+                    fill(pm, &badge, 8.0 * u, BRAND, 255);
+                    text.draw(pm, &label, badge.x + bw / 2.0, badge.y + 12.0 * u, 11.0 * u, ON_BRAND, 0.5);
+                }
+                let right = if p.unread > 0 { String::new() } else { right };
+                let rw = text.width(&right, 11.0 * u).max(if p.unread > 0 { 26.0 * u } else { 0.0 });
                 let name = fit(text, &p.name, 13.0 * u, rect.w - (x0 + 2.0 * r + 12.0 * u + 14.0 * u) - rw);
                 text.draw(pm, &name, x0 + 2.0 * r + 10.0 * u, mid + 4.5 * u, 13.0 * u, if p.online { INK } else { INK_FAINT }, 0.0);
                 text.draw(pm, &right, rect.w - PAD * u - 6.0 * u, mid + 4.0 * u, 11.0 * u, INK_FAINT, 1.0);
             }
-            Row::Menu { can_join, .. } => {
-                let (join, wave) = menu_buttons(rect, u);
-                if *can_join {
-                    fill(pm, &join, 6.0 * u, BRAND, 255);
-                } else {
-                    outline(pm, &join, 6.0 * u, LINE);
+            Row::Menu { buttons, .. } => {
+                for (b, r) in menu_buttons(rect, u, buttons) {
+                    let (label, primary) = match b {
+                        MenuBtn::Join { enabled } => ("Join", enabled),
+                        MenuBtn::Wave => ("Wave", false),
+                        MenuBtn::Message => ("Message", false),
+                    };
+                    let dead = matches!(b, MenuBtn::Join { enabled: false });
+                    if primary {
+                        fill(pm, &r, 6.0 * u, BRAND, 255);
+                    } else {
+                        outline(pm, &r, 6.0 * u, LINE);
+                    }
+                    let col = if primary { ON_BRAND } else if dead { INK_FAINT } else { INK_MUTED };
+                    text.draw(pm, label, r.x + r.w / 2.0, r.y + r.h / 2.0 + 4.5 * u, 12.0 * u, col, 0.5);
                 }
-                text.draw(pm, "Join", join.x + join.w / 2.0, join.y + join.h / 2.0 + 4.5 * u, 12.0 * u, if *can_join { ON_BRAND } else { INK_FAINT }, 0.5);
-                outline(pm, &wave, 6.0 * u, LINE);
-                text.draw(pm, "Wave (soon)", wave.x + wave.w / 2.0, wave.y + wave.h / 2.0 + 4.5 * u, 12.0 * u, INK_FAINT, 0.5);
+            }
+            Row::Wave { name, .. } => {
+                let card = R { x: 6.0 * u, y: rect.y + 2.0 * u, w: rect.w - 12.0 * u, h: rect.h - 4.0 * u };
+                fill(pm, &card, 8.0 * u, MUTED, 255);
+                let who = fit(text, &format!("{name} waved at you"), 13.0 * u, rect.w - 2.0 * PAD * u - 8.0 * u);
+                text.draw(pm, &who, PAD * u + 4.0 * u, rect.y + 20.0 * u, 13.0 * u, INK, 0.0);
+                let (accept, dismiss) = wave_buttons(rect, u);
+                fill(pm, &accept, 6.0 * u, BRAND, 255);
+                text.draw(pm, "Accept", accept.x + accept.w / 2.0, accept.y + accept.h / 2.0 + 4.5 * u, 12.0 * u, ON_BRAND, 0.5);
+                outline(pm, &dismiss, 6.0 * u, LINE);
+                text.draw(pm, "Dismiss", dismiss.x + dismiss.w / 2.0, dismiss.y + dismiss.h / 2.0 + 4.5 * u, 12.0 * u, INK_MUTED, 0.5);
             }
         }
     }
@@ -414,8 +505,19 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, now_ms: i64) {
         fill(pm, &l.away, 6.0 * u, [106, 47, 58], 255);
     }
     text.draw(pm, label, l.away.x + l.away.w / 2.0, l.away.y + l.away.h / 2.0 + 4.5 * u, 12.0 * u, INK, 0.5);
+    let unread = st.unread_total();
+    let chat_label = if unread > 0 { format!("Chat ({unread})") } else { "Chat".to_string() };
+    if st.chat.open {
+        fill(pm, &l.chat, 6.0 * u, LINE, 255);
+    }
+    outline(pm, &l.chat, 6.0 * u, LINE);
+    text.draw(pm, &chat_label, l.chat.x + l.chat.w / 2.0, l.chat.y + l.chat.h / 2.0 + 4.5 * u, 12.0 * u, if unread > 0 { BRAND } else { INK_MUTED }, 0.5);
     outline(pm, &l.logout, 6.0 * u, LINE);
     text.draw(pm, "Log out", l.logout.x + l.logout.w / 2.0, l.logout.y + l.logout.h / 2.0 + 4.5 * u, 12.0 * u, INK_MUTED, 0.5);
+    let footer = R { x: 0.0, y: l.list.y + l.list.h, w: l.panel.w, h: FOOTER * u };
+    fill(pm, &footer, 0.0, SURFACE, 255);
+    fill(pm, &R { h: 1.0, ..footer }, 0.0, LINE, 255);
+    text.draw(pm, &format!("Memory {:.1} MB", pss_mb()), PAD * u, footer.y + footer.h / 2.0 + 4.0 * u, 11.0 * u, INK_FAINT, 0.0);
     let edge = R { x: l.panel.w - 1.0, y: 0.0, w: 1.0, h };
     fill(pm, &edge, 0.0, LINE, 255);
 }
@@ -458,6 +560,7 @@ mod tests {
                 Row::Group { title, count, .. } => format!("[{title} {count}]"),
                 Row::Person { p, indent } => format!("{}{}", if *indent { "  " } else { "" }, p.name),
                 Row::Menu { .. } => "<menu>".into(),
+                Row::Wave { name, .. } => format!("~{name} waved"),
             })
             .collect()
     }
@@ -493,7 +596,7 @@ mod tests {
         let (_, me) = l.items.iter().find(|(r, _)| matches!(r, Row::Person { p, .. } if p.me)).unwrap();
         assert_eq!(hit(&st, 100.0, me.y + 5.0, 700.0), Some(Hit::Panel), "I cannot open a menu on myself");
         let (_, eve) = l.items.iter().find(|(r, _)| matches!(r, Row::Person { p, .. } if p.id == "e")).unwrap();
-        assert_eq!(hit(&st, 100.0, eve.y + 5.0, 700.0), Some(Hit::Panel), "offline people are not clickable");
+        assert_eq!(hit(&st, 100.0, eve.y + 5.0, 700.0), Some(Hit::Row("e".into())), "offline people can be messaged");
         assert_eq!(hit(&st, l.away.x + 2.0, l.away.y + 2.0, 700.0), Some(Hit::Away));
         assert_eq!(hit(&st, l.logout.x + 2.0, l.logout.y + 2.0, 700.0), Some(Hit::Logout));
         assert_eq!(hit(&st, 600.0, 300.0, 700.0), None, "the map starts right of the panel");

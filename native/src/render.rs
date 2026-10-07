@@ -202,7 +202,7 @@ fn draw_login(st: &State, pm: &mut Pixmap, text: &mut Text) {
     text.draw(pm, label, button.x + button.w / 2.0, button.y + button.h / 2.0 + 5.0 * u, 14.0 * u, tc, 0.5);
 }
 
-pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
+pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text) {
     if st.login.is_some() {
         return draw_login(st, pm, text);
     }
@@ -216,7 +216,7 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
     let xf = |x: f32| (x - cx) * sc + vx;
     let yf = |y: f32| (y - cy) * sc + h / 2.0;
     let px = T * sc;
-    let (i0, i1) = (((cx - vx / sc) / T).floor() as i32, ((cx + (w - vx) / sc) / T).floor() as i32);
+    let (i0, i1) = (((cx - vx / sc) / T).floor() as i32, ((cx + (w - vx) / sc) / T).floor() as i32); // generous: the panels cover the edges
     let (j0, j1) = (((cy - h / 2.0 / sc) / T).floor() as i32, ((cy + h / 2.0 / sc) / T).floor() as i32);
     let id = Transform::identity();
 
@@ -339,38 +339,13 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
         text.draw(pm, &label, sx, sy - r - 4.0 * ui, 11.0 * ui, [221, 221, 238], 0.5);
     }
 
-    // HUD
-    let mut y = 20.0 * ui;
-    let hud_x = crate::sidebar::width(st) + 10.0 * ui;
-    let mut line = |pm: &mut Pixmap, s: &str, col: [u8; 3]| {
-        text.shadowed(pm, s, hud_x, y, 13.0 * ui, col, 0.0);
-        y += 16.0 * ui;
-    };
-    line(pm, &format!("{}{}", st.room, if st.dry { "  [dry run]" } else { "" }), [170, 170, 187]);
-    line(pm, &format!("{} people{}", st.users.len(), if st.status.is_empty() { String::new() } else { format!("  {}", st.status) }), [170, 170, 187]);
+    // transient messages (e.g. "Walking to ...")
     if let Some((t, _)) = &st.toast {
-        line(pm, t, [240, 200, 120]);
-    }
-    if let Some(m) = me {
-        line(pm, &format!("{}, {}", m.x.round(), m.y.round()), [170, 170, 187]);
-    }
-    let zname = st.cur_zone_id.as_ref().and_then(|id| st.world.zones.iter().find(|z| &z.id == id)).map(|z| z.name.clone().unwrap_or_else(|| "(unnamed)".into()));
-    line(pm, &format!("zone: {}   zone msgs sent {}   cluster events {}   mode {}", zname.unwrap_or_else(|| "-".into()), st.zone_sent, st.clusters_seen, if st.available { "available" } else { "away" }), [170, 170, 187]);
-    if st.show_debug {
-        let (rss, pss) = proc_mem();
-        let mb = |b: u64| format!("{:.1} MB", b as f64 / 1_048_576.0);
-        let lines = [
-            format!("fps {fps}   {} floors, {} solid + {} soft walls, {} props, {} users", st.world.floors.len(), st.world.walls.len(), st.world.soft.len(), st.world.assets.len(), st.users.len()),
-            format!("whole app (one process)  rss {}   pss {}", mb(rss), mb(pss)),
-        ];
-        let mut by = h - (10.0 + 16.0 * (lines.len() as f32 - 1.0)) * ui;
-        for l in &lines {
-            text.shadowed(pm, l, hud_x, by, 12.0 * ui, [143, 255, 187], 0.0);
-            by += 16.0 * ui;
-        }
+        text.shadowed(pm, t, crate::sidebar::width(st) + 10.0 * ui, 20.0 * ui, 13.0 * ui, [240, 200, 120], 0.0);
     }
     crate::sidebar::draw(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
     crate::meeting_ui::draw(st, pm, text, w, h);
+    crate::chatui::draw(st, pm, text);
     if st.confirm_logout {
         pm.fill_rect(Rect::from_xywh(0.0, 0.0, w, h).unwrap(), &paint(0, 0, 0, 140), id, None);
         let (card, cancel, confirm) = modal(st, w, h);

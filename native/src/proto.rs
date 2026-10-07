@@ -56,6 +56,11 @@ pub enum Net {
     Zone { id: String, zone: Option<String> },
     /// The office's member list (online and offline), from Firestore.
     Roster(Vec<crate::roster::Member>),
+    /// Someone sent an emote (`s` code 4); a `wave` addressed to us is a wave at us.
+    Emote { sender: String, recipient: String, emote: String },
+    /// Our unread wave notifications from Firestore.
+    Waves(Vec<crate::waves::WaveNote>),
+    Chat(crate::chat::ChatEvent),
     /// The socket thread closed the connection after a logout request.
     LoggedOut,
     /// Profile update for a user (name, photo, avatar config).
@@ -75,6 +80,10 @@ pub enum Cmd {
     Speech(bool),
     /// Tell SoWork our status over REST (`true` = away/busy, `false` = online); the gaia `cluster_mode` goes separately.
     Presence { away: bool },
+    /// Wave at someone: the gaia emote, plus SoWork's REST call.
+    Wave(String),
+    /// We answered a wave from this person: dismiss its notification.
+    WaveDone(String),
     /// Close the socket cleanly and stop reconnecting.
     Logout,
 }
@@ -180,6 +189,7 @@ pub fn events(name: &str, p: &Value) -> Vec<Net> {
                                     .into(),
                             ),
                             3 => Net::Join(user(present(get(d, "user"))?)),
+                            4 => Net::Emote { sender: text(get(d, "senderUserId")), recipient: text(get(d, "recipientUserId")), emote: text(get(d, "emoteId")) },
                             9 => Net::Zone { id, zone: present(get(d, "meetingZoneId")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from) },
                             10 => Net::Mode { id, mode: text(get(d, "mode")) },
                             6 => Net::Speaking(id, present(get(d, "isSpeaking")).and_then(Value::as_bool).unwrap_or(false)),
@@ -274,8 +284,17 @@ pub fn cmd_packet(c: &Cmd) -> Vec<u8> {
         ),
         Cmd::Camera(on) => event_packet("camera_on", Some(map(vec![("cameraOn", (*on).into())])), None),
         Cmd::Speech(on) => event_packet("speech", Some(map(vec![("isSpeaking", (*on).into())])), None),
-        Cmd::Presence { .. } | Cmd::Logout => Vec::new(), // handled by the socket thread, never sent as a packet
+        Cmd::Presence { .. } | Cmd::Logout | Cmd::Wave(_) | Cmd::WaveDone(_) => Vec::new(), // handled by the socket thread, never sent as a packet
     }
+}
+
+/// The gaia half of a wave: `emote {emoteId, recipientUserId, senderUserId, extras: undefined}` (as recorded).
+pub fn emote_packet(me: &str, to: &str) -> Vec<u8> {
+    event_packet(
+        "emote",
+        Some(map(vec![("emoteId", "wave".into()), ("recipientUserId", to.into()), ("senderUserId", me.into()), ("extras", Value::Ext(0, vec![0]))])),
+        None,
+    )
 }
 
 pub fn init_packets() -> Vec<Vec<u8>> {

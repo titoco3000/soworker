@@ -29,8 +29,12 @@ remembers the office so the next sign-in goes straight to it. A session an older
 moved there on first start. Log out forgets the token and returns to the sign-in screen. Use `--session <file>` for another path. (The Node prototype in `app/` still keeps its own `app/.session.json`, git-ignored.)
 
 Sidebar (left): availability and log out buttons, then people in meetings (grouped by meeting zone), online and offline
-people; click someone online or a meeting for Join (walks there) or Wave (not implemented). The list comes from SoWork's
+people; click someone or a meeting for Join (walks there), Wave or Message. The list comes from SoWork's
 Firestore (docs/members-roster.md); `--roster` prints it, `--replay <run> --fake-roster [--open meeting] --shot x.png` renders it offline.
+
+Waves and chat: Wave in a person's menu (or a meeting's) waves at them; waves at you appear in the sidebar to Accept (walk
+to them) or Dismiss. A right-hand chat panel has the area chat of your current meeting and private chats (Message in a
+person's menu); see docs/chat-and-waves.md. `--replay <run> --fake-roster --fake-chat [area] --shot x.png` renders both offline.
 
 Meeting dock: ported from omoffice (frontend/src/features/meetings): draggable card snapping to 8 slots or full window,
 gallery grid or pinned view with a scrolling sidebar, hover buttons per tile (mute / camera off / pin), controls row
@@ -39,7 +43,7 @@ status (docs/presence-and-mute.md). Stubs: switching off someone else's camera (
 (`app.sowork.com/portrait/v1/meeting!idle/...`), else the first letter; used on the map and in tiles.
 
 Keys: WASD/arrows walk, left click walks there (routes around walls), Shift+click teleports, R respawns,
-B toggles available/away, the meeting dock buttons (mic, cam, share screen, leave) once you are in a call, the available/away button under the top-left text, M mic (calls start muted), C camera, F3 debug panel, wheel zooms.
+B toggles available/away, the meeting dock buttons (mic, cam, share screen, leave) once you are in a call, the available/away button in the sidebar, M mic (calls start muted), C camera, wheel zooms.
 
 Modules: `session` (Firebase refresh), `net` (gaia socket thread), `proto` (Socket.IO/msgpack events),
 `mapobj` (protobuf map objects), `world` (collision, A*, zones), `app` (state/logic), `render` (tiny-skia),

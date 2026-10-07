@@ -6,7 +6,7 @@ use crate::calls::{MediaCmd, MediaEvent, MediaTx};
 use crate::proto::{Cmd, Net};
 use crate::meeting_ui::{self, Hit};
 use crate::render::{self, Text};
-use crate::sidebar;
+use crate::{chatui, sidebar};
 use crate::session::{self, Auth, SessionFile};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::num::NonZeroU32;
@@ -32,6 +32,7 @@ struct App {
     cmds: Sender<Cmd>,
     media: Option<MediaTx>,
     avatars: Option<std::sync::mpsc::Sender<(String, String)>>,
+    chat: Option<std::sync::mpsc::Sender<crate::chat::ChatCmd>>,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     pixmap: Option<tiny_skia::Pixmap>,
@@ -81,6 +82,11 @@ impl App {
         for c in self.st.outbox.drain(..) {
             let _ = self.cmds.send(c);
         }
+        for c in self.st.chat_out.drain(..) {
+            if let Some(tx) = &self.chat {
+                let _ = tx.send(c);
+            }
+        }
         for req in self.st.avatar_req.drain(..) {
             if let Some(tx) = &self.avatars {
                 let _ = tx.send(req);
@@ -104,7 +110,13 @@ impl App {
         let (tx, rx) = channel();
         self.cmds = tx;
         let (p, dry) = (self.proxy.clone(), self.dry);
-        std::thread::spawn(move || net::run(auth, dry, move |e| drop(p.send_event(UserEvent::Net(e))), rx));
+        let emit: crate::chat::Emit = Arc::new(move |e| drop(p.send_event(UserEvent::Net(e))));
+        if !dry {
+            let (ctx, crx) = channel();
+            self.chat = Some(ctx);
+            crate::chat::spawn(auth.clone(), emit.clone(), crx);
+        }
+        std::thread::spawn(move || net::run(auth, dry, move |e| emit(e), rx));
         #[cfg(feature = "calls")]
         if !self.dry {
             let p = self.proxy.clone();
@@ -155,6 +167,7 @@ impl App {
             Err(e) => eprintln!("logged out, but could not remove {p}: {e}"),
         }
         self.media = None; // ends the media thread
+        self.chat = None; // ends the chat threads
         self.cmds = channel().0;
         let ui = self.st.ui;
         self.st = State::new("", self.dry);
@@ -175,7 +188,7 @@ impl App {
             let _ = surface.resize(w, h);
         }
         let Some(pm) = &mut self.pixmap else { return };
-        render::draw(&self.st, pm, &mut self.text, self.fps);
+        render::draw(&self.st, pm, &mut self.text);
         if let Ok(mut buf) = surface.buffer_mut() {
             for (dst, px) in buf.iter_mut().zip(pm.data().chunks_exact(4)) {
                 *dst = u32::from_be_bytes([0, px[0], px[1], px[2]]);
@@ -261,7 +274,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let consumed = self.window.as_ref().is_some_and(|win| {
                         let sz = win.inner_size();
                         let c = self.cursor;
-                        sidebar::wheel(&mut self.st, c.0, c.1, sz.height as f32, dy) || meeting_ui::wheel(&mut self.st, &mut self.text, c.0, c.1, sz.width as f32, sz.height as f32, dy)
+                        chatui::wheel(&mut self.st, c.0, c.1, sz.width as f32, sz.height as f32, dy) || sidebar::wheel(&mut self.st, c.0, c.1, sz.height as f32, dy) || meeting_ui::wheel(&mut self.st, &mut self.text, c.0, c.1, sz.width as f32, sz.height as f32, dy)
                     });
                     if !consumed {
                         self.st.zoom(dy > 0.0);
@@ -279,6 +292,8 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(choice) = render::modal_hit(&self.st, c.0, c.1, sw, sh) {
                             self.st.logout_choice(choice);
                         }
+                    } else if let Some(h) = chatui::hit(&self.st, c.0, c.1, sw, sh) {
+                        chatui::press(&mut self.st, h);
                     } else if let Some(h) = sidebar::hit(&self.st, c.0, c.1, sh) {
                         self.st.sidebar_press(h, now);
                     } else if let Some(h) = meeting_ui::hit(&self.st, &mut self.text, c.0, c.1, sw, sh) {
@@ -286,20 +301,39 @@ impl ApplicationHandler<UserEvent> for App {
                             Hit::Header => meeting_ui::begin_drag(&mut self.st, &mut self.text, c.0, c.1, sw, sh),
                             other => self.st.dock_press(other, now),
                         }
-                    } else if let Some((wx, wy)) = self.st.to_world(self.cursor.0, self.cursor.1, s.width as f32, s.height as f32) {
-                        self.st.click(wx, wy, self.mods.shift_key(), now);
+                    } else {
+                        self.st.chat.focus = false; // a click on the map leaves the chat input
+                        if let Some((wx, wy)) = self.st.to_world(self.cursor.0, self.cursor.1, sw, sh) {
+                            self.st.click(wx, wy, self.mods.shift_key(), now);
+                        }
                     }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let down = event.state == ElementState::Pressed;
+                if self.st.chat.focus {
+                    // typing into the chat: nothing here walks the avatar or toggles the mic
+                    if down {
+                        let named = match &event.logical_key {
+                            Key::Named(NamedKey::Enter) => Some("Enter"),
+                            Key::Named(NamedKey::Backspace) => Some("Backspace"),
+                            Key::Named(NamedKey::Escape) => Some("Escape"),
+                            _ => None,
+                        };
+                        let text = event.text.as_ref().map(|t| t.as_str());
+                        let now = self.now();
+                        self.st.chat_key(named, text, now);
+                    }
+                    self.st.keys = Default::default();
+                    self.flush();
+                    return;
+                }
                 let k = &mut self.st.keys;
                 match &event.logical_key {
                     Key::Named(NamedKey::ArrowUp) => k.up = down,
                     Key::Named(NamedKey::ArrowDown) => k.down = down,
                     Key::Named(NamedKey::ArrowLeft) => k.left = down,
                     Key::Named(NamedKey::ArrowRight) => k.right = down,
-                    Key::Named(NamedKey::F3) if down && !event.repeat => self.st.show_debug = !self.st.show_debug,
                     Key::Named(NamedKey::Escape) if down && self.st.confirm_logout => self.st.logout_choice(false),
                     Key::Character(c) => match (c.to_lowercase().as_str(), down, event.repeat) {
                         ("w", ..) => k.up = down,
@@ -389,6 +423,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         cmds: channel().0, // replaced when a session starts
         media: None,
         avatars: None,
+        chat: None,
         window: None,
         surface: None,
         pixmap: None,

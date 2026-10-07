@@ -1,6 +1,8 @@
 mod app;
 mod avatars;
 mod calls;
+mod chat;
+mod chatui;
 mod icon;
 mod icons;
 mod login;
@@ -15,6 +17,7 @@ mod render;
 mod replay;
 mod roster;
 mod session;
+mod waves;
 mod sidebar;
 mod window;
 mod world;
@@ -51,6 +54,9 @@ fn headless(args: &[String]) -> Result<(), String> {
     }
     if args.iter().any(|a| a == "--fake-roster") {
         fake_roster(&mut st, opt("--open"));
+    }
+    if args.iter().any(|a| a == "--fake-chat") {
+        fake_chat(&mut st, opt("--fake-chat").as_deref() == Some("area"));
     }
     st.confirm_logout = args.iter().any(|a| a == "--confirm-logout");
     if args.iter().any(|a| a == "--login-screen") {
@@ -98,14 +104,54 @@ fn headless(args: &[String]) -> Result<(), String> {
     if let Some(n) = opt("--bench").and_then(|s| s.parse::<u32>().ok()) {
         let t = std::time::Instant::now();
         for _ in 0..n {
-            render::draw(&st, &mut pm, &mut text, 60);
+            render::draw(&st, &mut pm, &mut text);
         }
         println!("bench: {:.2} ms/frame over {n} frames at {w}x{h}", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
     }
-    render::draw(&st, &mut pm, &mut text, 60);
+    render::draw(&st, &mut pm, &mut text);
     pm.save_png(&out).map_err(|e| e.to_string())?;
     println!("wrote {out}");
     Ok(())
+}
+
+/// Synthetic waves and chat for layout checks (`--fake-chat [area]`): the sidebar shows two waves, the panel a conversation.
+fn fake_chat(st: &mut State, area: bool) {
+    use chat::{ChatEvent, ChatMsg, Kind};
+    let mut ids: Vec<String> = st.users.keys().filter(|i| **i != st.me_id).cloned().collect();
+    ids.sort();
+    let name = |st: &State, i: usize| st.users.get(&ids[i]).map_or("Someone".into(), |u| u.name.clone());
+    for (i, w) in ids.iter().take(2).enumerate() {
+        let n = name(st, i);
+        st.apply(proto::Net::Emote { sender: w.clone(), recipient: st.me_id.clone(), emote: "wave".into() }, 0.0);
+        let _ = n;
+    }
+    let msg = |id: &str, ch: &str, user: &str, text: &str, at: i64| ChatMsg { id: id.into(), channel: ch.into(), user: user.into(), name: None, text: text.into(), at };
+    let me = st.me_id.clone();
+    let (ch, tab) = if area {
+        st.apply(proto::Net::Cluster(Some(proto::ClusterInfo { id: "c".into(), conversation_id: "conv".into(), users: vec![], token: None, unsupported: None })), 0.0);
+        st.apply(proto::Net::Chat(ChatEvent::Channel { id: "A1".into(), kind: Kind::Meeting("conv".into()) }), 0.0);
+        ("A1", chatui::Tab::Area)
+    } else {
+        st.apply(proto::Net::Chat(ChatEvent::Channel { id: "D1".into(), kind: Kind::Direct(ids[2].clone()) }), 0.0);
+        ("D1", chatui::Tab::Dm(ids[2].clone()))
+    };
+    let other = ids[2].clone();
+    let lines = [
+        (&other, "oi! voce viu o novo mapa do escritorio? ficou muito bom"),
+        (&other, "da pra entrar na sala de reuniao agora se quiser"),
+        (&me, "ja vou, so um minuto"),
+        (&other, "supercalifragilisticexpialidocious_um_link_muito_longo_para_quebrar_na_tela"),
+    ];
+    let msgs = lines.iter().enumerate().map(|(i, (u, t))| msg(&i.to_string(), ch, u, t, i as i64 * 1000)).collect();
+    st.apply(proto::Net::Chat(ChatEvent::History { channel: ch.into(), msgs }), 0.0);
+    st.apply(proto::Net::Chat(ChatEvent::Message(msg("9", ch, &other, "chegou a mensagem nova", 9000))), 0.0);
+    st.chat.open = true;
+    st.chat.tab = tab.clone();
+    if let chatui::Tab::Dm(p) = &tab {
+        st.chat.dms.push(p.clone());
+    }
+    st.chat.input = "escrevendo uma resposta".into();
+    st.chat.focus = true;
 }
 
 /// Synthetic member list for sidebar layout checks: some of the recorded users share a meeting, plus offline people.
