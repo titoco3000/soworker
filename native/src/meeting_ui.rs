@@ -224,13 +224,15 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
     }
     let u = st.ui;
     let d = &st.dock;
-    let (dw, dh) = if d.full { (w, h) } else { ((500.0 * u).min(0.7 * w), (300.0 * u).min(0.7 * h)) };
+    let sb = crate::sidebar::width(st); // the dock lives on the map, right of the sidebar
+    let (dw, dh) = if d.full { (w - sb, h) } else { ((500.0 * u).min(0.7 * (w - sb)), (300.0 * u).min(0.7 * h)) };
     let (dx, dy) = if d.full {
-        (0.0, 0.0)
+        (sb, 0.0)
     } else if let Some(dr) = d.drag {
         dr.pos
     } else {
-        slot_pos(d.slot, dw, dh, w, h, 16.0 * u)
+        let (x, y) = slot_pos(d.slot, dw, dh, w - sb, h, 16.0 * u);
+        (x + sb, y)
     };
     let dock = R { x: dx, y: dy, w: dw, h: dh };
     let header = R { x: dx, y: dy, w: dw, h: 37.0 * u };
@@ -602,8 +604,9 @@ pub fn drag_to(st: &mut State, px: f32, py: f32) {
 pub fn end_drag(st: &mut State, w: f32, h: f32) {
     if let Some(d) = st.dock.drag.take() {
         let u = st.ui;
-        let (dw, dh) = ((500.0 * u).min(0.7 * w), (300.0 * u).min(0.7 * h));
-        st.dock.slot = nearest_slot(d.pos.0 + dw / 2.0, d.pos.1 + dh / 2.0, w, h);
+        let sb = crate::sidebar::width(st);
+        let (dw, dh) = ((500.0 * u).min(0.7 * (w - sb)), (300.0 * u).min(0.7 * h));
+        st.dock.slot = nearest_slot(d.pos.0 - sb + dw / 2.0, d.pos.1 + dh / 2.0, w - sb, h);
         st.dirty = true;
     }
 }

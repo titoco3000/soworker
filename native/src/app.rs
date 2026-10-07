@@ -25,6 +25,7 @@ pub struct Avatar {
     pub portrait: Option<String>,
     pub status: String,
     pub mode: String,
+    pub zone: Option<String>,
 }
 
 impl Avatar {
@@ -82,6 +83,9 @@ pub struct State {
     pub room: String,
     pub spawn: Option<(f32, f32)>,
     pub users: HashMap<String, Avatar>,
+    /// The office's member list (online and offline) and what the sidebar is showing.
+    pub roster: Vec<crate::roster::Member>,
+    pub sidebar: crate::sidebar::Ui,
     pub cluster: Option<ClusterInfo>,
     pub scale: f32,
     pub keys: Keys,
@@ -128,6 +132,8 @@ impl State {
             room: String::new(),
             spawn: None,
             users: HashMap::new(),
+            roster: vec![],
+            sidebar: Default::default(),
             cluster: None,
             scale: 0.35,
             keys: Keys::default(),
@@ -167,7 +173,7 @@ impl State {
     }
 
     fn avatar(u: User) -> Avatar {
-        Avatar { tx: u.x, ty: u.y, id: u.id, name: u.name, x: u.x, y: u.y, state: u.state, speaking: false, photo: u.photo, portrait: u.portrait, status: u.status, mode: u.mode }
+        Avatar { tx: u.x, ty: u.y, id: u.id, name: u.name, x: u.x, y: u.y, state: u.state, speaking: false, photo: u.photo, portrait: u.portrait, status: u.status, mode: u.mode, zone: u.zone }
     }
 
     /// Ask the loader for a user's picture when we know where it is and have not asked for that URL yet.
@@ -255,6 +261,12 @@ impl State {
                     u.status = status;
                 }
             }
+            Net::Zone { id, zone } => {
+                if let Some(u) = self.users.get_mut(&id) {
+                    u.zone = zone;
+                }
+            }
+            Net::Roster(members) => self.roster = members,
             Net::Mode { id, mode } => {
                 if let Some(u) = self.users.get_mut(&id) {
                     u.mode = mode;
@@ -306,11 +318,17 @@ impl State {
         self.dirty = true;
     }
 
+    /// Screen x of the map's centre: the window minus the sidebar on the left.
+    pub fn view_x(&self, w: f32) -> f32 {
+        let sb = crate::sidebar::width(self);
+        sb + (w - sb) / 2.0
+    }
+
     /// Screen position -> world position for a window of the given size, camera centred on me.
     pub fn to_world(&self, px: f32, py: f32, w: f32, h: f32) -> Option<(f32, f32)> {
         let me = self.me()?;
         let s = self.scale * self.ui;
-        Some((me.x + (px - w / 2.0) / s, me.y + (py - h / 2.0) / s))
+        Some((me.x + (px - self.view_x(w)) / s, me.y + (py - h / 2.0) / s))
     }
 
     pub fn click(&mut self, wx: f32, wy: f32, shift: bool, now: f64) {
@@ -419,14 +437,30 @@ impl State {
     }
 
     /// An on-screen button was pressed.
-    pub fn press(&mut self, act: crate::render::Act) {
-        use crate::render::Act;
-        match act {
-            Act::Away => {
+    pub fn sidebar_press(&mut self, hit: crate::sidebar::Hit, now: f64) {
+        use crate::sidebar::{join_target, Hit};
+        match hit {
+            Hit::Away => {
                 let a = !self.available;
                 self.set_available(a);
             }
-            Act::Logout => self.confirm_logout = true,
+            Hit::Logout => self.confirm_logout = true,
+            Hit::Row(key) => self.sidebar.open = if self.sidebar.open.as_deref() == Some(key.as_str()) { None } else { Some(key) },
+            Hit::Join(key) => {
+                self.sidebar.open = None;
+                match join_target(self, &key) {
+                    Some(((x, y), name)) => {
+                        self.say(format!("Walking to {name}"), now);
+                        self.click(x, y, false, now);
+                    }
+                    None => self.say("Cannot find where to walk to", now),
+                }
+            }
+            Hit::Wave(key) => {
+                let who = join_target(self, &key).map_or_else(|| "them".to_string(), |t| t.1);
+                self.say(format!("Waving at {who} is not implemented yet"), now);
+            }
+            Hit::Panel => {}
         }
         self.dirty = true;
     }

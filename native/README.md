@@ -28,6 +28,10 @@ is saved as `~/.config/soworker/session.json` (folder 700, file 600, outside the
 remembers the office so the next sign-in goes straight to it. A session an older version left in `native/` or `app/` is
 moved there on first start. Log out forgets the token and returns to the sign-in screen. Use `--session <file>` for another path. (The Node prototype in `app/` still keeps its own `app/.session.json`, git-ignored.)
 
+Sidebar (left): availability and log out buttons, then people in meetings (grouped by meeting zone), online and offline
+people; click someone online or a meeting for Join (walks there) or Wave (not implemented). The list comes from SoWork's
+Firestore (docs/members-roster.md); `--roster` prints it, `--replay <run> --fake-roster [--open meeting] --shot x.png` renders it offline.
+
 Meeting dock: ported from omoffice (frontend/src/features/meetings): draggable card snapping to 8 slots or full window,
 gallery grid or pinned view with a scrolling sidebar, hover buttons per tile (mute / camera off / pin), controls row
 (leave, lock, camera, mic, share screen) and the chat toggle. Dark palette from omoffice. Mute button sends SoWork's `ask-to-mute` request and we honour it when asked; available/away also sets SoWork's presence

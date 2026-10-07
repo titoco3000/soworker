@@ -13,7 +13,9 @@ mod net;
 mod proto;
 mod render;
 mod replay;
+mod roster;
 mod session;
+mod sidebar;
 mod window;
 mod world;
 
@@ -46,6 +48,9 @@ fn headless(args: &[String]) -> Result<(), String> {
         for id in ids.into_iter().take(n) {
             st.apply(proto::Net::Mode { id, mode: "none-away".into() }, 0.0);
         }
+    }
+    if args.iter().any(|a| a == "--fake-roster") {
+        fake_roster(&mut st, opt("--open"));
     }
     st.confirm_logout = args.iter().any(|a| a == "--confirm-logout");
     if args.iter().any(|a| a == "--login-screen") {
@@ -101,6 +106,23 @@ fn headless(args: &[String]) -> Result<(), String> {
     pm.save_png(&out).map_err(|e| e.to_string())?;
     println!("wrote {out}");
     Ok(())
+}
+
+/// Synthetic member list for sidebar layout checks: some of the recorded users share a meeting, plus offline people.
+fn fake_roster(st: &mut State, open: Option<String>) {
+    let mut ids: Vec<String> = st.users.keys().filter(|i| **i != st.me_id).cloned().collect();
+    ids.sort();
+    let zone = st.world.zones.iter().find(|z| z.meeting).map(|z| z.id.clone());
+    for id in ids.iter().take(3) {
+        st.apply(proto::Net::Zone { id: id.clone(), zone: zone.clone() }, 0.0);
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let offline = ["Lucas Pacheco", "Fabio", "Kevin", "Amanda", "A very long name that cannot possibly fit in the panel"];
+    st.apply(
+        proto::Net::Roster(offline.iter().enumerate().map(|(i, n)| roster::Member { id: format!("off{i}"), name: n.to_string(), last_online: Some(now - (i as i64 + 1) * 2_700_000 * (i as i64 + 1)), ..Default::default() }).collect()),
+        0.0,
+    );
+    st.sidebar.open = open.map(|o| if o == "meeting" { zone.as_deref().map_or(o.clone(), sidebar::zone_key) } else if o == "first" { ids.get(3).cloned().unwrap_or(o) } else { o });
 }
 
 /// Synthetic content for layout checks: other attendees, avatar pictures, video frames, a screen share.
@@ -197,6 +219,19 @@ fn main() {
                 eprintln!("login test failed: {e}");
                 std::process::exit(1);
             }
+        }
+        return;
+    }
+    if args.iter().any(|a| a == "--roster") {
+        // print the member list the sidebar would show (uses the saved sign-in)
+        let path = args.iter().position(|a| a == "--session").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(session::default_path);
+        let res = session::Auth::load(&path).and_then(|mut a| {
+            let group = a.file.find["groupId"].as_str().unwrap_or("").to_string();
+            roster::fetch(&a.id_token()?, &group)
+        });
+        match res {
+            Ok(m) => m.iter().for_each(|m| println!("{:<16} {:<8} {:<7} last {:?} zone {:?}", m.name, if m.online { "online" } else { "offline" }, m.status, m.last_online, m.zone)),
+            Err(e) => eprintln!("roster: {e}"),
         }
         return;
     }

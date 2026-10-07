@@ -6,6 +6,7 @@ use crate::calls::{MediaCmd, MediaEvent, MediaTx};
 use crate::proto::{Cmd, Net};
 use crate::meeting_ui::{self, Hit};
 use crate::render::{self, Text};
+use crate::sidebar;
 use crate::session::{self, Auth, SessionFile};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::num::NonZeroU32;
@@ -260,7 +261,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let consumed = self.window.as_ref().is_some_and(|win| {
                         let sz = win.inner_size();
                         let c = self.cursor;
-                        meeting_ui::wheel(&mut self.st, &mut self.text, c.0, c.1, sz.width as f32, sz.height as f32, dy)
+                        sidebar::wheel(&mut self.st, c.0, c.1, sz.height as f32, dy) || meeting_ui::wheel(&mut self.st, &mut self.text, c.0, c.1, sz.width as f32, sz.height as f32, dy)
                     });
                     if !consumed {
                         self.st.zoom(dy > 0.0);
@@ -278,13 +279,13 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(choice) = render::modal_hit(&self.st, c.0, c.1, sw, sh) {
                             self.st.logout_choice(choice);
                         }
+                    } else if let Some(h) = sidebar::hit(&self.st, c.0, c.1, sh) {
+                        self.st.sidebar_press(h, now);
                     } else if let Some(h) = meeting_ui::hit(&self.st, &mut self.text, c.0, c.1, sw, sh) {
                         match h {
                             Hit::Header => meeting_ui::begin_drag(&mut self.st, &mut self.text, c.0, c.1, sw, sh),
                             other => self.st.dock_press(other, now),
                         }
-                    } else if let Some(act) = render::hit(&self.st, self.cursor.0, self.cursor.1, s.width as f32, s.height as f32) {
-                        self.st.press(act);
                     } else if let Some((wx, wy)) = self.st.to_world(self.cursor.0, self.cursor.1, s.width as f32, s.height as f32) {
                         self.st.click(wx, wy, self.mods.shift_key(), now);
                     }

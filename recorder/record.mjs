@@ -271,6 +271,9 @@ const sessions = new Map(); // sessionId -> { n, targetId, type }
 const seenTargets = new Set();
 const requested = new Set();
 const reqs = new Map(); // `${sessionId}:${requestId}` -> { url, type, mime, status }
+const streaming = new Set(); // `${sessionId}:${requestId}` of long-lived responses captured chunk by chunk
+// Firestore's Listen channel is one never-ending response; getResponseBody never returns its data.
+const STREAMED = /^https:\/\/firestore\.googleapis\.com\/.*\/Listen\/channel/;
 let targetN = 0;
 let navigated = false;
 
@@ -437,12 +440,28 @@ function onSessionEvent(method, p, sid) {
         fromSW: r.fromServiceWorker,
         rtype: p.type,
       });
+      if (STREAMED.test(r.url) && r.status === 200) {
+        cdp
+          .send('Network.streamResourceContent', { requestId: p.requestId }, sid)
+          .then((x) => {
+            streaming.add(`${sid}:${p.requestId}`);
+            if (x.bufferedData) log('res.chunk', tg, { id: p.requestId, b64: x.bufferedData });
+          })
+          .catch((e) => log('res.body.err', tg, { id: p.requestId, url: r.url, err: e.message }));
+      }
       break;
     }
+    case 'Network.dataReceived':
+      if (streaming.has(`${sid}:${p.requestId}`) && p.data) log('res.chunk', tg, { id: p.requestId, b64: p.data });
+      break;
     case 'Network.responseReceivedExtraInfo':
       log('res.extra', tg, { id: p.requestId, status: p.statusCode, headers: p.headers });
       break;
     case 'Network.loadingFinished':
+      if (streaming.delete(`${sid}:${p.requestId}`)) {
+        reqs.delete(`${sid}:${p.requestId}`);
+        break;
+      }
       saveBody(sid, tg, p.requestId);
       break;
     case 'Network.loadingFailed':

@@ -3,9 +3,9 @@ use crate::proto::{cmd_packet, connect_packet, event_packet, events, init_packet
 use crate::session::{Auth, CLIENT_VERSION};
 use std::io::ErrorKind;
 use std::net::TcpStream;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tungstenite::{client::IntoClientRequest, Message};
 
 type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
@@ -42,7 +42,14 @@ struct Link {
     zone: Option<String>,
     available: bool,
     logout: bool,
+    /// Member list polling: the group, when we last asked, and where the answers arrive.
+    group_id: String,
+    roster_at: Option<Instant>,
+    roster_tx: Sender<Net>,
+    roster_rx: Receiver<Net>,
 }
+
+const ROSTER_EVERY: Duration = Duration::from_secs(30);
 
 fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver<Cmd>, dry: bool) -> Result<(), String> {
     let token = auth.id_token()?;
@@ -74,6 +81,15 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
     ws.get_mut().sock.set_read_timeout(Some(Duration::from_millis(25))).ok();
 
     loop {
+        while let Ok(e) = link.roster_rx.try_recv() {
+            emit(e);
+        }
+        if !link.group_id.is_empty() && link.roster_at.map_or(true, |t| t.elapsed() >= ROSTER_EVERY) {
+            link.roster_at = Some(Instant::now());
+            if let Ok(token) = auth.id_token() {
+                crate::roster::fetch_async(token, link.group_id.clone(), link.roster_tx.clone());
+            }
+        }
         match ws.read() {
             Ok(Message::Text(t)) => {
                 if t == "2" {
@@ -204,7 +220,9 @@ pub fn run(mut auth: Auth, dry: bool, emit: impl Fn(Net) + Send + 'static, cmds:
             }
         }
     };
-    let mut link = Link { room_id, auto_force_id: random_id(), first: true, pos: None, zone: None, available: true, logout: false };
+    let (roster_tx, roster_rx) = channel();
+    let group_id = auth.file.find["groupId"].as_str().unwrap_or("").to_string();
+    let mut link = Link { room_id, auto_force_id: random_id(), first: true, pos: None, zone: None, available: true, logout: false, group_id, roster_at: None, roster_tx, roster_rx };
     loop {
         let res = session(&mut auth, &mut link, &emit, &cmds, dry);
         if link.logout {

@@ -4,33 +4,6 @@ use crate::world::{E, N, S, T, W, ZK};
 use std::collections::HashMap;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, StrokeDash, Transform};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Act {
-    Away,
-    Logout,
-}
-
-pub struct Btn {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-    pub act: Act,
-    pub label: &'static str,
-    pub on: bool,
-    pub enabled: bool,
-}
-
-/// The one remaining on-map button: available / away (SoWork specific; calls live in the meeting dock).
-pub fn buttons(st: &State, _w: f32, _h: f32) -> Vec<Btn> {
-    let ui = st.ui;
-    let (bw, bh) = (84.0 * ui, 26.0 * ui);
-    vec![
-        Btn { x: 10.0 * ui, y: 122.0 * ui, w: bw, h: bh, act: Act::Away, label: if st.available { "available" } else { "away" }, on: st.available, enabled: true },
-        Btn { x: 10.0 * ui + bw + 6.0 * ui, y: 122.0 * ui, w: bw, h: bh, act: Act::Logout, label: "log out", on: false, enabled: true },
-    ]
-}
-
 /// The logout confirmation dialog: card, Cancel and Log out buttons.
 pub fn modal(st: &State, w: f32, h: f32) -> (crate::meeting_ui::R, crate::meeting_ui::R, crate::meeting_ui::R) {
     use crate::meeting_ui::R;
@@ -54,10 +27,6 @@ pub fn modal_hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<bool> {
     } else {
         None
     }
-}
-
-pub fn hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<Act> {
-    buttons(st, w, h).into_iter().find(|b| px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h).map(|b| b.act)
 }
 
 pub struct Text {
@@ -123,14 +92,14 @@ impl Text {
     }
 }
 
-fn paint(r: u8, g: u8, b: u8, a: u8) -> Paint<'static> {
+pub fn paint(r: u8, g: u8, b: u8, a: u8) -> Paint<'static> {
     let mut p = Paint::default();
     p.set_color_rgba8(r, g, b, a);
     p.anti_alias = true;
     p
 }
 
-fn hue_rgb(id: &str) -> (u8, u8, u8) {
+pub fn hue_rgb(id: &str) -> (u8, u8, u8) {
     let mut h: u32 = 0;
     for c in id.chars() {
         h = (h.wrapping_mul(31) + c as u32) % 360;
@@ -243,10 +212,11 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
     let (cx, cy) = me.map_or((3000.0, 3000.0), |m| (m.x, m.y));
     let ui = st.ui;
     let sc = st.scale * ui;
-    let xf = |x: f32| (x - cx) * sc + w / 2.0;
+    let vx = st.view_x(w); // the map lives right of the sidebar
+    let xf = |x: f32| (x - cx) * sc + vx;
     let yf = |y: f32| (y - cy) * sc + h / 2.0;
     let px = T * sc;
-    let (i0, i1) = (((cx - w / 2.0 / sc) / T).floor() as i32, ((cx + w / 2.0 / sc) / T).floor() as i32);
+    let (i0, i1) = (((cx - vx / sc) / T).floor() as i32, ((cx + (w - vx) / sc) / T).floor() as i32);
     let (j0, j1) = (((cy - h / 2.0 / sc) / T).floor() as i32, ((cy + h / 2.0 / sc) / T).floor() as i32);
     let id = Transform::identity();
 
@@ -371,8 +341,9 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
 
     // HUD
     let mut y = 20.0 * ui;
+    let hud_x = crate::sidebar::width(st) + 10.0 * ui;
     let mut line = |pm: &mut Pixmap, s: &str, col: [u8; 3]| {
-        text.shadowed(pm, s, 10.0 * ui, y, 13.0 * ui, col, 0.0);
+        text.shadowed(pm, s, hud_x, y, 13.0 * ui, col, 0.0);
         y += 16.0 * ui;
     };
     line(pm, &format!("{}{}", st.room, if st.dry { "  [dry run]" } else { "" }), [170, 170, 187]);
@@ -394,25 +365,11 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, fps: u32) {
         ];
         let mut by = h - (10.0 + 16.0 * (lines.len() as f32 - 1.0)) * ui;
         for l in &lines {
-            text.shadowed(pm, l, 10.0 * ui, by, 12.0 * ui, [143, 255, 187], 0.0);
+            text.shadowed(pm, l, hud_x, by, 12.0 * ui, [143, 255, 187], 0.0);
             by += 16.0 * ui;
         }
     }
-    for b in buttons(st, w, h) {
-        let col = match (b.enabled, b.on, b.act) {
-            (false, ..) => (38, 44, 56),
-            (true, true, _) => (47, 111, 79),
-            (true, false, Act::Away) => (106, 47, 58),
-            (true, false, Act::Logout) => (38, 44, 56),
-            (true, true, Act::Logout) => (38, 44, 56),
-        };
-        if let Some(rc) = Rect::from_xywh(b.x, b.y, b.w, b.h) {
-            pm.fill_rect(rc, &paint(col.0, col.1, col.2, 255), id, None);
-            pm.stroke_path(&PathBuilder::from_rect(rc), &paint(70, 84, 104, 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
-        }
-        let tc = if b.enabled { [220, 230, 240] } else { [110, 120, 135] };
-        text.draw(pm, b.label, b.x + b.w / 2.0, b.y + b.h / 2.0 + 4.0 * ui, 12.0 * ui, tc, 0.5);
-    }
+    crate::sidebar::draw(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
     crate::meeting_ui::draw(st, pm, text, w, h);
     if st.confirm_logout {
         pm.fill_rect(Rect::from_xywh(0.0, 0.0, w, h).unwrap(), &paint(0, 0, 0, 140), id, None);

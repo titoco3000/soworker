@@ -17,6 +17,8 @@ pub struct User {
     pub photo: Option<String>,
     /// SoWork's compact character string (`characterA!body:~v1+typeB!...`), used to build the portrait URL.
     pub portrait: Option<String>,
+    /// `meetingZoneId`: the meeting zone the user stands in.
+    pub zone: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +52,10 @@ pub enum Net {
     Cluster(Option<ClusterInfo>),
     Presence { id: String, status: String },
     Mode { id: String, mode: String },
+    /// A user entered (`Some`) or left (`None`) a meeting zone (`s` code 9).
+    Zone { id: String, zone: Option<String> },
+    /// The office's member list (online and offline), from Firestore.
+    Roster(Vec<crate::roster::Member>),
     /// The socket thread closed the connection after a logout request.
     LoggedOut,
     /// Profile update for a user (name, photo, avatar config).
@@ -119,6 +125,7 @@ fn user(v: &Value) -> User {
         mode: present(get(v, "clusterMode")).and_then(Value::as_str).unwrap_or("cluster").to_string(),
         photo: present(get(v, "uploadedPhotoURL")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from),
         portrait: present(get(v, "characterConfig")).and_then(portrait_string),
+        zone: present(get(v, "meetingZoneId")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from),
     }
 }
 
@@ -173,6 +180,7 @@ pub fn events(name: &str, p: &Value) -> Vec<Net> {
                                     .into(),
                             ),
                             3 => Net::Join(user(present(get(d, "user"))?)),
+                            9 => Net::Zone { id, zone: present(get(d, "meetingZoneId")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from) },
                             10 => Net::Mode { id, mode: text(get(d, "mode")) },
                             6 => Net::Speaking(id, present(get(d, "isSpeaking")).and_then(Value::as_bool).unwrap_or(false)),
                             _ => return None,
