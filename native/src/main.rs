@@ -1,6 +1,7 @@
 mod app;
 mod avatars;
 mod calls;
+mod desktop;
 mod chat;
 mod chatui;
 mod icon;
@@ -17,6 +18,7 @@ mod render;
 mod replay;
 mod roster;
 mod session;
+mod sound;
 mod waves;
 mod sidebar;
 mod window;

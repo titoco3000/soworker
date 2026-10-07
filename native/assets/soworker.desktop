@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SoWorker
+Comment=A lightweight client for your SoWork office
+Exec=@EXEC@
+Icon=soworker
+StartupWMClass=soworker
+Categories=Network;InstantMessaging;
+Terminal=false

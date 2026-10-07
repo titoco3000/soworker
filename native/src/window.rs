@@ -20,6 +20,12 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
+/// The window icon (shown by X11 window managers; Wayland takes it from the .desktop file, see assets/).
+fn app_icon() -> Option<winit::window::Icon> {
+    let img = image::load_from_memory(include_bytes!("../assets/icon.webp")).ok()?.to_rgba8();
+    winit::window::Icon::from_rgba(img.to_vec(), img.width(), img.height()).ok()
+}
+
 pub enum UserEvent {
     Net(Net),
     Media(MediaEvent),
@@ -81,6 +87,11 @@ impl App {
         }
         for c in self.st.outbox.drain(..) {
             let _ = self.cmds.send(c);
+        }
+        for snd in self.st.sounds.drain(..) {
+            if !self.demo {
+                crate::sound::play(snd);
+            }
         }
         for c in self.st.chat_out.drain(..) {
             if let Some(tx) = &self.chat {
@@ -207,7 +218,10 @@ impl ApplicationHandler<UserEvent> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("SoWorker").with_inner_size(LogicalSize::new(1000.0, 700.0));
+        let attrs = Window::default_attributes().with_title("SoWorker").with_inner_size(LogicalSize::new(1000.0, 700.0)).with_window_icon(app_icon());
+        // the app id/class `soworker` is how the desktop finds assets/soworker.desktop (and with it the icon) on Wayland
+        let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "soworker", "soworker");
+        let attrs = winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "soworker", "soworker");
         let Ok(window) = el.create_window(attrs) else { return el.exit() };
         let window = Arc::new(window);
         if let Ok(ctx) = softbuffer::Context::new(window.clone()) {
@@ -412,6 +426,9 @@ fn default_session() -> String {
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
+    if !args.iter().any(|a| a == "--demo") {
+        crate::desktop::ensure();
+    }
     let opt = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
     let demo = opt("--demo");
     let dry = demo.is_some() || args.iter().any(|a| a == "--dry-run");
@@ -468,4 +485,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_app_icon_decodes() {
+        assert!(super::app_icon().is_some());
+    }
 }

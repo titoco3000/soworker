@@ -36,11 +36,18 @@ Waves and chat: Wave in a person's menu (or a meeting's) waves at them; waves at
 to them) or Dismiss. A right-hand chat panel has the area chat of your current meeting and private chats (Message in a
 person's menu); see docs/chat-and-waves.md. `--replay <run> --fake-roster --fake-chat [area] --shot x.png` renders both offline.
 
+Wave sounds: SoWork's own `sendWave` / `receiveWave` clips (assets/sounds, from app.sowork.com/static/media, volume 0.2 as
+in its client), played through `pw-play`, `paplay` or `aplay` (no audio library is linked).
+
 Meeting dock: ported from omoffice (frontend/src/features/meetings): draggable card snapping to 8 slots or full window,
 gallery grid or pinned view with a scrolling sidebar, hover buttons per tile (mute / camera off / pin), controls row
 (leave, lock, camera, mic, share screen) and the chat toggle. Dark palette from omoffice. Mute button sends SoWork's `ask-to-mute` request and we honour it when asked; available/away also sets SoWork's presence
 status (docs/presence-and-mute.md). Stubs: switching off someone else's camera (SoWork has no such thing), lock, chat (layout only). Avatars: the user's uploaded photo, else SoWork's character portrait
 (`app.sowork.com/portrait/v1/meeting!idle/...`), else the first letter; used on the map and in tiles.
+
+App icon: `assets/icon.webp` (window icon on X11, embedded in the binary). Wayland and the launcher take it from a desktop
+entry, which the app installs for your user on start (`~/.local/share/applications/soworker.desktop` and the icon, pointing at the
+running binary; `src/desktop.rs`). If the icon does not show on the very first run, start it a second time.
 
 Keys: WASD/arrows walk, left click walks there (routes around walls), Shift+click teleports, R respawns,
 B toggles available/away, the meeting dock buttons (mic, cam, share screen, leave) once you are in a call, the available/away button in the sidebar, M mic (calls start muted), C camera, wheel zooms.

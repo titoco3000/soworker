@@ -97,6 +97,8 @@ pub struct State {
     pub waves: Vec<WaveIn>,
     pub chat: crate::chatui::Chat,
     pub chat_out: Vec<crate::chat::ChatCmd>,
+    /// UI sounds to play; the window drains this.
+    pub sounds: Vec<crate::sound::Sound>,
     pub cluster: Option<ClusterInfo>,
     pub scale: f32,
     pub keys: Keys,
@@ -147,6 +149,7 @@ impl State {
             waves: vec![],
             chat: Default::default(),
             chat_out: vec![],
+            sounds: vec![],
             cluster: None,
             scale: 0.35,
             keys: Keys::default(),
@@ -283,6 +286,7 @@ impl State {
                 if emote == "wave" && recipient == self.me_id && sender != self.me_id && !self.waves.iter().any(|w| w.from == sender) {
                     let name = self.name_of(&sender, None);
                     self.say(format!("{name} waved at you"), now);
+                    self.sounds.push(crate::sound::Sound::ReceiveWave);
                     self.waves.push(WaveIn { from: sender, name, at: now });
                 }
             }
@@ -500,6 +504,9 @@ impl State {
                     None => vec![key.clone()],
                 };
                 let names: Vec<String> = targets.iter().map(|t| self.name_of(t, None)).collect();
+                if !targets.is_empty() {
+                    self.sounds.push(crate::sound::Sound::SendWave);
+                }
                 for t in targets {
                     self.outbox.push(Cmd::Wave(t));
                 }
