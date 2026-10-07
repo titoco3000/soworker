@@ -26,12 +26,22 @@ struct Capture {
     sid: TrackSid,
 }
 
+/// The camera track stays published for the whole call: turning the camera off stops the capture thread (the device
+/// is released) and mutes the track; turning it on again unmutes it. Unpublishing and republishing on every toggle
+/// left a stopped transceiver and encoder behind in libwebrtc each time, and memory climbed.
+struct Camera {
+    track: LocalVideoTrack,
+    source: NativeVideoSource,
+    /// Set while the capture thread runs.
+    run: Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>,
+}
+
 struct Session {
     room: Room,
     events: UnboundedReceiver<RoomEvent>,
     audio: Option<PlatformAudio>,
     mic: Option<LocalAudioTrack>,
-    cam: Option<Capture>,
+    cam: Option<Camera>,
     share: Option<Capture>,
     video_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     room_id: String,
@@ -105,7 +115,10 @@ async fn join(url: &str, token: &str, room_id: String, emit: &Emit) -> Result<Se
 }
 
 async fn close(mut s: Session, emit: &Emit) {
-    for c in [s.cam.take(), s.share.take()].into_iter().flatten() {
+    if let Some((stop, _)) = s.cam.take().and_then(|c| c.run) {
+        stop.store(true, Ordering::Relaxed);
+    }
+    if let Some(c) = s.share.take() {
         c.stop.store(true, Ordering::Relaxed);
     }
     emit(MediaEvent::CameraState(false));
@@ -300,11 +313,15 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
 }
 
 async fn set_camera(s: &mut Session, on: bool, emit: &Emit) {
-    if on && s.cam.is_none() {
-        let source = NativeVideoSource::new(VideoResolution { width: 640, height: 480 }, false);
+    let running = s.cam.as_ref().is_some_and(|c| c.run.as_ref().is_some_and(|(stop, _)| !stop.load(Ordering::Relaxed)));
+    if on && !running {
+        let source = s.cam.as_ref().map_or_else(|| NativeVideoSource::new(VideoResolution { width: 640, height: 480 }, false), |c| c.source.clone());
+        if let Some((_, old)) = s.cam.as_mut().and_then(|c| c.run.take()) {
+            let _ = old.join(); // the previous capture thread has been told to stop; wait until it let go of the device
+        }
         let (stop, (tx, rx)) = (Arc::new(AtomicBool::new(false)), tokio::sync::oneshot::channel());
         let (src2, stop2, emit2) = (source.clone(), stop.clone(), emit.clone());
-        std::thread::spawn(move || camera_thread(src2, stop2, emit2, tx));
+        let handle = std::thread::spawn(move || camera_thread(src2, stop2, emit2, tx));
         match rx.await {
             Ok(Ok(())) => {}
             other => {
@@ -316,25 +333,36 @@ async fn set_camera(s: &mut Session, on: bool, emit: &Emit) {
                 return emit(MediaEvent::CameraState(false));
             }
         }
-        let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source));
-        let mut opts = TrackPublishOptions::default();
-        opts.source = TrackSource::Camera;
-        opts.video_codec = VideoCodec::VP8;
-        match s.room.local_participant().publish_track(LocalTrack::Video(track), opts).await {
-            Ok(p) => s.cam = Some(Capture { stop, sid: p.sid() }),
-            Err(e) => {
-                stop.store(true, Ordering::Relaxed);
-                emit(MediaEvent::Error(format!("camera publish: {e}")));
+        match &mut s.cam {
+            Some(c) => {
+                c.run = Some((stop, handle));
+                c.track.unmute();
+            }
+            None => {
+                let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source.clone()));
+                let mut opts = TrackPublishOptions::default();
+                opts.source = TrackSource::Camera;
+                opts.video_codec = VideoCodec::VP8;
+                match s.room.local_participant().publish_track(LocalTrack::Video(track.clone()), opts).await {
+                    Ok(_) => s.cam = Some(Camera { track, source, run: Some((stop, handle)) }),
+                    Err(e) => {
+                        stop.store(true, Ordering::Relaxed);
+                        emit(MediaEvent::Error(format!("camera publish: {e}")));
+                    }
+                }
             }
         }
-    } else if !on {
-        if let Some(c) = s.cam.take() {
-            c.stop.store(true, Ordering::Relaxed);
-            let _ = s.room.local_participant().unpublish_track(&c.sid).await;
+    } else if !on && running {
+        if let Some(c) = s.cam.as_mut() {
+            if let Some((stop, _handle)) = &c.run {
+                stop.store(true, Ordering::Relaxed); // the thread ends after its next frame; the handle is joined on the next start
+            }
+            c.track.mute();
             emit(MediaEvent::VideoGone("me".into()));
         }
     }
-    emit(MediaEvent::CameraState(s.cam.is_some()));
+    let now_on = s.cam.as_ref().is_some_and(|c| c.run.as_ref().is_some_and(|(stop, _)| !stop.load(Ordering::Relaxed)));
+    emit(MediaEvent::CameraState(now_on));
 }
 
 // ---- screen share: libwebrtc desktop capturer (X11 or the Wayland portal picker) -> screencast source
