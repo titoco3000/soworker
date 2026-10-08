@@ -8,7 +8,7 @@ use crate::icon;
 use crate::icons::{self, Shape};
 use crate::render::Text;
 use crate::theme::{self, Rgb};
-use tiny_skia::{FillRule, FilterQuality, Paint, Path, PathBuilder, Pattern, Pixmap, PixmapPaint, SpreadMode, Stroke, Transform};
+use tiny_skia::{FillRule, FilterQuality, Paint, Path, PathBuilder, Pattern, Pixmap, PixmapMut, PixmapPaint, SpreadMode, Stroke, Transform};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {
@@ -373,26 +373,26 @@ fn rr(r: R, radius: f32) -> Option<Path> {
     icon::rounded_rect(r.x, r.y, r.w, r.h, radius)
 }
 
-fn fill_rr(pm: &mut Pixmap, r: R, radius: f32, rgb: Rgb, a: u8) {
+fn fill_rr(pm: &mut PixmapMut<'_>, r: R, radius: f32, rgb: Rgb, a: u8) {
     if let Some(p) = rr(r, radius) {
         pm.fill_path(&p, &paint(rgb, a), FillRule::Winding, Transform::identity(), None);
     }
 }
 
-fn stroke_rr(pm: &mut Pixmap, r: R, radius: f32, rgb: Rgb, width: f32) {
+fn stroke_rr(pm: &mut PixmapMut<'_>, r: R, radius: f32, rgb: Rgb, width: f32) {
     let h = width / 2.0;
     if let Some(p) = rr(R { x: r.x + h, y: r.y + h, w: r.w - width, h: r.h - width }, (radius - h).max(0.0)) {
         pm.stroke_path(&p, &paint(rgb, 255), &Stroke { width, ..Stroke::default() }, Transform::identity(), None);
     }
 }
 
-fn faux_bold(pm: &mut Pixmap, text: &mut Text, s: &str, x: f32, y: f32, px: f32, rgb: Rgb, align: f32) {
+fn faux_bold(pm: &mut PixmapMut<'_>, text: &mut Text, s: &str, x: f32, y: f32, px: f32, rgb: Rgb, align: f32) {
     text.draw(pm, s, x, y, px, rgb, align);
     text.draw(pm, s, x + 0.6, y, px, rgb, align);
 }
 
 /// A camera/screen frame filling a rounded rect: `cover` crops to fill (cameras), otherwise letterboxes (screens).
-fn draw_video(pm: &mut Pixmap, img: &Pixmap, r: R, radius: f32, cover: bool, mirror: bool) {
+fn draw_video(pm: &mut PixmapMut<'_>, img: &Pixmap, r: R, radius: f32, cover: bool, mirror: bool) {
     let (iw, ih) = (img.width() as f32, img.height() as f32);
     let s = if cover { (r.w / iw).max(r.h / ih) } else { (r.w / iw).min(r.h / ih) };
     let (dw, dh) = (iw * s, ih * s);
@@ -407,7 +407,7 @@ fn draw_video(pm: &mut Pixmap, img: &Pixmap, r: R, radius: f32, cover: bool, mir
 }
 
 /// A circular picture or the first-letter placeholder, centred in the rect (omoffice `size-12` = 48px).
-fn draw_avatar(pm: &mut Pixmap, text: &mut Text, pic: Option<&Pixmap>, initial: &str, cx: f32, cy: f32, size: f32, u: f32) {
+fn draw_avatar(pm: &mut PixmapMut<'_>, text: &mut Text, pic: Option<&Pixmap>, initial: &str, cx: f32, cy: f32, size: f32, u: f32) {
     match pic {
         Some(p) => {
             let s = size / p.width() as f32;
@@ -424,7 +424,7 @@ fn draw_avatar(pm: &mut Pixmap, text: &mut Text, pic: Option<&Pixmap>, initial: 
     }
 }
 
-fn button_icon(pm: &mut Pixmap, shapes: &[Shape], r: R, size: f32, rgb: Rgb, alpha_dim: bool) {
+fn button_icon(pm: &mut PixmapMut<'_>, shapes: &[Shape], r: R, size: f32, rgb: Rgb, alpha_dim: bool) {
     let rgb = if alpha_dim { mix(rgb, theme::SURFACE, 0.5) } else { rgb };
     icon::draw(pm, shapes, r.x + (r.w - size) / 2.0, r.y + (r.h - size) / 2.0, size, rgb);
 }
@@ -433,7 +433,7 @@ fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     [0, 1, 2].map(|i| (a[i] as f32 * (1.0 - t) + b[i] as f32 * t) as u8)
 }
 
-pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, w: f32, h: f32) {
+pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32) {
     let Some(l) = layout(st, text, w, h) else { return };
     let u = st.ui;
     let radius = theme::RADIUS_CARD * u;
@@ -477,7 +477,7 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, w: f32, h: f32) {
         if let Some(mut tmp) = Pixmap::new(side.w.ceil().max(1.0) as u32, side.h.ceil().max(1.0) as u32) {
             for (spec, r, _) in l.tiles.iter().filter(|t| !t.2) {
                 let local = R { x: r.x - side.x, y: r.y - side.y, w: r.w, h: r.h };
-                draw_tile(st, &mut tmp, text, spec, local, false, hover == Some(spec.id.as_str()), u, radius);
+                draw_tile(st, &mut tmp.as_mut(), text, spec, local, false, hover == Some(spec.id.as_str()), u, radius);
             }
             pm.draw_pixmap(side.x as i32, side.y as i32, tmp.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
         }
@@ -535,7 +535,7 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, w: f32, h: f32) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_tile(st: &State, pm: &mut Pixmap, text: &mut Text, spec: &TileSpec, r: R, pinned: bool, hover: bool, u: f32, radius: f32) {
+fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpec, r: R, pinned: bool, hover: bool, u: f32, radius: f32) {
     fill_rr(pm, r, radius, theme::MUTED, 255);
     let video = spec.video_key.as_ref().and_then(|k| st.call.tiles.iter().find(|t| &t.key == k));
     match video {

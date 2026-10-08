@@ -57,7 +57,6 @@ struct App {
     overlay: Option<crate::overlay::Handle>,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
-    pixmap: Option<tiny_skia::Pixmap>,
     text: Text,
     start: Instant,
     last: Instant,
@@ -218,17 +217,21 @@ impl App {
         let (Some(win), Some(surface)) = (&self.window, &mut self.surface) else { return };
         let size = win.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
-        if self.pixmap.as_ref().map_or(true, |p| p.width() != w.get() || p.height() != h.get()) {
-            self.pixmap = tiny_skia::Pixmap::new(w.get(), h.get());
-            let _ = surface.resize(w, h);
-        }
-        let Some(pm) = &mut self.pixmap else { return };
-        render::draw(&self.st, pm, &mut self.text);
+        let _ = surface.resize(w, h); // no-op when the size is unchanged
         if let Ok(mut buf) = surface.buffer_mut() {
-            for (dst, px) in buf.iter_mut().zip(pm.data().chunks_exact(4)) {
-                *dst = u32::from_be_bytes([0, px[0], px[1], px[2]]);
+            // draw straight into the shared-memory buffer (no second window-sized pixmap), then swap R and B in place
+            let (n, wp, hp) = (buf.len(), w.get(), h.get());
+            if n == wp as usize * hp as usize {
+                // SAFETY: a `[u32]` of n elements is 4n initialised bytes; u8 has no alignment requirement.
+                let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n * 4) };
+                if let Some(mut pm) = tiny_skia::PixmapMut::from_bytes(bytes, wp, hp) {
+                    render::draw(&self.st, &mut pm, &mut self.text);
+                }
+                for px in buf.iter_mut() {
+                    *px = ((*px & 0xff) << 16) | (*px & 0xff00) | ((*px >> 16) & 0xff);
+                }
+                let _ = buf.present();
             }
-            let _ = buf.present();
         }
         self.frames += 1;
         if self.fps_t.elapsed() >= Duration::from_secs(1) {
@@ -483,7 +486,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
         overlay: None,
         window: None,
         surface: None,
-        pixmap: None,
         text: Text::new(),
         start: Instant::now(),
         last: Instant::now(),

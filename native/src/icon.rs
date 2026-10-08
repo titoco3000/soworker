@@ -1,7 +1,7 @@
 //! Draws the Feather icons from `icons.rs` with tiny-skia: a small SVG path parser (M L H V C S Q A Z, absolute
 //! and relative) plus the basic shapes. Strokes are 2 units on the 24x24 grid with round caps and joins.
 use crate::icons::Shape;
-use tiny_skia::{LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{LineCap, LineJoin, Paint, Path, PathBuilder, PixmapMut, Stroke, Transform};
 
 fn nums(s: &str) -> Vec<f32> {
     let mut out = Vec::new();
@@ -219,7 +219,7 @@ pub fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
 }
 
 /// Draw an icon `size` pixels square with its top-left corner at (x, y).
-pub fn draw(pm: &mut Pixmap, shapes: &[Shape], x: f32, y: f32, size: f32, rgb: [u8; 3]) {
+pub fn draw(pm: &mut PixmapMut<'_>, shapes: &[Shape], x: f32, y: f32, size: f32, rgb: [u8; 3]) {
     let mut paint = Paint::default();
     paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
     paint.anti_alias = true;

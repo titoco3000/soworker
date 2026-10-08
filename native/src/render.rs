@@ -2,7 +2,7 @@
 use crate::app::State;
 use crate::world::{E, N, S, T, W, ZK};
 use std::collections::HashMap;
-use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, StrokeDash, Transform};
+use tiny_skia::{Color, FillRule, Paint, PathBuilder, PixmapMut, PixmapPaint, Rect, Stroke, StrokeDash, Transform};
 
 /// The logout confirmation dialog: card, Cancel and Log out buttons.
 pub fn modal(st: &State, w: f32, h: f32) -> (crate::meeting_ui::R, crate::meeting_ui::R, crate::meeting_ui::R) {
@@ -57,7 +57,7 @@ impl Text {
     }
 
     /// Draw one line; `align` 0 = left, 0.5 = centre, 1 = right of x. `y` is the baseline.
-    pub fn draw(&mut self, pm: &mut Pixmap, s: &str, x: f32, y: f32, px: f32, rgb: [u8; 3], align: f32) {
+    pub fn draw(&mut self, pm: &mut PixmapMut<'_>, s: &str, x: f32, y: f32, px: f32, rgb: [u8; 3], align: f32) {
         if self.font.is_none() {
             return;
         }
@@ -86,7 +86,7 @@ impl Text {
         }
     }
 
-    pub fn shadowed(&mut self, pm: &mut Pixmap, s: &str, x: f32, y: f32, px: f32, rgb: [u8; 3], align: f32) {
+    pub fn shadowed(&mut self, pm: &mut PixmapMut<'_>, s: &str, x: f32, y: f32, px: f32, rgb: [u8; 3], align: f32) {
         self.draw(pm, s, x + 1.0, y + 1.0, px, [0, 0, 0], align);
         self.draw(pm, s, x, y, px, rgb, align);
     }
@@ -158,7 +158,7 @@ pub fn login_hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<crate::
     Some(if st.login == Some(LoginPhase::Waiting) { LoginAct::Cancel } else { LoginAct::Start })
 }
 
-fn draw_login(st: &State, pm: &mut Pixmap, text: &mut Text) {
+fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     use crate::app::LoginPhase;
     use crate::theme::*;
     let (w, h) = (pm.width() as f32, pm.height() as f32);
@@ -202,7 +202,7 @@ fn draw_login(st: &State, pm: &mut Pixmap, text: &mut Text) {
     text.draw(pm, label, button.x + button.w / 2.0, button.y + button.h / 2.0 + 5.0 * u, 14.0 * u, tc, 0.5);
 }
 
-pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text) {
+pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     if st.login.is_some() {
         return draw_login(st, pm, text);
     }
@@ -230,7 +230,7 @@ pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text) {
             }
         }
     }
-    let edges = |pm: &mut Pixmap, map: &std::collections::HashMap<(i32, i32), u8>, col: [u8; 3], width: f32| {
+    let edges = |pm: &mut PixmapMut<'_>, map: &std::collections::HashMap<(i32, i32), u8>, col: [u8; 3], width: f32| {
         let mut pb = PathBuilder::new();
         for j in j0..=j1 {
             for i in i0..=i1 {

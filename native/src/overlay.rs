@@ -97,10 +97,10 @@ pub fn render(o: &Overlay, text: &mut crate::render::Text) -> tiny_skia::Pixmap 
         _ => "",
     };
     if o == &Overlay::Muted {
-        text.draw(&mut pm, "Muted", 46.0, H as f32 / 2.0 + 6.0, 17.0, INK, 0.0);
+        text.draw(&mut pm.as_mut(), "Muted", 46.0, H as f32 / 2.0 + 6.0, 17.0, INK, 0.0);
     } else {
-        text.draw(&mut pm, label, 46.0, 22.0, 14.0, INK, 0.0);
-        text.draw(&mut pm, &o.text().replacen("Live · ", "", 1), 46.0, 40.0, 12.0, INK_MUTED, 0.0);
+        text.draw(&mut pm.as_mut(), label, 46.0, 22.0, 14.0, INK, 0.0);
+        text.draw(&mut pm.as_mut(), &o.text().replacen("Live · ", "", 1), 46.0, 40.0, 12.0, INK_MUTED, 0.0);
     }
     pm
 }

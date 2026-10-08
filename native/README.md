@@ -2,6 +2,14 @@
 
 Fully native client (Rust, no browser, no Node). One process, one 5 MB binary, software rendering.
 
+Install for your user (puts `soworker` in `~/.cargo/bin`, which is on your PATH if you use cargo; the first start then
+registers the launcher entry and icon pointing at that binary):
+
+```
+cd native && CXX=clang++ CC=clang cargo install --path . --locked
+soworker
+```
+
 Build (calls use the official LiveKit Rust SDK, which needs `clang`/`gcc-c++` and the libwebrtc prebuilt):
 
 ```
@@ -89,5 +97,5 @@ Status: world, walking, click-to-move, zones, presence, speaking rings, HiDPI, c
 `cluster` token, audio in/out through the SDK's platform audio (echo cancellation included), remote camera and
 screen-share tiles, mic toggle. Camera publish (V4L2 /dev/video0, YUYV 640x480 -> VP8) and screen share (libwebrtc desktop capturer; on Wayland the portal
 picker dialog appears) are implemented but untested on real hardware. Not yet: chat.
-Memory: ~33 MB RSS in the offline window with the SDK linked; call memory not measured yet
+Memory: ~30 MB RSS live (dry run, window open: 11 MB heap, 6 MB window buffers, 13 MB binary pages); call memory not measured yet
 (docs/native-media-feasibility.md has estimates). Binary: ~28 MB with calls.

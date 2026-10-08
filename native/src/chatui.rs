@@ -7,7 +7,7 @@ use crate::render::{paint, Text};
 use crate::theme::*;
 use std::cell::Cell;
 use std::collections::HashMap;
-use tiny_skia::{FillRule, Pixmap, Stroke, Transform};
+use tiny_skia::{FillRule, PixmapMut, Stroke, Transform};
 
 pub const WIDTH: f32 = 320.0;
 const HEADER: f32 = 44.0;
@@ -327,19 +327,19 @@ pub fn wrap(text: &mut Text, s: &str, px: f32, max_w: f32) -> Vec<String> {
     lines
 }
 
-fn fill(pm: &mut Pixmap, r: &R, radius: f32, col: Rgb) {
+fn fill(pm: &mut PixmapMut<'_>, r: &R, radius: f32, col: Rgb) {
     if let Some(p) = crate::icon::rounded_rect(r.x, r.y, r.w, r.h, radius) {
         pm.fill_path(&p, &paint(col[0], col[1], col[2], 255), FillRule::Winding, Transform::identity(), None);
     }
 }
 
-fn outline(pm: &mut Pixmap, r: &R, radius: f32, col: Rgb) {
+fn outline(pm: &mut PixmapMut<'_>, r: &R, radius: f32, col: Rgb) {
     if let Some(p) = crate::icon::rounded_rect(r.x, r.y, r.w, r.h, radius) {
         pm.stroke_path(&p, &paint(col[0], col[1], col[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, Transform::identity(), None);
     }
 }
 
-pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text) {
+pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     if width(st) == 0.0 {
         return;
     }

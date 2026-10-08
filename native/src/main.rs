@@ -109,11 +109,11 @@ fn headless(args: &[String]) -> Result<(), String> {
     if let Some(n) = opt("--bench").and_then(|s| s.parse::<u32>().ok()) {
         let t = std::time::Instant::now();
         for _ in 0..n {
-            render::draw(&st, &mut pm, &mut text);
+            render::draw(&st, &mut pm.as_mut(), &mut text);
         }
         println!("bench: {:.2} ms/frame over {n} frames at {w}x{h}", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
     }
-    render::draw(&st, &mut pm, &mut text);
+    render::draw(&st, &mut pm.as_mut(), &mut text);
     pm.save_png(&out).map_err(|e| e.to_string())?;
     println!("wrote {out}");
     Ok(())
@@ -246,8 +246,8 @@ fn icon_sheet(out: &str) {
     let mut pm = tiny_skia::Pixmap::new(420, 80).unwrap();
     pm.fill(tiny_skia::Color::from_rgba8(26, 30, 38, 255));
     for (i, s) in [MIC, MIC_OFF, VIDEO, VIDEO_OFF, MONITOR, PHONE_OFF, STOP_CIRCLE, LOCK, UNLOCK, MAXIMIZE, MINIMIZE, MESSAGE_CIRCLE].iter().enumerate() {
-        icon::draw(&mut pm, s, 10.0 + i as f32 * 34.0, 10.0, 24.0, theme::INK);
-        icon::draw(&mut pm, s, 10.0 + i as f32 * 34.0, 48.0, 16.0, theme::BRAND);
+        icon::draw(&mut pm.as_mut(), s, 10.0 + i as f32 * 34.0, 10.0, 24.0, theme::INK);
+        icon::draw(&mut pm.as_mut(), s, 10.0 + i as f32 * 34.0, 48.0, 16.0, theme::BRAND);
     }
     let _ = pm.save_png(out);
 }

@@ -6,7 +6,7 @@ use crate::meeting_ui::R;
 use crate::render::{paint, Text};
 use crate::theme::*;
 use std::collections::HashMap;
-use tiny_skia::{FillRule, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
+use tiny_skia::{FillRule, PathBuilder, PixmapMut, PixmapPaint, Stroke, Transform};
 
 /// What the user is doing in the sidebar (kept in `State`).
 #[derive(Default)]
@@ -351,20 +351,20 @@ pub fn fit(text: &mut Text, s: &str, px: f32, max_w: f32) -> String {
     format!("{}…", out.trim_end())
 }
 
-fn fill(pm: &mut Pixmap, r: &R, radius: f32, col: Rgb, a: u8) {
+fn fill(pm: &mut PixmapMut<'_>, r: &R, radius: f32, col: Rgb, a: u8) {
     if let Some(p) = crate::icon::rounded_rect(r.x, r.y, r.w, r.h, radius) {
         let c = paint(col[0], col[1], col[2], a);
         pm.fill_path(&p, &c, FillRule::Winding, Transform::identity(), None);
     }
 }
 
-fn outline(pm: &mut Pixmap, r: &R, radius: f32, col: Rgb) {
+fn outline(pm: &mut PixmapMut<'_>, r: &R, radius: f32, col: Rgb) {
     if let Some(p) = crate::icon::rounded_rect(r.x, r.y, r.w, r.h, radius) {
         pm.stroke_path(&p, &paint(col[0], col[1], col[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, Transform::identity(), None);
     }
 }
 
-fn dot(pm: &mut Pixmap, x: f32, y: f32, r: f32, col: Rgb) {
+fn dot(pm: &mut PixmapMut<'_>, x: f32, y: f32, r: f32, col: Rgb) {
     if let Some(c) = PathBuilder::from_circle(x, y, r) {
         pm.fill_path(&c, &paint(col[0], col[1], col[2], 255), FillRule::Winding, Transform::identity(), None);
     }
@@ -388,7 +388,7 @@ fn pss_mb() -> f64 {
 
 const AMBER: Rgb = [240, 170, 60];
 
-pub fn draw(st: &State, pm: &mut Pixmap, text: &mut Text, now_ms: i64) {
+pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
     if st.login.is_some() {
         return;
     }
