@@ -1,5 +1,5 @@
 import json,re,urllib.parse
-L='/home/tito/dev/repos/soworker/recorder/logs/2026-10-06T12-48-44-206Z/events.jsonl'
+L='/home/tito/dev/repos/soworker/recorder/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl'
 evs=[json.loads(l) for l in open(L)]; t0=evs[0]['t']
 SEC=('apiKey','state','code','client_id','nonce','sessionId','eventId','id_token','key')
 def red(u):

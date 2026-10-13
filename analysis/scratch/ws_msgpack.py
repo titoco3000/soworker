@@ -2,7 +2,7 @@
 """Iterate gaia (socket.io + notepack msgpack) frames of events.jsonl with full binary payloads.
 yield (t_seconds, direction, wsid, packet) ; bin -> bytes; fixext -> ('ext', type, bytes)"""
 import json, struct, base64, sys
-LOG = '/home/tito/dev/repos/soworker/recorder/logs/2026-10-06T12-48-44-206Z/events.jsonl'
+LOG = '/home/tito/dev/repos/soworker/recorder/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl'
 
 def dec(b, i=0):
     c = b[i]; i += 1

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Auth spike: can a non-browser client turn the recorded Firebase refresh token into an ID token
 // and call SoWork's API? Prints only statuses and key names, never token values.
-// Usage: node analysis/scratch/auth_spike.mjs recorder/logs/<run>
+// Usage: node analysis/scratch/auth_spike.mjs recorder/raw-logs/<run>
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 

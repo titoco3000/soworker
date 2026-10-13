@@ -1,5 +1,5 @@
 import json,base64,sys
-L="/home/tito/dev/repos/soworker/recorder/logs/2026-10-06T12-48-44-206Z/events.jsonl"
+L="/home/tito/dev/repos/soworker/recorder/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl"
 def varint(b,i):
     r=0;s=0
     while True:

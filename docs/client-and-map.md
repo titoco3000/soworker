@@ -2,7 +2,7 @@
 
 Scope: client application structure, office map/world/object data, avatars, client-side movement.
 Companion docs: `gaia-protocol.md` (socket wire format), `auth-and-rest.md`, `media-livekit.md`.
-Source: recording `recorder/logs/2026-10-06T12-48-44-206Z` (client version 11.202.0, server `g5`).
+Source: recording `recorder/raw-logs/2026-10-06T12-48-44-206Z` (client version 11.202.0, server `g5`).
 No secret values are reproduced here. Bundle names are the hashed Vite chunk names from `app.sowork.com/static/js/`.
 
 Legend: **[F]** fact seen in code or capture (bundle named), **[G]** guess or inference, **[?]** unknown.

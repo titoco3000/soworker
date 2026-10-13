@@ -3,7 +3,7 @@ import sys,glob,json,re
 sys.path.insert(0,'scratch')
 from pb_decode import *
 Z={}
-for t,pl in msgpack_frames(glob.glob('../recorder/logs/*/events.jsonl')[0]):
+for t,pl in msgpack_frames(glob.glob('../recorder/raw-logs/*/events.jsonl')[0]):
     f={a:v for a,w,v in raw_fields(pl)};o=pb_map_object(f[2])
     if o.get('type',0)==0: Z[f[1].decode()]=o
 pos=None

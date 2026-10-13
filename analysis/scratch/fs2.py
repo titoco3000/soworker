@@ -1,6 +1,6 @@
 import json,re,collections,os
-L='/home/tito/dev/repos/soworker/recorder/logs/2026-10-06T12-48-44-206Z/events.jsonl'
-D='/home/tito/dev/repos/soworker/recorder/logs/2026-10-06T12-48-44-206Z/bodies/'
+L='/home/tito/dev/repos/soworker/recorder/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl'
+D='/home/tito/dev/repos/soworker/recorder/raw-logs/2026-10-06T12-48-44-206Z/bodies/'
 evs=[json.loads(l) for l in open(L)]
 req={}
 dec=json.JSONDecoder()

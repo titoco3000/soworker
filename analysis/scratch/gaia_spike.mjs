@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Gaia spike: refresh token -> ID token -> gaia/find -> open the realtime socket and read the world.
 // Read-only: sends only the same handshake messages the web client sends. Prints no secrets.
-// Usage: node analysis/scratch/gaia_spike.mjs recorder/logs/<run> [seconds]
+// Usage: node analysis/scratch/gaia_spike.mjs recorder/raw-logs/<run> [seconds]
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';

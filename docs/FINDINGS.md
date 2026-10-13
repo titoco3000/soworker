@@ -134,12 +134,11 @@ Do each with a teammate online if possible, and write down wall-clock times:
 6. Reload the page and, separately, go offline 20 s (reconnect, `user_reconnected`).
 7. Open the avatar editor and the map/furniture view so atlas and tile images load.
 
-Rerun `node analysis/prepare.mjs recorder/logs/<run>` on each new run to get redacted working
-files in `analysis/work/`.
+Each recording writes redacted working files to `recorder/pre-processed-logs/<run>/` when it stops.
 
 ## Housekeeping
 
-- `recorder/logs/<run>/` is the only raw data (contains live tokens; git-ignored). The failed
+- `recorder/raw-logs/<run>/` is the only raw data (contains live tokens; git-ignored). The failed
   first run was deleted.
 - `analysis/work/` is derived and token-redacted, but still contains user ids and names. Do not
   share it.
