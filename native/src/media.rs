@@ -45,6 +45,8 @@ struct Session {
     share: Option<Capture>,
     video_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     room_id: String,
+    /// The default mic is a Bluetooth headset's: keep the capture open all meeting (see `join`).
+    keep_capture: bool,
 }
 
 pub fn spawn(emit: impl Fn(MediaEvent) + Send + Sync + 'static) -> UnboundedSender<MediaCmd> {
@@ -110,9 +112,72 @@ async fn join(url: &str, token: &str, room_id: String, emit: &Emit) -> Result<Se
             None
         }
     };
+    // A Bluetooth headset switches to its low-quality call profile whenever the mic opens and back when it closes, so
+    // opening and closing it on every mute toggle made the sound flip. With such a mic, keep the capture device open
+    // for the whole meeting.
+    let keep_capture = audio.as_ref().is_some_and(default_mic_is_bluetooth);
+    if keep_capture {
+        if let Some(a) = audio.as_ref() {
+            match a.start_recording() {
+                Ok(()) => eprintln!("audio: bluetooth mic, capture kept open (recording initialized: {})", a.is_recording_initialized()),
+                Err(e) => {
+                    eprintln!("audio: start_recording failed: {e}");
+                    emit(MediaEvent::Error(format!("microphone: {e}")));
+                }
+            }
+        }
+    }
     emit(MediaEvent::Joined(room_id.clone()));
     emit_peers(&room, emit);
-    Ok(Session { room, events, audio, mic: None, cam: None, share: None, video_tasks: HashMap::new(), room_id })
+    Ok(Session { room, events, audio, mic: None, cam: None, share: None, video_tasks: HashMap::new(), room_id, keep_capture })
+}
+
+/// Whether the system default microphone (the first listed, shown as "default: <name>") is Bluetooth. The SDK gives no
+/// device ids here, so ask PulseAudio / PipeWire (`pactl`) which sources are Bluetooth (`device.api = bluez5`, or a
+/// `bluez_` name) and match on the description. Logs everything so a miss can be checked.
+fn default_mic_is_bluetooth(audio: &PlatformAudio) -> bool {
+    for d in audio.recording_devices() {
+        eprintln!("audio: mic #{} {:?} id {:?}", d.index, d.name, d.id.as_str());
+    }
+    let Some(d) = audio.recording_devices().next() else {
+        eprintln!("audio: no microphone listed");
+        return false;
+    };
+    let name = d.name.strip_prefix("default: ").unwrap_or(&d.name).to_string();
+    let bt = pactl_bluetooth_sources().map_or_else(
+        |e| {
+            eprintln!("audio: cannot ask pactl ({e}), assuming not bluetooth");
+            false
+        },
+        |list| {
+            for (n, desc, bt) in &list {
+                eprintln!("audio: pactl source {n:?} {desc:?} bluetooth: {bt}");
+            }
+            list.iter().any(|(_, desc, bt)| *bt && *desc == name)
+        },
+    );
+    eprintln!("audio: default mic {name:?}, bluetooth: {bt}");
+    bt
+}
+
+/// (name, description, is_bluetooth) of every input source `pactl` knows.
+fn pactl_bluetooth_sources() -> Result<Vec<(String, String, bool)>, String> {
+    let out = std::process::Command::new("pactl").args(["-f", "json", "list", "sources"]).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+    Ok(v.as_array()
+        .map(|a| {
+            a.iter()
+                .map(|s| {
+                    let name = s["name"].as_str().unwrap_or_default().to_string();
+                    let bt = name.starts_with("bluez_") || s["properties"]["device.api"].as_str() == Some("bluez5") || s["properties"]["device.bus"].as_str() == Some("bluetooth");
+                    (name, s["description"].as_str().unwrap_or_default().to_string(), bt)
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 fn emit_peers(room: &Room, emit: &Emit) {
@@ -154,6 +219,11 @@ async fn set_mic(s: &mut Session, on: bool, emit: &Emit) {
         s.mic = Some(track);
     } else if let Some(t) = &s.mic {
         if on { t.unmute() } else { t.mute() }
+    }
+    // a muted track makes libwebrtc stop capturing; start it again so the device stays open
+    if let Some(audio) = s.audio.as_ref().filter(|_| s.keep_capture) {
+        let r = audio.start_recording();
+        eprintln!("audio: mic {} -> start_recording {r:?}, recording initialized: {}", if on { "on" } else { "off" }, audio.is_recording_initialized());
     }
     emit(MediaEvent::MicState(on && s.mic.is_some()));
 }
