@@ -70,10 +70,9 @@ struct App {
     session_path: String,
     proxy: EventLoopProxy<UserEvent>,
     dry: bool,
-    demo: bool,
     login_cancel: Option<Arc<AtomicBool>>,
     logout_started: Option<Instant>,
-    /// Test hook for the offline demo: behave as if the user confirmed the logout dialog after N seconds.
+    /// Test hook: behave as if the user confirmed the logout dialog after N seconds.
     logout_after: Option<f64>,
 }
 
@@ -104,17 +103,13 @@ impl App {
             let _ = self.cmds.send(c);
         }
         if let Some(o) = self.st.overlay_out.take() {
-            if !self.demo {
-                self.overlay.get_or_insert_with(crate::overlay::Handle::new).show(o);
-            }
+            self.overlay.get_or_insert_with(crate::overlay::Handle::new).show(o);
         }
-        if std::mem::take(&mut self.st.hint_out) && !self.demo {
+        if std::mem::take(&mut self.st.hint_out) {
             crate::notify::talk_hint(&self.st.talk_key);
         }
         for snd in self.st.sounds.drain(..) {
-            if !self.demo {
-                crate::sound::play(snd);
-            }
+            crate::sound::play(snd);
         }
         for c in self.st.chat_out.drain(..) {
             if let Some(tx) = &self.chat {
@@ -186,14 +181,10 @@ impl App {
         });
     }
 
-    /// Forget the saved sign-in and go back to the sign-in screen (the offline demo just quits). Called when the socket thread confirms it closed, or after a timeout.
-    fn finish_logout(&mut self, el: &ActiveEventLoop) {
+    /// Forget the saved sign-in and go back to the sign-in screen. Called when the socket thread confirms it closed, or after a timeout.
+    fn finish_logout(&mut self) {
         if self.media.is_some() {
             std::thread::sleep(Duration::from_millis(300)); // let the LiveKit leave message go out
-        }
-        if self.demo {
-            println!("logged out (offline demo: nothing to forget)");
-            return el.exit();
         }
         let p = self.session_path.clone();
         match std::fs::remove_file(&p) {
@@ -258,10 +249,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
     }
 
-    fn user_event(&mut self, el: &ActiveEventLoop, ev: UserEvent) {
+    fn user_event(&mut self, _el: &ActiveEventLoop, ev: UserEvent) {
         let now = self.now();
         if matches!(ev, UserEvent::Net(Net::LoggedOut)) {
-            return self.finish_logout(el);
+            return self.finish_logout();
         }
         match ev {
             UserEvent::Net(e) => self.st.apply(e, now),
@@ -427,10 +418,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.st.logout_choice(true);
         }
         if self.logout_started.is_some_and(|t| t.elapsed() > Duration::from_millis(2500)) {
-            return self.finish_logout(el); // the socket thread did not answer in time (offline?): leave anyway
-        }
-        if self.st.logout_requested && self.demo && self.logout_started.is_some() {
-            return self.finish_logout(el); // offline demo: there is no socket to wait for
+            return self.finish_logout(); // the socket thread did not answer in time (offline?): leave anyway
         }
         let redraw = self.st.update(dt, now);
         self.flush();
@@ -468,12 +456,9 @@ fn default_session() -> String {
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
-    if !args.iter().any(|a| a == "--demo") {
-        crate::desktop::ensure();
-    }
+    crate::desktop::ensure();
     let opt = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
-    let demo = opt("--demo");
-    let dry = demo.is_some() || args.iter().any(|a| a == "--dry-run");
+    let dry = args.iter().any(|a| a == "--dry-run");
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().map_err(|e| e.to_string())?;
     let proxy: EventLoopProxy<UserEvent> = event_loop.create_proxy();
     let path = opt("--session").unwrap_or_else(default_session);
@@ -498,31 +483,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
         session_path: path.clone(),
         proxy: proxy.clone(),
         dry,
-        demo: demo.is_some(),
         login_cancel: None,
         logout_started: None,
         logout_after: opt("--logout-after").and_then(|s| s.parse().ok()),
     };
     app.st.talk_key = crate::talk::key_label();
-    if demo.is_none() {
-        let p = proxy.clone();
-        crate::talk::listen(move |a| drop(p.send_event(UserEvent::Talk(a))));
-        let p = proxy.clone();
-        crate::talk::portal(move |a| drop(p.send_event(UserEvent::Talk(a))), app.st.talk_key.clone());
-    }
-    if let Some(run) = &demo {
-        // offline: feed a recorded run into the window, no network, nothing is sent
-        let me = crate::replay::own_id(run)?;
-        let events = crate::replay::load(run)?;
-        app.st = State::new(&me, true);
-        std::thread::spawn(move || {
-            for e in events {
-                if proxy.send_event(UserEvent::Net(e)).is_err() {
-                    break;
-                }
-            }
-        });
-    } else if args.iter().any(|a| a == "--show-login") {
+    let p = proxy.clone();
+    crate::talk::listen(move |a| drop(p.send_event(UserEvent::Talk(a))));
+    let p = proxy.clone();
+    crate::talk::portal(move |a| drop(p.send_event(UserEvent::Talk(a))), app.st.talk_key.clone());
+    if args.iter().any(|a| a == "--show-login") {
         app.st.login = Some(LoginPhase::Idle); // layout check without touching any saved session
     } else {
         match Auth::load(&path) {

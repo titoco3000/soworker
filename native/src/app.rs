@@ -1,5 +1,5 @@
 //! Application state and per-frame logic: input, walking, click-to-move, zones, presence.
-//! Pure logic (no window, no sockets) so it runs the same in the window, in tests and in headless replays.
+//! Pure logic (no window, no sockets) so it runs the same in the window and in tests.
 use crate::avatars;
 use crate::calls::{MediaCmd, MediaEvent};
 use crate::meeting_ui::{Ctl, Dock, Hit, TileBtn};

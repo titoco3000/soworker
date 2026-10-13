@@ -78,10 +78,6 @@ impl World {
         self.dirty = true;
     }
 
-    pub fn object_count(&self) -> usize {
-        self.objects.len()
-    }
-
     /// Recompute the derived tile sets after a batch of object changes. Returns true if anything changed.
     pub fn rebuild_if_dirty(&mut self) -> bool {
         if !self.dirty {
@@ -266,21 +262,5 @@ impl World {
             }
         }
         best.map(|(z, _)| z)
-    }
-
-    /// Fraction of floor tiles reachable on foot from a tile (diagnostics/tests).
-    pub fn reachable_from(&self, start: (i32, i32)) -> usize {
-        let mut seen: HashSet<(i32, i32)> = HashSet::from([start]);
-        let mut q = vec![start];
-        while let Some((i, j)) = q.pop() {
-            for (di, dj) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
-                let n = (i + di, j + dj);
-                if !seen.contains(&n) && self.can_step(i, j, di, dj) {
-                    seen.insert(n);
-                    q.push(n);
-                }
-            }
-        }
-        seen.len()
     }
 }

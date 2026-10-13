@@ -22,12 +22,10 @@ cargo build --release --no-default-features    # tiny build without calls (~5 MB
 ```
 ./target/release/soworker --dry-run          # connect and watch, sends nothing
 ./target/release/soworker                    # live: your avatar walks for real
-./target/release/soworker --demo <run dir>   # offline window fed from a recorder run
-./target/release/soworker --replay <run dir> --shot out.png [--click X,Y] [--script "r:1500,d:600"]
 ```
 
 `cargo run` (debug) is fine for development: the dev profile optimizes dependencies, so a frame costs
-~8 ms instead of ~52 ms (release: ~1.5 ms, measured with `--replay <run> --shot x.png --bench 60`).
+~8 ms instead of ~52 ms (release: ~1.5 ms).
 
 Sign-in: with no saved session the app shows a sign-in screen. The button opens Chrome (app-style window, throwaway
 profile) on SoWork's own login page, watches it over the DevTools protocol, takes the Firebase refresh token from the
@@ -38,11 +36,11 @@ moved there on first start. Log out forgets the token and returns to the sign-in
 
 Sidebar (left): availability and log out buttons, then people in meetings (grouped by meeting zone), online and offline
 people; click someone or a meeting for Join (walks there), Wave or Message. The list comes from SoWork's
-Firestore (docs/members-roster.md); `--roster` prints it, `--replay <run> --fake-roster [--open meeting] --shot x.png` renders it offline.
+Firestore (docs/members-roster.md); `--roster` prints it.
 
 Waves and chat: Wave in a person's menu (or a meeting's) waves at them; waves at you appear in the sidebar to Accept (walk
 to them) or Dismiss. A right-hand chat panel has the area chat of your current meeting and private chats (Message in a
-person's menu); see docs/chat-and-waves.md. `--replay <run> --fake-roster --fake-chat [area] --shot x.png` renders both offline.
+person's menu); see docs/chat-and-waves.md.
 
 Wave sounds: SoWork's own `sendWave` / `receiveWave` clips (assets/sounds, from app.sowork.com/static/media, volume 0.2 as
 in its client), played through `pw-play`, `paplay` or `aplay` (no audio library is linked).
@@ -91,7 +89,7 @@ B toggles available/away, the meeting dock buttons (mic, cam, share screen, leav
 
 Modules: `session` (Firebase refresh), `net` (gaia socket thread), `proto` (Socket.IO/msgpack events),
 `mapobj` (protobuf map objects), `world` (collision, A*, zones), `app` (state/logic), `render` (tiny-skia),
-`window` (winit + softbuffer), `replay` (recorded runs, for tests and offline demo).
+`window` (winit + softbuffer).
 
 Status: world, walking, click-to-move, zones, presence, speaking rings, HiDPI, calls: join from the gaia
 `cluster` token, audio in/out through the SDK's platform audio (echo cancellation included), remote camera and

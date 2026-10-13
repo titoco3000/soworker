@@ -1,5 +1,4 @@
 //! Gaia events: Socket.IO v4 packets in msgpack (docs/gaia-protocol.md), decoded into app-level `Net` events.
-//! Shared by the live socket and by the log replayer, so both exercise the same code.
 use crate::mapobj::{decode_set_map_object, SetObj};
 use rmpv::Value;
 
@@ -141,7 +140,7 @@ fn user(v: &Value) -> User {
 /// Parse one binary Socket.IO packet. Returns (packet type, event name + payload for EVENT packets).
 pub fn parse_packet(bytes: &[u8]) -> Option<(i64, Option<(String, Value)>)> {
     let v = rmpv::decode::read_value(&mut &bytes[..]).ok()?;
-    get(&v, "nsp")?; // rejects LiveKit protobuf frames in replays
+    get(&v, "nsp")?; // rejects LiveKit protobuf frames
     let ty = get(&v, "type")?.as_i64()?;
     let ev = (ty == 2)
         .then(|| {
