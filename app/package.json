@@ -1,7 +1,0 @@
-{
-  "name": "soworker-app",
-  "private": true,
-  "type": "module",
-  "description": "Lightweight SoWork client prototype",
-  "dependencies": { "livekit-client": "2.20.0" }
-}
