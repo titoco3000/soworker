@@ -111,7 +111,13 @@ async fn join(url: &str, token: &str, room_id: String, emit: &Emit) -> Result<Se
         }
     };
     emit(MediaEvent::Joined(room_id.clone()));
+    emit_peers(&room, emit);
     Ok(Session { room, events, audio, mic: None, cam: None, share: None, video_tasks: HashMap::new(), room_id })
+}
+
+fn emit_peers(room: &Room, emit: &Emit) {
+    let peers = room.remote_participants().values().map(|p| (p.identity().to_string(), p.name())).collect();
+    emit(MediaEvent::Peers(peers));
 }
 
 async fn close(mut s: Session, emit: &Emit) {
@@ -217,7 +223,9 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
             }
             emit(MediaEvent::VideoGone(key));
         }
+        RoomEvent::ParticipantConnected(_) => emit_peers(&s.room, emit),
         RoomEvent::ParticipantDisconnected(p) => {
+            emit_peers(&s.room, emit);
             for key in [p.identity().to_string(), format!("{}:screen", p.identity())] {
                 if let Some(t) = s.video_tasks.remove(&key) {
                     t.abort();

@@ -136,6 +136,9 @@ pub fn status_label(st: &State) -> &'static str {
 }
 
 fn others(st: &State) -> Vec<String> {
+    if let Some(p) = &st.call.peers {
+        return p.iter().map(|(i, _)| i.clone()).filter(|i| *i != st.me_id).collect();
+    }
     st.cluster.as_ref().map(|c| c.users.iter().filter(|(i, _)| *i != st.me_id).map(|(i, _)| i.clone()).collect()).unwrap_or_default()
 }
 
@@ -153,7 +156,7 @@ pub fn tiles(st: &State) -> Vec<TileSpec> {
         muted: !st.call.mic,
     }];
     for id in others(st) {
-        let name = st.users.get(&id).map(|u| u.name.clone()).or_else(|| st.cluster.as_ref().and_then(|c| c.users.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| id.clone());
+        let name = st.users.get(&id).map(|u| u.name.clone()).or_else(|| st.call.peers.as_ref().and_then(|p| p.iter().find(|(i, n)| *i == id && !n.is_empty()).map(|(_, n)| n.clone()))).or_else(|| st.cluster.as_ref().and_then(|c| c.users.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| id.clone());
         v.push(TileSpec {
             video_key: st.call.tiles.iter().any(|t| t.key == id).then(|| id.clone()),
             initial: name.clone(),

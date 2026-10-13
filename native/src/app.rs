@@ -58,6 +58,8 @@ pub struct CallUi {
     pub cam: bool,
     pub share: bool,
     pub peer_muted: std::collections::HashSet<String>,
+    /// Who is in the LiveKit room right now (None until the room reports); the tiles follow this, not the gaia roster.
+    pub peers: Option<Vec<(String, String)>>,
     /// A call we left on purpose: ignore further tokens for this room until the server moves us elsewhere.
     pub ignore_room: Option<String>,
     pub tiles: Vec<Tile>,
@@ -636,6 +638,7 @@ impl State {
                 self.call.tiles.clear();
                 self.call.speakers.clear();
                 self.call.peer_muted.clear();
+                self.call.peers = None;
                 self.dock.pinned = None;
                 self.dock.last_auto = None;
                 for u in self.users.values_mut() {
@@ -665,6 +668,7 @@ impl State {
                     self.say(format!("{who} asked you to mute"), now);
                 }
             }
+            MediaEvent::Peers(p) => self.call.peers = Some(p),
             MediaEvent::PeerMuted(id, m) => {
                 if m { self.call.peer_muted.insert(id); } else { self.call.peer_muted.remove(&id); }
             }

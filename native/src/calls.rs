@@ -22,6 +22,8 @@ pub enum MediaEvent {
     /// A video frame to show: RGBA, already scaled to its tile size.
     Video { key: String, name: String, w: u32, h: u32, rgba: Vec<u8> },
     VideoGone(String),
+    /// Everyone else currently in the room (identity, name): sent on every join / leave, so tiles follow the room itself.
+    Peers(Vec<(String, String)>),
     MicState(bool),
     CameraState(bool),
     ShareState(bool),
