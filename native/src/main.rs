@@ -31,7 +31,7 @@ use app::State;
 use render::Text;
 
 /// Headless mode: replay a recorder run, optionally walk/click, and write a PNG.
-/// soworker --replay recorder/logs/<run> --shot out.png [--script "r:1500,d:600"] [--click X,Y] [--size 1000x700]
+/// soworker --replay output/logs/<run> --shot out.png [--script "r:1500,d:600"] [--click X,Y] [--size 1000x700]
 fn headless(args: &[String]) -> Result<(), String> {
     let args = args;
     let opt = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();

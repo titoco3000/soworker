@@ -1,5 +1,5 @@
 import json,re,collections
-L='/home/tito/dev/repos/soworker/recorder/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl'
+L='/home/tito/dev/repos/soworker/output/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl'
 c=collections.Counter()
 for line in open(L):
     e=json.loads(line)

@@ -1,6 +1,6 @@
 # Muting others and away / available
 
-Source: the second recording (`recorder/raw-logs/2026-10-06T17-30-38-857Z`, ~376 s: join a meeting, be muted, mute someone,
+Source: the second recording (`output/raw-logs/2026-10-06T17-30-38-857Z`, ~376 s: join a meeting, be muted, mute someone,
 the other person goes away and back, then the same for the recording user), cross-checked against SoWork's own client code
 (`bodies/0ba23eb32e0799b6.js`, `bodies/d3674270c44d8bdb.js`). Facts are marked **[recording]** or **[client code]**.
 

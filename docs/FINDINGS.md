@@ -134,11 +134,11 @@ Do each with a teammate online if possible, and write down wall-clock times:
 6. Reload the page and, separately, go offline 20 s (reconnect, `user_reconnected`).
 7. Open the avatar editor and the map/furniture view so atlas and tile images load.
 
-Each recording writes redacted working files to `recorder/pre-processed-logs/<run>/` when it stops.
+Each recording writes redacted working files to `output/pre-processed-logs/<run>/` when it stops.
 
 ## Housekeeping
 
-- `recorder/raw-logs/<run>/` is the only raw data (contains live tokens; git-ignored). The failed
+- `output/raw-logs/<run>/` is the only raw data (contains live tokens; git-ignored). The failed
   first run was deleted.
 - `analysis/work/` is derived and token-redacted, but still contains user ids and names. Do not
   share it.

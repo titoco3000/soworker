@@ -1,6 +1,6 @@
 # Waves and chat
 
-Source: recording `recorder/raw-logs/2026-10-07T12-31-41-224Z` (receive a wave and accept it, wave at someone who accepts,
+Source: recording `output/raw-logs/2026-10-07T12-31-41-224Z` (receive a wave and accept it, wave at someone who accepts,
 area message both ways, private message both ways) plus SoWork's chat client code in that run's `bodies/42fc3e7686301255.js`.
 Facts are **[recording]**, **[client code]**, or **[guess]**.
 

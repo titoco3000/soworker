@@ -3,7 +3,7 @@
 Source: one recorded session (about 4 min, app client `11.202.0`, server `11.202.0`, min client `11.185.0`).
 Evidence = frame timestamps (seconds since recording start, `+t`) from `analysis/work/ws/05-api.sowork.com.txt`
 (socket A, 1520 frames) and `07-api.sowork.com.txt` (socket B, 311 frames), decoded raw from
-`recorder/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl`, plus the JS bundles. No secrets are reproduced here:
+`output/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl`, plus the JS bundles. No secrets are reproduced here:
 `<JWT>`, `<me>`, `<userN>`, `<zone>` are placeholders.
 
 Legend: **[F]** = fact seen in traffic or code, **[G]** = guess/inference, **[?]** = unknown.

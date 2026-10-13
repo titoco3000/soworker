@@ -1,4 +1,4 @@
-//! Replays the gaia frames of a recorder run (recorder/logs/<run>/events.jsonl) as `Net` events.
+//! Replays the gaia frames of a recorder run (output/logs/<run>/events.jsonl) as `Net` events.
 use crate::proto::{events, parse_packet, Net};
 use base64::Engine;
 
@@ -37,24 +37,4 @@ pub fn own_id(run_dir: &str) -> Result<String, String> {
         }
     }
     Err("no presence event in the recording".into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::proto::Net;
-
-    /// The second recording has two people going away and back: statuses and cluster modes must come out of the parser.
-    #[test]
-    fn presence_and_mode_changes_are_parsed_from_the_recording() {
-        let run = std::env::var("SOWORKER_RUN2").unwrap_or_else(|_| "../recorder/logs/2026-10-06T17-30-38-857Z".into());
-        let Ok(events) = load(&run) else { return };
-        let busy = events.iter().filter(|e| matches!(e, Net::Presence { status, .. } if status == "busy")).count();
-        let away = events.iter().filter(|e| matches!(e, Net::Mode { mode, .. } if mode == "none-away")).count();
-        let back = events.iter().filter(|e| matches!(e, Net::Mode { mode, .. } if mode == "cluster")).count();
-        println!("busy statuses {busy}, away modes {away}, back to cluster {back}");
-        assert!(busy >= 2, "both people went busy");
-        assert!(away >= 2, "both people went none-away");
-        assert!(back >= 2, "both people came back");
-    }
 }

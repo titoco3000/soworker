@@ -1,5 +1,5 @@
 import json,sys,re,base64,collections
-L='/home/tito/dev/repos/soworker/recorder/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl'
+L='/home/tito/dev/repos/soworker/output/raw-logs/2026-10-06T12-48-44-206Z/events.jsonl'
 def jwt(s):
     try:
         p=s.split('.')[1]; p+='='*(-len(p)%4)

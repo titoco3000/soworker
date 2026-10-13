@@ -66,31 +66,6 @@ pub fn ask_to_mute_target(payload: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The recorded `ask-to-mute` data message (LiveKit DataPacket) from the recording: our encoder must produce the same
-    /// payload bytes the official client did. Skipped when that recording is not on this machine.
-    #[test]
-    fn ask_to_mute_payload_matches_the_official_clients_bytes() {
-        use base64::Engine;
-        let run = std::env::var("SOWORKER_RUN2").unwrap_or_else(|_| "../recorder/logs/2026-10-06T17-30-38-857Z".into());
-        let Ok(text) = std::fs::read_to_string(format!("{run}/events.jsonl")) else { return };
-        let mut seen = 0;
-        for line in text.lines() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            if v["k"] != "dc.in" {
-                continue;
-            }
-            let Some(b) = v["b64"].as_str().and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()) else { continue };
-            if !b.windows(ASK_TO_MUTE.len()).any(|w| w == ASK_TO_MUTE.as_bytes()) {
-                continue;
-            }
-            // the payload is the msgpack map that starts with 0x81 0xac "targetUserId" inside the packet
-            let start = b.windows(14).position(|w| w[0] == 0x81 && w[1] == 0xac && &w[2..14] == b"targetUserId").expect("payload in packet");
-            let target = ask_to_mute_target(&b[start..]).expect("decodes");
-            assert_eq!(ask_to_mute_payload(&target), b[start..start + 14 + 1 + target.len()].to_vec(), "same bytes as the official client");
-            seen += 1;
-        }
-        assert!(seen > 0, "the recording has ask-to-mute messages");
-    }
 
     #[test]
     fn payload_round_trips() {

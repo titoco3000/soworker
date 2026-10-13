@@ -1,7 +1,7 @@
 # Member list (online and offline) and the sidebar
 
-Source: recording `recorder/raw-logs/2026-10-07T11-54-43-458Z` (the first one with Firestore streams captured, see
-`recorder/record.mjs`, `res.chunk` events). Facts are **[recording]** unless marked otherwise.
+Source: recording `output/raw-logs/2026-10-07T11-54-43-458Z` (the first one with Firestore streams captured, see
+`output/record.mjs`, `res.chunk` events). Facts are **[recording]** unless marked otherwise.
 
 ## Where the list comes from
 
