@@ -5,7 +5,7 @@ Calls start muted. Three ways to talk without clicking the mic button (all end i
 | Way | Behaviour |
 |---|---|
 | Key in the window | the **talk key** (default `Super+'`; `talkKey` in `~/.config/soworker/settings.json`, written like `F1`, `Pause` or `Ctrl+Alt+Space`) opens the mic while held, if it was muted. Modifiers must be down when the key goes down; on release only the key counts |
-| `soworker --talk [toggle\|down\|up]` | talks to the running app over `$XDG_RUNTIME_DIR/soworker/ctl.sock` (mode 600). Bind `soworker --talk` to a key in the desktop's keyboard settings (COSMIC: Settings > Keyboard > Custom shortcuts, or the one-time terminal command in `native/README.md`). Desktop shortcuts only report a press, so the default `toggle` flips the mic |
+| `soworker --talk [toggle\|down\|up]` | talks to the running app over `$XDG_RUNTIME_DIR/soworker/ctl.sock` (mode 600). Bind `soworker --talk` to a key in the desktop's keyboard settings (COSMIC: Settings > Keyboard > Custom shortcuts, or the one-time terminal command in `README.md`). Desktop shortcuts only report a press, so the default `toggle` flips the mic |
 | GlobalShortcuts portal | registers "Push to talk" (preferred trigger = the talk key) and gets press and release events, so the mic is open while the key is held. **COSMIC has no such portal yet** ([xdg-desktop-portal-cosmic#4](https://github.com/pop-os/xdg-desktop-portal-cosmic/issues/4)); KDE and GNOME 48+ do. Untested on a real portal; without one the app logs a line and carries on. Build without it: `--no-default-features --features calls` |
 
 **Reminder:** when the window loses focus during a meeting while the mic is muted (at most once a minute), or when a

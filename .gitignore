@@ -4,3 +4,6 @@ app/node_modules
 .space.json
 **/.session.json
 **/.space.json
+local
+target/
+third_party/

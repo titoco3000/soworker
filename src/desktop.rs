@@ -47,8 +47,8 @@ mod tests {
 
     #[test]
     fn entry_points_at_the_binary_and_matches_the_app_id() {
-        let e = entry_for("/home/me/soworker/native/target/release/soworker", "/home/me/.local/share/icons/soworker.png");
-        assert!(e.contains("Exec=/home/me/soworker/native/target/release/soworker\n"));
+        let e = entry_for("/home/me/soworker/target/release/soworker", "/home/me/.local/share/icons/soworker.png");
+        assert!(e.contains("Exec=/home/me/soworker/target/release/soworker\n"));
         assert!(e.contains("Icon=/home/me/.local/share/icons/soworker.png\n") && e.contains("StartupWMClass=soworker"));
         assert!(entry_for("/a b/soworker", "/i.png").contains("Exec=\"/a b/soworker\"\n"));
     }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // A fake "app.sowork.com" for testing the login capture offline: serves a page that stores a Firebase-style login in
-// IndexedDB after a short delay, like the real app does after Google sign-in. Usage: node native/tools/login-test.mjs [port]
+// IndexedDB after a short delay, like the real app does after Google sign-in. Usage: node tools/login-test.mjs [port]
 import http from 'node:http';
 const page = `<!doctype html><title>fake sowork</title><body>signing in...<script>
 setTimeout(() => {
