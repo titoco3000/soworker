@@ -45,7 +45,7 @@ test:
 	cargo test
 
 # Bump the version in Cargo.toml (BUMP=patch|minor|major), build, commit the bump, tag it and publish a GitHub release
-# (with the Windows build too when cargo-xwin is installed).
+# with the Linux and Windows builds. If the Windows build fails, it asks whether to release without it.
 release:
 	@test -z "$$(git status --porcelain)" || { echo "commit your changes first"; exit 1; }
 	@set -e; \
@@ -70,11 +70,14 @@ release:
 	asset="target/release/soworker-$$tag-linux-x86_64.tar.gz"; \
 	tar -czf "$$asset" -C target/release soworker; \
 	win=""; \
-	if cargo xwin --version >/dev/null 2>&1; then \
-		$(MAKE) --no-print-directory build-windows; \
-		win="$$PWD/target/release/soworker-$$tag-windows-x86_64.zip"; \
-		rm -f "$$win"; (cd target/x86_64-pc-windows-msvc/release && zip -q "$$win" soworker.exe); \
-	else echo "cargo-xwin not installed: no Windows build in this release (see build-windows)"; fi; \
+	winzip="$$PWD/target/release/soworker-$$tag-windows-x86_64.zip"; \
+	rm -f "$$winzip"; \
+	if $(MAKE) --no-print-directory build-windows && (cd target/x86_64-pc-windows-msvc/release && zip -q "$$winzip" soworker.exe); then \
+		win="$$winzip"; \
+	else \
+		read -r -p "Windows build failed (see build-windows for the cargo-xwin setup). Release without it? [y/N] " ans; \
+		case "$$ans" in [yY]*) ;; *) exit 1;; esac; \
+	fi; \
 	git add Cargo.toml Cargo.lock; \
 	git commit -q -m "Release $$tag"; committed=1; \
 	git tag "$$tag"; tagged=1; \
