@@ -29,6 +29,8 @@ const MUTED: Color = Color::Rgb(165, 171, 181);
 
 pub const PEOPLE_W: u16 = 30;
 pub const CHAT_W: u16 = 42;
+/// Width of the "G window" button at the right end of the header (only with a GUI built in).
+pub const GUI_BUTTON_W: u16 = 10;
 
 /// Where each panel sits; also what the mouse is matched against.
 #[derive(Clone, Copy, Debug, Default)]
@@ -95,6 +97,7 @@ const HELP: &[&str] = &[
     "Video       n next picture   V open the video window",
     "Chat        t open and type, T close, Tab switches between chats, Esc leaves the input",
     "Other       b available/away   r respawn   p people   O log out   q quit",
+    "Window      G switch to the window client (also the button top right)",
     "",
     "any key closes this",
 ];
@@ -125,9 +128,13 @@ fn header(f: &mut Frame, t: &Tui, r: Rect) {
         l.push(Span::styled(format!(" {unread} unread "), Style::new().fg(BRAND).add_modifier(Modifier::BOLD)));
     }
     f.render_widget(Paragraph::new(Line::from(l)), r);
+    let btn = if cfg!(feature = "gui") { GUI_BUTTON_W.min(r.width) } else { 0 };
+    if btn > 0 {
+        f.render_widget(Paragraph::new(Span::styled(" G window ", Style::new().fg(Color::Black).bg(MUTED))), Rect { x: r.x + r.width - btn, width: btn, ..r });
+    }
     if let Some((msg, _)) = &st.toast {
-        let w = (msg.width() as u16 + 2).min(r.width.saturating_sub(2));
-        let tr = Rect { x: r.x + r.width - w, width: w, ..r };
+        let w = (msg.width() as u16 + 2).min(r.width.saturating_sub(2 + btn));
+        let tr = Rect { x: r.x + r.width - btn - w, width: w, ..r };
         f.render_widget(Clear, tr);
         f.render_widget(Paragraph::new(Span::styled(format!(" {} ", fit(msg, w.saturating_sub(2) as usize)), Style::new().fg(Color::Black).bg(WARN))), tr);
     }

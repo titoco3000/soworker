@@ -72,6 +72,8 @@ pub struct Tui {
     areas: view::Areas,
     start: Instant,
     quit: bool,
+    /// Leave for the window client once the terminal is back to normal.
+    to_gui: bool,
     dry: bool,
     /// Memory this process uses (MB, proportional share), and when it was read.
     pub mem: (f32, Instant),
@@ -97,6 +99,7 @@ impl Tui {
             areas: Default::default(),
             start: Instant::now(),
             quit: false,
+            to_gui: false,
             dry,
             mem: (proc_mb(), Instant::now()),
         }
@@ -495,6 +498,10 @@ impl Tui {
                 '-' | '_' => self.zoom = (self.zoom - 1).max(-2),
                 'n' => self.next_picture(),
                 'V' => self.open_window(),
+                'G' if cfg!(feature = "gui") => {
+                    self.to_gui = true;
+                    self.quit = true;
+                }
                 'O' => self.modal = Modal::Logout,
                 '?' => self.modal = Modal::Help,
                 _ => {}
@@ -519,7 +526,10 @@ impl Tui {
         let now = self.now();
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if inside(a.chat) {
+                if cfg!(feature = "gui") && row == a.header.y && col + view::GUI_BUTTON_W >= a.header.x + a.header.width {
+                    self.to_gui = true;
+                    self.quit = true;
+                } else if inside(a.chat) {
                     self.focus = Focus::Chat;
                 } else if inside(a.people) {
                     let r = a.people.unwrap_or_default();
@@ -725,7 +735,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Ok(auth) => t.sign_in(auth),
         Err(e) => t.st.login = Some(if std::path::Path::new(&path).exists() { LoginPhase::Failed(format!("Your saved sign-in no longer works ({e}).")) } else { LoginPhase::Idle }),
     }
-    event_loop(&mut t, &mut terminal, rx, exit_after)
+    let res = event_loop(&mut t, &mut terminal, rx, exit_after);
+    if t.to_gui && res.is_ok() {
+        drop(_restore); // the terminal back to normal first
+        return crate::mode::relaunch(crate::mode::UiMode::Gui, args);
+    }
+    res
 }
 
 fn event_loop(t: &mut Tui, terminal: &mut ratatui::DefaultTerminal, rx: Receiver<Msg>, exit_after: Option<f64>) -> Result<(), String> {

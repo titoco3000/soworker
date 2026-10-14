@@ -303,6 +303,12 @@ impl ApplicationHandler<UserEvent> for App {
             println!("exit-after: rss {:.1} MB, pss {:.1} MB, fps {}", rss as f64 / 1048576.0, pss as f64 / 1048576.0, self.fps);
             return el.exit();
         }
+        if let Some(to) = self.st.switch.take() {
+            match crate::mode::relaunch(to, &std::env::args().skip(1).collect::<Vec<_>>()) {
+                Ok(()) => return el.exit(),
+                Err(e) => self.st.say(e, now),
+            }
+        }
         if self.logout_after.is_some_and(|t| now > t) && !self.st.logout_requested {
             self.st.logout_choice(true);
         }

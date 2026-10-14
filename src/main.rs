@@ -8,6 +8,7 @@ mod directory;
 mod login;
 mod mapobj;
 mod meeting;
+mod mode;
 mod net;
 mod notify;
 mod overlay;
@@ -108,14 +109,29 @@ fn main() {
     }
 }
 
-/// The terminal client by default; `--gui` picks the window when it is built in.
+/// Pick the client (see `mode::choose`), remember it, and start it. From a launcher icon with no terminal, the
+/// terminal client is started inside a terminal emulator instead and this process ends.
 fn frontend(args: &[String]) -> Result<(), String> {
-    #[cfg(feature = "gui")]
-    if args.iter().any(|a| a == "--gui") || cfg!(not(feature = "tui")) {
-        return gui::run(args);
+    use mode::UiMode;
+    let terminal = mode::in_terminal();
+    let mut m = mode::choose(args, terminal, mode::last());
+    if m == UiMode::Tui && !terminal {
+        match mode::relaunch(UiMode::Tui, args) {
+            Ok(()) => return Ok(()),
+            Err(e) if UiMode::Gui.built() => {
+                eprintln!("{e}; opening the window instead");
+                m = UiMode::Gui;
+            }
+            Err(e) => return Err(e),
+        }
     }
-    #[cfg(feature = "tui")]
-    return tui::run(args);
-    #[cfg(not(feature = "tui"))]
-    unreachable!()
+    mode::remember(m);
+    match m {
+        #[cfg(feature = "gui")]
+        UiMode::Gui => gui::run(args),
+        #[cfg(feature = "tui")]
+        UiMode::Tui => tui::run(args),
+        #[allow(unreachable_patterns)]
+        _ => Err("this build has no client for that mode".into()),
+    }
 }

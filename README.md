@@ -3,15 +3,15 @@
 Unofficial native client for [SoWork](https://www.sowork.com): walk around the office, see who is where, wave, chat and
 join calls without a browser tab. Rust, one process, runs in the terminal: the office is drawn with text, and the only
 graphics are the camera and screen-share video. Chrome is only used for the sign-in. A software-rendered window client
-is still there as the `gui` feature (`soworker --gui`).
+is built in too (`soworker --gui`).
 
 ## Build and run
 
 Needs a Rust toolchain and `clang` (calls use the LiveKit Rust SDK; the first build downloads libwebrtc, 156 MB).
 
 ```
-make build                  # terminal client: release binary in target/release/soworker
-make build-gui              # the same plus the window client (soworker --gui)
+make build                  # both clients: release binary in target/release/soworker
+make build-tui              # the terminal client only (smaller)
 make install                # install to ~/.cargo/bin (registers the launcher entry on first start)
 make dev                    # rebuild and restart on every source change (needs cargo-watch)
 make test                   # cargo test
@@ -21,9 +21,15 @@ make release [BUMP=minor]   # bump version (patch by default), build, commit, ta
 Run with `soworker --dry-run` (connect and watch, sends nothing) or `soworker` (live).
 `cargo build --release --no-default-features --features tui` gives a small build without calls.
 
-Cargo features: `tui` (terminal client, default), `gui` (window client), `calls` (audio and video through LiveKit,
+Cargo features: `tui` (terminal client, default), `gui` (window client, default), `calls` (audio and video through LiveKit,
 default), `portal` (global push-to-talk shortcut through the desktop portal, default). Internal ones: `window` (the
 bare video window), `render` and `overlay` (software drawing, the always-on-top "you are live" pill; both come with `gui`).
+
+**Which client starts:** `--tui` or `--gui` if given; otherwise the terminal client when run from a terminal; started from a
+launcher icon (no terminal) it opens whichever you used last (the window the first time), and the terminal client is then
+opened inside a terminal emulator (`$TERMINAL`, `xdg-terminal-exec`, or the usual ones; set `"terminal": "<your terminal's run-a-command syntax> {}"` in
+`~/.config/soworker/settings.json` to choose). In the terminal, `G` (or the button top right) hands over to the window and
+quits; in the window, the Terminal button in the sidebar footer does the opposite. The last choice is kept in `~/.config/soworker/last-ui`.
 
 On first start there is a sign-in screen: Enter opens Chrome on SoWork's login page, takes the token once you are
 signed in and closes it again. The token is stored in `~/.config/soworker/session.json` (use `--session <file>` for

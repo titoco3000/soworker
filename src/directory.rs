@@ -45,6 +45,8 @@ pub enum Row {
 pub enum Hit {
     Away,
     Logout,
+    /// Move to the terminal client.
+    Terminal,
     Chat,
     Row(String),
     Join(String),

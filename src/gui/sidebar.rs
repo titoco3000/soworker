@@ -31,6 +31,8 @@ pub struct Layout {
     pub away: R,
     pub chat: R,
     pub logout: R,
+    /// The "Terminal" button in the footer.
+    pub term: R,
     pub list: R,
     pub items: Vec<(Row, R)>,
     pub max_scroll: f32,
@@ -60,7 +62,8 @@ pub fn layout(st: &State, h: f32) -> Layout {
             (r, rect)
         })
         .collect();
-    Layout { panel, away, chat, logout, list, items, max_scroll }
+    let term = if cfg!(feature = "tui") { R { x: panel.w - (PAD + 84.0) * u, y: list.y + list.h + 3.0 * u, w: 84.0 * u, h: (FOOTER - 6.0) * u } } else { R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 } };
+    Layout { panel, away, chat, logout, term, list, items, max_scroll }
 }
 
 /// The buttons of a Menu row, side by side.
@@ -92,6 +95,9 @@ pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Hit> {
     }
     if l.logout.contains(px, py) {
         return Some(Hit::Logout);
+    }
+    if l.term.w > 0.0 && l.term.contains(px, py) {
+        return Some(Hit::Terminal);
     }
     if l.list.contains(px, py) {
         for (row, rect) in &l.items {
@@ -316,6 +322,10 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
     fill(pm, &footer, 0.0, SURFACE, 255);
     fill(pm, &R { h: 1.0, ..footer }, 0.0, LINE, 255);
     text.draw(pm, &format!("Memory {:.1} MB", pss_mb()), PAD * u, footer.y + footer.h / 2.0 + 4.0 * u, 11.0 * u, INK_FAINT, 0.0);
+    if l.term.w > 0.0 {
+        outline(pm, &l.term, 6.0 * u, LINE);
+        text.draw(pm, "Terminal", l.term.x + l.term.w / 2.0, l.term.y + l.term.h / 2.0 + 4.0 * u, 11.0 * u, INK_MUTED, 0.5);
+    }
     let edge = R { x: l.panel.w - 1.0, y: 0.0, w: 1.0, h };
     fill(pm, &edge, 0.0, LINE, 255);
 }

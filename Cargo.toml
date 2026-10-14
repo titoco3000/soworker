@@ -5,10 +5,11 @@ edition = "2021"
 description = "Native lightweight SoWork client (no browser, no Node)"
 
 [features]
-default = ["tui", "calls", "portal"]
+default = ["tui", "gui", "calls", "portal"]
 # Terminal client (ratatui). Video shows inline where the terminal supports the kitty graphics protocol, else in a small window.
 tui = ["dep:ratatui", "dep:unicode-width", "window"]
-# Graphical client: software-rendered window with sidebar, map, chat and meeting dock (`soworker --gui`).
+# Graphical client: software-rendered window with sidebar, map, chat and meeting dock (`soworker --gui`). With both
+# clients built in, each has a button that hands over to the other.
 gui = ["window", "render", "overlay", "dep:image"]
 # A bare window that only shows video frames (the TUI's fallback for camera and screen share).
 window = ["dep:winit", "dep:softbuffer"]

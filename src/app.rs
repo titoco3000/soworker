@@ -136,6 +136,8 @@ pub struct State {
     avatar_asked: HashMap<String, String>,
     left_zone: Option<String>,
     pub dirty: bool,
+    /// Set when the user asked to move to the other client; the frontend hands over and closes.
+    pub switch: Option<crate::mode::UiMode>,
     /// Logout flow: the confirmation dialog, then the request the window acts on.
     pub confirm_logout: bool,
     pub logout_requested: bool,
@@ -194,6 +196,7 @@ impl State {
             avatar_asked: HashMap::new(),
             left_zone: None,
             dirty: true,
+            switch: None,
             confirm_logout: false,
             logout_requested: false,
             login: None,
@@ -566,6 +569,7 @@ impl State {
                 self.set_available(a);
             }
             Hit::Logout => self.confirm_logout = true,
+            Hit::Terminal => self.switch = Some(crate::mode::UiMode::Tui),
             Hit::Row(key) => self.sidebar.open = if self.sidebar.open.as_deref() == Some(key.as_str()) { None } else { Some(key) },
             Hit::Join(key) => {
                 self.sidebar.open = None;

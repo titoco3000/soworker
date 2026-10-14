@@ -17,9 +17,8 @@ fn data_dir() -> Option<PathBuf> {
 /// spec asks. The icon is given by its full path: that works in every launcher, with no icon-theme lookup or cache.
 pub fn entry_for(exe: &str, icon: &str) -> String {
     let exec = if exe.contains(' ') { format!("\"{exe}\"") } else { exe.to_string() };
-    // the terminal client has no window of its own: the launcher has to open a terminal for it
-    let terminal = if cfg!(feature = "tui") { "Terminal=true" } else { "Terminal=false" };
-    ENTRY.replace("@EXEC@", &exec).replace("@ICON@", icon).replace("Terminal=false", terminal)
+    // Terminal=false on purpose: the app opens a terminal itself when the terminal client is the one to start (see mode.rs)
+    ENTRY.replace("@EXEC@", &exec).replace("@ICON@", icon)
 }
 
 fn write_if_changed(path: &std::path::Path, bytes: &[u8]) -> bool {
