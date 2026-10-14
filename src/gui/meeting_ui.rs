@@ -3,82 +3,14 @@
 //! a floating draggable card that snaps to one of eight slots (or full window), a header with a fullscreen toggle,
 //! one tile per attendee in a gallery grid or pinned + sidebar, hover buttons (mute / camera off / pin), a status line,
 //! the controls row (leave, lock, camera, mic, share screen) and the chat toggle with its column.
-use crate::app::State;
-use crate::icon;
-use crate::icons::{self, Shape};
-use crate::render::Text;
-use crate::theme::{self, Rgb};
+use crate::app::{Frame, State};
+use crate::gui::icon;
+use crate::gui::icons::{self, Shape};
+use crate::gui::render::Text;
+use crate::gui::theme::{self, Rgb};
 use tiny_skia::{FillRule, FilterQuality, Paint, Path, PathBuilder, Pattern, Pixmap, PixmapMut, PixmapPaint, SpreadMode, Stroke, Transform};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Slot {
-    TopLeft,
-    TopCenter,
-    TopRight,
-    MidLeft,
-    MidRight,
-    BotLeft,
-    BotCenter,
-    BotRight,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Drag {
-    pub grab: (f32, f32),
-    pub pos: (f32, f32),
-}
-
-#[derive(Default)]
-pub struct Hover {
-    pub tile: Option<String>,
-}
-
-pub struct Dock {
-    pub full: bool,
-    pub slot: Slot,
-    pub drag: Option<Drag>,
-    pub chat_open: bool,
-    pub pinned: Option<String>,
-    /// The first screen-share tile that was auto-pinned, so a new share pins once but a manual unpin sticks.
-    pub last_auto: Option<String>,
-    pub hover: Hover,
-    /// Scroll offset of the pinned layout's sidebar column (px).
-    pub scroll: f32,
-}
-
-impl Default for Dock {
-    fn default() -> Self {
-        Dock { full: false, slot: Slot::BotRight, drag: None, chat_open: false, pinned: None, last_auto: None, hover: Hover::default(), scroll: 0.0 }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Ctl {
-    Leave,
-    Lock,
-    Cam,
-    Mic,
-    Share,
-    Chat,
-    FullToggle,
-    Send,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TileBtn {
-    Mute,
-    CameraOff,
-    Pin,
-}
-
-#[derive(Clone, PartialEq, Debug)]
-pub enum Hit {
-    Header,
-    Ctl(Ctl),
-    Tile(String),
-    TileBtn(String, TileBtn),
-    Inside,
-}
+pub use crate::meeting::*;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct R {
@@ -91,18 +23,6 @@ impl R {
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
     }
-}
-
-pub struct TileSpec {
-    pub id: String,
-    pub video_key: Option<String>,
-    pub name: String,
-    pub initial: String,
-    pub user: Option<String>,
-    pub is_self: bool,
-    pub content: bool,
-    pub speaking: bool,
-    pub muted: bool,
 }
 
 pub struct Layout {
@@ -120,69 +40,6 @@ pub struct Layout {
     pub area: R,
     pub side: Option<R>,
     pub max_scroll: f32,
-}
-
-pub fn visible(st: &State) -> bool {
-    st.call.joined.is_some() || st.call.want.is_some()
-}
-
-pub fn status_label(st: &State) -> &'static str {
-    let others = others(st).len();
-    match (st.call.joined.is_some(), others) {
-        (false, _) => "Connecting…",
-        (true, 0) => "Waiting for others",
-        _ => "Connected",
-    }
-}
-
-fn others(st: &State) -> Vec<String> {
-    if let Some(p) = &st.call.peers {
-        return p.iter().map(|(i, _)| i.clone()).filter(|i| *i != st.me_id).collect();
-    }
-    st.cluster.as_ref().map(|c| c.users.iter().filter(|(i, _)| *i != st.me_id).map(|(i, _)| i.clone()).collect()).unwrap_or_default()
-}
-
-pub fn tiles(st: &State) -> Vec<TileSpec> {
-    let me_name = st.me().map(|m| m.name.clone()).unwrap_or_default();
-    let mut v = vec![TileSpec {
-        id: "self".into(),
-        video_key: st.call.cam.then(|| "me".to_string()),
-        name: "You".into(),
-        initial: me_name,
-        user: Some(st.me_id.clone()),
-        is_self: true,
-        content: false,
-        speaking: st.call.speakers.contains(&st.me_id),
-        muted: !st.call.mic,
-    }];
-    for id in others(st) {
-        let name = st.users.get(&id).map(|u| u.name.clone()).or_else(|| st.call.peers.as_ref().and_then(|p| p.iter().find(|(i, n)| *i == id && !n.is_empty()).map(|(_, n)| n.clone()))).or_else(|| st.cluster.as_ref().and_then(|c| c.users.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| id.clone());
-        v.push(TileSpec {
-            video_key: st.call.tiles.iter().any(|t| t.key == id).then(|| id.clone()),
-            initial: name.clone(),
-            name,
-            user: Some(id.clone()),
-            id: id.clone(),
-            is_self: false,
-            content: false,
-            speaking: st.call.speakers.contains(&id),
-            muted: st.call.peer_muted.contains(&id),
-        });
-    }
-    for t in st.call.tiles.iter().filter(|t| t.key.ends_with(":screen")) {
-        v.push(TileSpec {
-            id: format!("content:{}", t.key),
-            video_key: Some(t.key.clone()),
-            name: if t.key.starts_with("me:") { "Your screen".into() } else { "Screen share".into() },
-            initial: String::new(),
-            user: None,
-            is_self: false,
-            content: true,
-            speaking: false,
-            muted: false,
-        });
-    }
-    v
 }
 
 fn slot_pos(slot: Slot, dw: f32, dh: f32, w: f32, h: f32, margin: f32) -> (f32, f32) {
@@ -395,13 +252,13 @@ fn faux_bold(pm: &mut PixmapMut<'_>, text: &mut Text, s: &str, x: f32, y: f32, p
 }
 
 /// A camera/screen frame filling a rounded rect: `cover` crops to fill (cameras), otherwise letterboxes (screens).
-fn draw_video(pm: &mut PixmapMut<'_>, img: &Pixmap, r: R, radius: f32, cover: bool, mirror: bool) {
-    let (iw, ih) = (img.width() as f32, img.height() as f32);
+fn draw_video(pm: &mut PixmapMut<'_>, img: &Frame, r: R, radius: f32, cover: bool, mirror: bool) {
+    let (iw, ih) = (img.w as f32, img.h as f32);
     let s = if cover { (r.w / iw).max(r.h / ih) } else { (r.w / iw).min(r.h / ih) };
     let (dw, dh) = (iw * s, ih * s);
     let (ox, oy) = (r.x + (r.w - dw) / 2.0, r.y + (r.h - dh) / 2.0);
     let tf = if mirror { Transform::from_scale(-s, s).post_translate(ox + dw, oy) } else { Transform::from_scale(s, s).post_translate(ox, oy) };
-    let pat = Pattern::new(img.as_ref(), SpreadMode::Pad, FilterQuality::Bilinear, 1.0, tf);
+    let pat = Pattern::new(img.px(), SpreadMode::Pad, FilterQuality::Bilinear, 1.0, tf);
     let p = Paint { shader: pat, anti_alias: true, ..Paint::default() };
     let path = if cover { rr(r, radius) } else { PathBuilder::from_rect(tiny_skia::Rect::from_xywh(ox, oy, dw, dh).unwrap_or(tiny_skia::Rect::from_xywh(r.x, r.y, r.w, r.h).unwrap())).into() };
     if let Some(path) = path {
@@ -410,12 +267,12 @@ fn draw_video(pm: &mut PixmapMut<'_>, img: &Pixmap, r: R, radius: f32, cover: bo
 }
 
 /// A circular picture or the first-letter placeholder, centred in the rect (omoffice `size-12` = 48px).
-fn draw_avatar(pm: &mut PixmapMut<'_>, text: &mut Text, pic: Option<&Pixmap>, initial: &str, cx: f32, cy: f32, size: f32, u: f32) {
+fn draw_avatar(pm: &mut PixmapMut<'_>, text: &mut Text, pic: Option<&Frame>, initial: &str, cx: f32, cy: f32, size: f32, u: f32) {
     match pic {
         Some(p) => {
-            let s = size / p.width() as f32;
+            let s = size / p.w as f32;
             let tf = Transform::from_scale(s, s).post_translate(cx - size / 2.0, cy - size / 2.0);
-            pm.draw_pixmap(0, 0, p.as_ref(), &PixmapPaint { quality: FilterQuality::Bilinear, ..PixmapPaint::default() }, tf, None);
+            pm.draw_pixmap(0, 0, p.px(), &PixmapPaint { quality: FilterQuality::Bilinear, ..PixmapPaint::default() }, tf, None);
         }
         None => {
             if let Some(c) = PathBuilder::from_circle(cx, cy, size / 2.0) {

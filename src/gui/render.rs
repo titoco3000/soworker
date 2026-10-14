@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, PixmapMut, PixmapPaint, Rect, Stroke, StrokeDash, Transform};
 
 /// The logout confirmation dialog: card, Cancel and Log out buttons.
-pub fn modal(st: &State, w: f32, h: f32) -> (crate::meeting_ui::R, crate::meeting_ui::R, crate::meeting_ui::R) {
-    use crate::meeting_ui::R;
+pub fn modal(st: &State, w: f32, h: f32) -> (crate::gui::meeting_ui::R, crate::gui::meeting_ui::R, crate::gui::meeting_ui::R) {
+    use crate::gui::meeting_ui::R;
     let u = st.ui;
     let (cw, ch) = (360.0 * u, 150.0 * u);
     let card = R { x: (w - cw) / 2.0, y: (h - ch) / 2.0, w: cw, h: ch };
@@ -140,8 +140,8 @@ pub fn proc_mem() -> (u64, u64) {
 }
 
 /// The sign-in screen: card, and its single button (Start / Cancel / Try again).
-pub fn login_layout(st: &State, w: f32, h: f32) -> (crate::meeting_ui::R, crate::meeting_ui::R) {
-    use crate::meeting_ui::R;
+pub fn login_layout(st: &State, w: f32, h: f32) -> (crate::gui::meeting_ui::R, crate::gui::meeting_ui::R) {
+    use crate::gui::meeting_ui::R;
     let u = st.ui;
     let (cw, ch) = (440.0 * u, 250.0 * u);
     let card = R { x: (w - cw) / 2.0, y: (h - ch) / 2.0, w: cw, h: ch };
@@ -160,13 +160,13 @@ pub fn login_hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<crate::
 
 fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     use crate::app::LoginPhase;
-    use crate::theme::*;
+    use crate::gui::theme::*;
     let (w, h) = (pm.width() as f32, pm.height() as f32);
     let (card, button) = login_layout(st, w, h);
     let (u, id) = (st.ui, Transform::identity());
     pm.fill(Color::from_rgba8(BG[0], BG[1], BG[2], 255));
     let c = |r: Rgb, a: u8| paint(r[0], r[1], r[2], a);
-    if let Some(p) = crate::icon::rounded_rect(card.x, card.y, card.w, card.h, RADIUS_CARD * u) {
+    if let Some(p) = crate::gui::icon::rounded_rect(card.x, card.y, card.w, card.h, RADIUS_CARD * u) {
         pm.fill_path(&p, &c(SURFACE, 255), FillRule::Winding, id, None);
         pm.stroke_path(&p, &c(LINE, 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
     }
@@ -191,7 +191,7 @@ fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
         text.draw(pm, l, x, card.y + 108.0 * u + i as f32 * 20.0 * u, 13.0 * u, *col, 0.0);
     }
     let waiting = st.login == Some(LoginPhase::Waiting);
-    if let Some(p) = crate::icon::rounded_rect(button.x, button.y, button.w, button.h, RADIUS_CARD * u) {
+    if let Some(p) = crate::gui::icon::rounded_rect(button.x, button.y, button.w, button.h, RADIUS_CARD * u) {
         if !waiting {
             pm.fill_path(&p, &c(BRAND, 255), FillRule::Winding, id, None);
         } else {
@@ -200,6 +200,26 @@ fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     }
     let tc = if waiting { INK_MUTED } else { ON_BRAND };
     text.draw(pm, label, button.x + button.w / 2.0, button.y + button.h / 2.0 + 5.0 * u, 14.0 * u, tc, 0.5);
+}
+
+/// Screen geometry: the map sits between the sidebar and the chat panel, the camera centred on me.
+impl State {
+    pub fn map_edges(&self, w: f32) -> (f32, f32) {
+        (crate::gui::sidebar::width(self), w - crate::gui::chatui::width(self))
+    }
+
+    /// Screen x of the map's centre: the window minus the sidebar on the left.
+    pub fn view_x(&self, w: f32) -> f32 {
+        let (l, r) = self.map_edges(w);
+        l + (r - l) / 2.0
+    }
+
+    /// Screen position -> world position for a window of the given size, camera centred on me.
+    pub fn to_world(&self, px: f32, py: f32, w: f32, h: f32) -> Option<(f32, f32)> {
+        let me = self.me()?;
+        let s = self.scale * self.ui;
+        Some((me.x + (px - self.view_x(w)) / s, me.y + (py - h / 2.0) / s))
+    }
 }
 
 pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
@@ -307,9 +327,9 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
         match st.pics.get(&u.id) {
             Some(p) => {
                 // the picture is already cut to a circle; draw it scaled to the avatar size
-                let s = (2.0 * r) / p.width() as f32;
+                let s = (2.0 * r) / p.w as f32;
                 let tf = Transform::from_scale(s, s).post_translate(sx - r, sy - r);
-                pm.draw_pixmap(0, 0, p.as_ref(), &PixmapPaint { opacity: alpha, quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() }, tf, None);
+                pm.draw_pixmap(0, 0, p.px(), &PixmapPaint { opacity: alpha, quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() }, tf, None);
             }
             None => {
                 if let Some(c) = PathBuilder::from_circle(sx, sy, r) {
@@ -341,27 +361,34 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
 
     // transient messages (e.g. "Walking to ...")
     if let Some((t, _)) = &st.toast {
-        text.shadowed(pm, t, crate::sidebar::width(st) + 10.0 * ui, 20.0 * ui, 13.0 * ui, [240, 200, 120], 0.0);
+        text.shadowed(pm, t, crate::gui::sidebar::width(st) + 10.0 * ui, 20.0 * ui, 13.0 * ui, [240, 200, 120], 0.0);
     }
-    crate::sidebar::draw(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
-    crate::meeting_ui::draw(st, pm, text, w, h);
-    crate::chatui::draw(st, pm, text);
+    crate::gui::sidebar::draw(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
+    crate::gui::meeting_ui::draw(st, pm, text, w, h);
+    crate::gui::chatui::draw(st, pm, text);
     if st.confirm_logout {
         pm.fill_rect(Rect::from_xywh(0.0, 0.0, w, h).unwrap(), &paint(0, 0, 0, 140), id, None);
         let (card, cancel, confirm) = modal(st, w, h);
-        let rc = |r: &crate::meeting_ui::R, rad: f32| crate::icon::rounded_rect(r.x, r.y, r.w, r.h, rad);
-        if let Some(p) = rc(&card, crate::theme::RADIUS_CARD * ui) {
-            pm.fill_path(&p, &paint(crate::theme::SURFACE[0], crate::theme::SURFACE[1], crate::theme::SURFACE[2], 255), FillRule::Winding, id, None);
-            pm.stroke_path(&p, &paint(crate::theme::LINE[0], crate::theme::LINE[1], crate::theme::LINE[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
+        let rc = |r: &crate::gui::meeting_ui::R, rad: f32| crate::gui::icon::rounded_rect(r.x, r.y, r.w, r.h, rad);
+        if let Some(p) = rc(&card, crate::gui::theme::RADIUS_CARD * ui) {
+            pm.fill_path(&p, &paint(crate::gui::theme::SURFACE[0], crate::gui::theme::SURFACE[1], crate::gui::theme::SURFACE[2], 255), FillRule::Winding, id, None);
+            pm.stroke_path(&p, &paint(crate::gui::theme::LINE[0], crate::gui::theme::LINE[1], crate::gui::theme::LINE[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
         }
-        text.draw(pm, "Log out?", card.x + 16.0 * ui, card.y + 30.0 * ui, 16.0 * ui, crate::theme::INK, 0.0);
-        text.draw(pm, "This forgets your saved sign-in on this computer.", card.x + 16.0 * ui, card.y + 56.0 * ui, 13.0 * ui, crate::theme::INK_MUTED, 0.0);
-        text.draw(pm, "You will be taken back to the sign-in screen.", card.x + 16.0 * ui, card.y + 76.0 * ui, 13.0 * ui, crate::theme::INK_MUTED, 0.0);
-        for (r, label, col) in [(&cancel, "Cancel", crate::theme::INK_MUTED), (&confirm, "Log out", crate::theme::DANGER)] {
-            if let Some(p) = rc(r, crate::theme::RADIUS_CARD * ui) {
-                pm.stroke_path(&p, &paint(crate::theme::LINE[0], crate::theme::LINE[1], crate::theme::LINE[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
+        text.draw(pm, "Log out?", card.x + 16.0 * ui, card.y + 30.0 * ui, 16.0 * ui, crate::gui::theme::INK, 0.0);
+        text.draw(pm, "This forgets your saved sign-in on this computer.", card.x + 16.0 * ui, card.y + 56.0 * ui, 13.0 * ui, crate::gui::theme::INK_MUTED, 0.0);
+        text.draw(pm, "You will be taken back to the sign-in screen.", card.x + 16.0 * ui, card.y + 76.0 * ui, 13.0 * ui, crate::gui::theme::INK_MUTED, 0.0);
+        for (r, label, col) in [(&cancel, "Cancel", crate::gui::theme::INK_MUTED), (&confirm, "Log out", crate::gui::theme::DANGER)] {
+            if let Some(p) = rc(r, crate::gui::theme::RADIUS_CARD * ui) {
+                pm.stroke_path(&p, &paint(crate::gui::theme::LINE[0], crate::gui::theme::LINE[1], crate::gui::theme::LINE[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
             }
             text.draw(pm, label, r.x + r.w / 2.0, r.y + r.h / 2.0 + 5.0 * ui, 14.0 * ui, col, 0.5);
         }
+    }
+}
+
+impl crate::app::Frame {
+    /// The picture as a tiny-skia pixmap, without copying.
+    pub fn px(&self) -> tiny_skia::PixmapRef<'_> {
+        tiny_skia::PixmapRef::from_bytes(&self.rgba, self.w, self.h).expect("frame size checked when stored")
     }
 }

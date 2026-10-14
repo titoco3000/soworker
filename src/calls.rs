@@ -33,6 +33,21 @@ pub enum MediaEvent {
     AskedToMute { from: String },
 }
 
+/// Which video tiles the frontend wants to see; frames of any other tile are not converted at all (they are dropped
+/// before the YUV to RGBA work). `None` = all of them (the window client), `Some(empty)` = none (no video shown).
+static WANTED: std::sync::RwLock<Option<std::collections::HashSet<String>>> = std::sync::RwLock::new(None);
+
+#[cfg(feature = "tui")]
+pub fn want_video(keys: Option<std::collections::HashSet<String>>) {
+    if let Ok(mut w) = WANTED.write() {
+        *w = keys;
+    }
+}
+
+pub fn wants_video(key: &str) -> bool {
+    WANTED.read().map_or(true, |w| w.as_ref().map_or(true, |s| s.contains(key)))
+}
+
 /// Sender for media commands. Without the `calls` feature it is a stub, so the UI code compiles either way.
 #[cfg(feature = "calls")]
 pub type MediaTx = tokio::sync::mpsc::UnboundedSender<MediaCmd>;

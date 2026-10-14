@@ -1,12 +1,10 @@
 //! Application state and per-frame logic: input, walking, click-to-move, zones, presence.
 //! Pure logic (no window, no sockets) so it runs the same in the window and in tests.
-use crate::avatars;
 use crate::calls::{MediaCmd, MediaEvent};
-use crate::meeting_ui::{Ctl, Dock, Hit, TileBtn};
+use crate::meeting::{Ctl, Dock, Hit, TileBtn};
 use crate::proto::{ClusterInfo, Cmd, Net, User};
 use crate::world::{tile, World, T};
 use std::collections::HashMap;
-use tiny_skia::Pixmap;
 
 pub const SPEED: f32 = 800.0; // world units / second, same as the official client
 const TICK: f64 = 0.205; // official client sends `move` about every 205 ms while walking
@@ -43,10 +41,17 @@ pub struct WaveIn {
     pub at: f64,
 }
 
+/// A picture in RGBA, as it arrives from the loaders (avatars are premultiplied, video is opaque).
+pub struct Frame {
+    pub w: u32,
+    pub h: u32,
+    pub rgba: Vec<u8>,
+}
+
 pub struct Tile {
     pub key: String,
     pub name: String,
-    pub img: tiny_skia::Pixmap,
+    pub img: Frame,
 }
 
 /// Call state shown in the UI. `want` is the LiveKit room the server asked us to be in.
@@ -87,6 +92,7 @@ pub enum LoginAct {
     Cancel,
 }
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub struct State {
     pub world: World,
     pub me_id: String,
@@ -95,9 +101,9 @@ pub struct State {
     pub users: HashMap<String, Avatar>,
     /// The office's member list (online and offline) and what the sidebar is showing.
     pub roster: Vec<crate::roster::Member>,
-    pub sidebar: crate::sidebar::Ui,
+    pub sidebar: crate::directory::Ui,
     pub waves: Vec<WaveIn>,
-    pub chat: crate::chatui::Chat,
+    pub chat: crate::chatstate::Chat,
     pub chat_out: Vec<crate::chat::ChatCmd>,
     /// UI sounds to play; the window drains this.
     pub sounds: Vec<crate::sound::Sound>,
@@ -125,7 +131,7 @@ pub struct State {
     pub call: CallUi,
     pub dock: Dock,
     /// Circle-masked avatar pictures by user id, and what we already asked the loader for.
-    pub pics: HashMap<String, Pixmap>,
+    pub pics: HashMap<String, Frame>,
     pub avatar_req: Vec<(String, String)>,
     avatar_asked: HashMap<String, String>,
     left_zone: Option<String>,
@@ -212,7 +218,12 @@ impl State {
     }
 
     /// Ask the loader for a user's picture when we know where it is and have not asked for that URL yet.
+    #[cfg(not(feature = "gui"))]
+    fn want_avatar(&mut self, _id: &str) {}
+
+    #[cfg(feature = "gui")]
     fn want_avatar(&mut self, id: &str) {
+        use crate::avatars;
         let Some(u) = self.users.get(id) else { return };
         let Some(url) = avatars::source_url(u.photo.as_deref(), u.portrait.as_deref()) else { return };
         if self.avatar_asked.get(id) != Some(&url) {
@@ -279,8 +290,8 @@ impl State {
                 self.want_avatar(&id);
             }
             Net::Avatar { id, size, rgba } => {
-                if let Some(p) = tiny_skia::IntSize::from_wh(size, size).and_then(|s| Pixmap::from_vec(rgba, s)) {
-                    self.pics.insert(id, p);
+                if rgba.len() == (size * size * 4) as usize {
+                    self.pics.insert(id, Frame { w: size, h: size, rgba });
                 }
             }
             Net::Leave(id) if id != self.me_id => {
@@ -334,7 +345,7 @@ impl State {
                 self.sync_call();
                 self.sync_overlay(); // the number of listeners may have changed
                 let after = self.cluster.as_ref().map(|c| c.conversation_id.clone());
-                if after != before && after.is_some() && self.chat.open && self.chat.tab == crate::chatui::Tab::Area {
+                if after != before && after.is_some() && self.chat.open && self.chat.tab == crate::chatstate::Tab::Area {
                     let tab = self.chat.tab.clone();
                     self.select_tab(tab); // asks for the new meeting's chat
                 }
@@ -377,23 +388,6 @@ impl State {
     }
 
     /// Left and right edge of the map: between the sidebar and the chat panel.
-    pub fn map_edges(&self, w: f32) -> (f32, f32) {
-        (crate::sidebar::width(self), w - crate::chatui::width(self))
-    }
-
-    /// Screen x of the map's centre: the window minus the sidebar on the left.
-    pub fn view_x(&self, w: f32) -> f32 {
-        let (l, r) = self.map_edges(w);
-        l + (r - l) / 2.0
-    }
-
-    /// Screen position -> world position for a window of the given size, camera centred on me.
-    pub fn to_world(&self, px: f32, py: f32, w: f32, h: f32) -> Option<(f32, f32)> {
-        let me = self.me()?;
-        let s = self.scale * self.ui;
-        Some((me.x + (px - self.view_x(w)) / s, me.y + (py - h / 2.0) / s))
-    }
-
     pub fn click(&mut self, wx: f32, wy: f32, shift: bool, now: f64) {
         if shift {
             return self.teleport(wx, wy);
@@ -557,8 +551,8 @@ impl State {
     }
 
     /// An on-screen button was pressed.
-    pub fn sidebar_press(&mut self, hit: crate::sidebar::Hit, now: f64) {
-        use crate::sidebar::{join_target, Hit};
+    pub fn sidebar_press(&mut self, hit: crate::directory::Hit, now: f64) {
+        use crate::directory::{join_target, Hit};
         match hit {
             Hit::Away => {
                 let a = !self.available;
@@ -579,7 +573,7 @@ impl State {
             Hit::Wave(key) => {
                 // a person, or everyone else in a meeting
                 let targets: Vec<String> = match key.strip_prefix("zone:") {
-                    Some(z) => crate::sidebar::people(self).into_iter().filter(|p| p.online && !p.me && p.zone.as_deref() == Some(z)).map(|p| p.id).collect(),
+                    Some(z) => crate::directory::people(self).into_iter().filter(|p| p.online && !p.me && p.zone.as_deref() == Some(z)).map(|p| p.id).collect(),
                     None => vec![key.clone()],
                 };
                 let names: Vec<String> = targets.iter().map(|t| self.name_of(t, None)).collect();
@@ -684,7 +678,10 @@ impl State {
                 }
             }
             MediaEvent::Video { key, name, w, h, rgba } => {
-                let Some(img) = tiny_skia::IntSize::from_wh(w, h).and_then(|s| tiny_skia::Pixmap::from_vec(rgba, s)) else { return };
+                if rgba.len() != (w * h * 4) as usize {
+                    return;
+                }
+                let img = Frame { w, h, rgba };
                 match self.call.tiles.iter_mut().find(|t| t.key == key) {
                     Some(t) => (t.name, t.img) = (name, img),
                     None => {
@@ -709,6 +706,7 @@ impl State {
         }
     }
 
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     pub fn zoom(&mut self, up: bool) {
         self.scale = (self.scale * if up { 1.1 } else { 1.0 / 1.1 }).clamp(0.08, 1.5);
         self.dirty = true;

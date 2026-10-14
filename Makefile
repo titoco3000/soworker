@@ -6,7 +6,7 @@ export CC = clang
 # release bumps this part of the version: patch (default), minor or major
 BUMP ?= patch
 
-.PHONY: dev build install test release
+.PHONY: dev build build-gui install test release
 
 # Rebuild and restart the app whenever a source file changes (needs cargo-watch).
 dev:
@@ -14,6 +14,10 @@ dev:
 
 build:
 	cargo build --release
+
+# the terminal client plus the window client (soworker --gui)
+build-gui:
+	cargo build --release --features gui
 
 install:
 	cargo install --path . --locked --force

@@ -75,16 +75,19 @@ fn start() -> Option<Sender<Overlay>> {
 }
 
 /// Pixels for the pill: premultiplied RGBA, `W` x `H`.
+#[cfg(feature = "overlay")]
 pub const W: u32 = 300;
+#[cfg(feature = "overlay")]
 pub const H: u32 = 52;
 
-pub fn render(o: &Overlay, text: &mut crate::render::Text) -> tiny_skia::Pixmap {
-    use crate::render::paint;
-    use crate::theme::*;
+#[cfg(feature = "overlay")]
+pub fn render(o: &Overlay, text: &mut crate::gui::render::Text) -> tiny_skia::Pixmap {
+    use crate::gui::render::paint;
+    use crate::gui::theme::*;
     use tiny_skia::{FillRule, PathBuilder, Pixmap, Transform};
     let mut pm = Pixmap::new(W, H).expect("overlay pixmap");
     let id = Transform::identity();
-    if let Some(p) = crate::icon::rounded_rect(1.0, 1.0, W as f32 - 2.0, H as f32 - 2.0, H as f32 / 2.0 - 1.0) {
+    if let Some(p) = crate::gui::icon::rounded_rect(1.0, 1.0, W as f32 - 2.0, H as f32 - 2.0, H as f32 / 2.0 - 1.0) {
         pm.fill_path(&p, &paint(SURFACE[0], SURFACE[1], SURFACE[2], 240), FillRule::Winding, id, None);
         pm.stroke_path(&p, &paint(LINE[0], LINE[1], LINE[2], 255), &tiny_skia::Stroke { width: 1.0, ..Default::default() }, id, None);
     }
@@ -138,7 +141,7 @@ mod layer {
         layer: Option<LayerSurface>,
         configured: bool,
         current: Overlay,
-        text: crate::render::Text,
+        text: crate::gui::render::Text,
         dirty: bool,
     }
 
@@ -206,7 +209,7 @@ mod layer {
             layer: None,
             configured: false,
             current: Overlay::Hide,
-            text: crate::render::Text::new(),
+            text: crate::gui::render::Text::new(),
             dirty: false,
         };
         let _ = ready.send(true);
@@ -300,9 +303,10 @@ mod tests {
         assert_eq!(Overlay::Live { listeners: 3 }.text(), "Live · 3 listening");
     }
 
+    #[cfg(feature = "overlay")]
     #[test]
     fn the_pill_draws_something_opaque_in_the_middle_and_clear_in_the_corner() {
-        let mut t = crate::render::Text::new();
+        let mut t = crate::gui::render::Text::new();
         let pm = render(&Overlay::Live { listeners: 2 }, &mut t);
         let a = |x: u32, y: u32| pm.data()[((y * W + x) * 4 + 3) as usize];
         assert_eq!(a(0, 0), 0, "rounded corner is transparent");

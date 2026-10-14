@@ -1,16 +1,19 @@
 //! The window: winit for events, softbuffer to present the tiny-skia pixmap. No GPU context.
-use crate::app::{LoginAct, LoginPhase, State};
-use crate::login;
-use crate::net;
-use crate::calls::{MediaCmd, MediaEvent, MediaTx};
-use crate::proto::{Cmd, Net};
-use crate::meeting_ui::{self, Hit};
-use crate::render::{self, Text};
-use crate::{chatui, sidebar};
-use crate::session::{self, Auth, SessionFile};
-use std::sync::atomic::{AtomicBool, Ordering};
+pub mod chatui;
+pub mod icon;
+pub mod icons;
+pub mod meeting_ui;
+pub mod render;
+pub mod sidebar;
+pub mod theme;
+
+use crate::app::{LoginPhase, State};
+use crate::proto::Net;
+use crate::backend::Backend;
+use crate::meeting::Hit;
+use render::Text;
+use crate::session::{self, Auth};
 use std::num::NonZeroU32;
-use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -22,7 +25,7 @@ use winit::window::{Window, WindowId};
 
 /// The window icon (shown by X11 window managers; Wayland takes it from the .desktop file, see assets/).
 fn app_icon() -> Option<winit::window::Icon> {
-    let img = image::load_from_memory(include_bytes!("../assets/icon.webp")).ok()?.to_rgba8();
+    let img = image::load_from_memory(include_bytes!("../../assets/icon.webp")).ok()?.to_rgba8();
     winit::window::Icon::from_rgba(img.to_vec(), img.width(), img.height()).ok()
 }
 
@@ -38,23 +41,12 @@ fn is_talk_key(k: &Key, mods: &ModifiersState, down: bool, combo: &crate::talk::
     key_ok && (!down || (mods.control_key() == combo.ctrl && mods.alt_key() == combo.alt && mods.shift_key() == combo.shift && mods.super_key() == combo.sup))
 }
 
-pub enum UserEvent {
-    Net(Net),
-    Media(MediaEvent),
-    /// The browser sign-in finished: a ready session, or why it did not work.
-    Login(Result<Auth, String>),
-    /// Push to talk from outside the window (desktop shortcut or portal).
-    Talk(crate::talk::TalkAct),
-}
+pub use crate::backend::Event as UserEvent;
 
 struct App {
     st: State,
-    cmds: Sender<Cmd>,
-    media: Option<MediaTx>,
-    avatars: Option<std::sync::mpsc::Sender<(String, String)>>,
-    chat: Option<std::sync::mpsc::Sender<crate::chat::ChatCmd>>,
-    /// The always-on-top "you are live" pill, started the first time it is needed.
-    overlay: Option<crate::overlay::Handle>,
+    /// The threads behind the session (socket, chat, calls, avatar loader) and what the state queues for them.
+    be: Backend,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     text: Text,
@@ -66,12 +58,7 @@ struct App {
     cursor: (f32, f32),
     mods: ModifiersState,
     exit_after: Option<f64>,
-    /// Where the saved sign-in lives (live mode only); deleted on logout.
-    session_path: String,
-    proxy: EventLoopProxy<UserEvent>,
     dry: bool,
-    login_cancel: Option<Arc<AtomicBool>>,
-    logout_started: Option<Instant>,
     /// Test hook: behave as if the user confirmed the logout dialog after N seconds.
     logout_after: Option<f64>,
 }
@@ -82,123 +69,25 @@ impl App {
     }
 
     fn flush(&mut self) {
-        match self.st.login_act.take() {
-            Some(LoginAct::Start) => self.begin_login(),
-            Some(LoginAct::Cancel) => {
-                if let Some(c) = &self.login_cancel {
-                    c.store(true, Ordering::Relaxed);
-                }
-            }
-            None => {}
-        }
-        if self.st.logout_requested && self.logout_started.is_none() {
-            // leave the call, close the socket cleanly, then forget the session (see finish_logout)
-            self.logout_started = Some(Instant::now());
-            if let Some(tx) = &self.media {
-                let _ = tx.send(MediaCmd::Leave);
-            }
-            let _ = self.cmds.send(Cmd::Logout);
-        }
-        for c in self.st.outbox.drain(..) {
-            let _ = self.cmds.send(c);
-        }
-        if let Some(o) = self.st.overlay_out.take() {
-            self.overlay.get_or_insert_with(crate::overlay::Handle::new).show(o);
-        }
-        if std::mem::take(&mut self.st.hint_out) {
-            crate::notify::talk_hint(&self.st.talk_key);
-        }
-        for snd in self.st.sounds.drain(..) {
-            crate::sound::play(snd);
-        }
-        for c in self.st.chat_out.drain(..) {
-            if let Some(tx) = &self.chat {
-                let _ = tx.send(c);
-            }
-        }
-        for req in self.st.avatar_req.drain(..) {
-            if let Some(tx) = &self.avatars {
-                let _ = tx.send(req);
-            }
-        }
-        for m in self.st.media_out.drain(..) {
-            eprintln!("[{:6.1}] media command: {}", self.start.elapsed().as_secs_f64(), match &m {
-                MediaCmd::Join { url, room_id, .. } => format!("join {url} room {room_id}{}", if self.media.is_none() { "  (media disabled: dry run / demo)" } else { "" }),
-                other => format!("{other:?}"),
-            });
-            if let Some(tx) = &self.media {
-                let _ = tx.send(m);
-            }
-        }
+        self.be.flush(&mut self.st, self.start);
     }
 
     /// Connect everything for a signed-in user: gaia socket, calls, avatar loader.
     fn start_session(&mut self, auth: Auth) {
         let me = auth.uid.clone();
-        self.session_path = auth.path.clone();
-        let (tx, rx) = channel();
-        self.cmds = tx;
-        let (p, dry) = (self.proxy.clone(), self.dry);
-        let emit: crate::chat::Emit = Arc::new(move |e| drop(p.send_event(UserEvent::Net(e))));
-        if !dry {
-            let (ctx, crx) = channel();
-            self.chat = Some(ctx);
-            crate::chat::spawn(auth.clone(), emit.clone(), crx);
-        }
-        std::thread::spawn(move || net::run(auth, dry, move |e| emit(e), rx));
-        #[cfg(feature = "calls")]
-        if !self.dry {
-            let p = self.proxy.clone();
-            self.media = Some(crate::media::spawn(move |e| drop(p.send_event(UserEvent::Media(e)))));
-        }
-        if self.avatars.is_none() {
-            let p = self.proxy.clone();
-            self.avatars = Some(crate::avatars::spawn(move |e| drop(p.send_event(UserEvent::Net(e)))));
-        }
+        self.be.start(auth, true);
         let ui = self.st.ui;
         self.st = State::new(&me, self.dry);
         self.st.ui = ui;
-        self.logout_started = None;
-        self.login_cancel = None;
-    }
-
-    /// Open the browser sign-in on its own thread; the outcome comes back as `UserEvent::Login`.
-    fn begin_login(&mut self) {
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.login_cancel = Some(cancel.clone());
-        self.st.login = Some(LoginPhase::Waiting);
-        let (path, p) = (self.session_path.clone(), self.proxy.clone());
-        std::thread::spawn(move || {
-            let known = session::load_space(&path);
-            let opts = login::Options { start_url: login::login_url(&known), origin: "https://app.sowork.com".into(), known_space: known, headless: false };
-            let res = login::capture(&opts, &cancel).and_then(|c| {
-                let find = serde_json::json!({"type": "group", "groupId": c.space.0, "alias": c.space.1, "redirect": true});
-                session::save_session(&path, &SessionFile { api_key: c.api_key, refresh_token: c.refresh_token, find })?;
-                session::save_space(&path, &c.space.0, &c.space.1);
-                Auth::load(&path)
-            });
-            let _ = p.send_event(UserEvent::Login(res));
-        });
     }
 
     /// Forget the saved sign-in and go back to the sign-in screen. Called when the socket thread confirms it closed, or after a timeout.
     fn finish_logout(&mut self) {
-        if self.media.is_some() {
-            std::thread::sleep(Duration::from_millis(300)); // let the LiveKit leave message go out
-        }
-        let p = self.session_path.clone();
-        match std::fs::remove_file(&p) {
-            Ok(()) => println!("logged out: removed {p}"),
-            Err(e) => eprintln!("logged out, but could not remove {p}: {e}"),
-        }
-        self.media = None; // ends the media thread
-        self.chat = None; // ends the chat threads
-        self.cmds = channel().0;
+        self.be.finish_logout();
         let ui = self.st.ui;
         self.st = State::new("", self.dry);
         self.st.ui = ui;
         self.st.login = Some(LoginPhase::Idle);
-        self.logout_started = None;
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -417,7 +306,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.logout_after.is_some_and(|t| now > t) && !self.st.logout_requested {
             self.st.logout_choice(true);
         }
-        if self.logout_started.is_some_and(|t| t.elapsed() > Duration::from_millis(2500)) {
+        if self.be.logging_out().is_some_and(|d| d > Duration::from_millis(2500)) {
             return self.finish_logout(); // the socket thread did not answer in time (offline?): leave anyway
         }
         let redraw = self.st.update(dt, now);
@@ -430,7 +319,7 @@ impl ApplicationHandler<UserEvent> for App {
         // tick at ~60 Hz only while something moves; otherwise sleep until the next event
         el.set_control_flow(if self.st.is_active() {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(16))
-        } else if self.logout_started.is_some() {
+        } else if self.be.logging_out().is_some() {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100))
         } else if let Some(t) = self.logout_after.filter(|_| !self.st.logout_requested) {
             ControlFlow::WaitUntil(self.start + Duration::from_secs_f64(t + 0.05))
@@ -462,13 +351,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().map_err(|e| e.to_string())?;
     let proxy: EventLoopProxy<UserEvent> = event_loop.create_proxy();
     let path = opt("--session").unwrap_or_else(default_session);
+    let emit: crate::backend::Emit = {
+        let p = proxy.clone();
+        Arc::new(move |e| drop(p.send_event(e)))
+    };
     let mut app = App {
         st: State::new("", dry),
-        cmds: channel().0, // replaced when a session starts
-        media: None,
-        avatars: None,
-        chat: None,
-        overlay: None,
+        be: Backend::new(emit, dry, path.clone()),
         window: None,
         surface: None,
         text: Text::new(),
@@ -480,11 +369,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         cursor: (0.0, 0.0),
         mods: ModifiersState::default(),
         exit_after: opt("--exit-after").and_then(|s| s.parse().ok()),
-        session_path: path.clone(),
-        proxy: proxy.clone(),
         dry,
-        login_cancel: None,
-        logout_started: None,
         logout_after: opt("--logout-after").and_then(|s| s.parse().ok()),
     };
     app.st.talk_key = crate::talk::key_label();

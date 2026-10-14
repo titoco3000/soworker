@@ -1,38 +1,45 @@
 mod app;
-mod avatars;
+mod backend;
 mod calls;
-mod desktop;
 mod chat;
-mod chatui;
-mod icon;
-mod icons;
+mod chatstate;
+mod desktop;
+mod directory;
 mod login;
-mod meeting_ui;
-mod theme;
-#[cfg(feature = "calls")]
-mod media;
 mod mapobj;
+mod meeting;
 mod net;
-mod proto;
-mod render;
-mod roster;
 mod notify;
 mod overlay;
+mod proto;
+mod roster;
 mod session;
 mod sound;
-mod waves;
-mod sidebar;
 mod talk;
-mod window;
+mod waves;
 mod world;
+#[cfg(feature = "gui")]
+mod avatars;
+#[cfg(feature = "gui")]
+mod gui;
+#[cfg(feature = "calls")]
+mod media;
+#[cfg(feature = "tui")]
+mod tui;
+#[cfg(feature = "tui")]
+mod videowin;
 
+#[cfg(not(any(feature = "tui", feature = "gui")))]
+compile_error!("enable a frontend: feature `tui` and/or `gui`");
+
+#[cfg(feature = "gui")]
 fn icon_sheet(out: &str) {
-    use icons::*;
+    use gui::icons::*;
     let mut pm = tiny_skia::Pixmap::new(420, 80).unwrap();
     pm.fill(tiny_skia::Color::from_rgba8(26, 30, 38, 255));
     for (i, s) in [MIC, MIC_OFF, VIDEO, VIDEO_OFF, MONITOR, PHONE_OFF, STOP_CIRCLE, LOCK, UNLOCK, MAXIMIZE, MINIMIZE, MESSAGE_CIRCLE].iter().enumerate() {
-        icon::draw(&mut pm.as_mut(), s, 10.0 + i as f32 * 34.0, 10.0, 24.0, theme::INK);
-        icon::draw(&mut pm.as_mut(), s, 10.0 + i as f32 * 34.0, 48.0, 16.0, theme::BRAND);
+        gui::icon::draw(&mut pm.as_mut(), s, 10.0 + i as f32 * 34.0, 10.0, 24.0, gui::theme::INK);
+        gui::icon::draw(&mut pm.as_mut(), s, 10.0 + i as f32 * 34.0, 48.0, 16.0, gui::theme::BRAND);
     }
     let _ = pm.save_png(out);
 }
@@ -90,12 +97,25 @@ fn main() {
         }
         return;
     }
+    #[cfg(feature = "gui")]
     if let Some(i) = args.iter().position(|a| a == "--icons") {
         icon_sheet(args.get(i + 1).map_or("icons.png", |s| s));
         return;
     }
-    if let Err(e) = window::run(&args) {
+    if let Err(e) = frontend(&args) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+}
+
+/// The terminal client by default; `--gui` picks the window when it is built in.
+fn frontend(args: &[String]) -> Result<(), String> {
+    #[cfg(feature = "gui")]
+    if args.iter().any(|a| a == "--gui") || cfg!(not(feature = "tui")) {
+        return gui::run(args);
+    }
+    #[cfg(feature = "tui")]
+    return tui::run(args);
+    #[cfg(not(feature = "tui"))]
+    unreachable!()
 }

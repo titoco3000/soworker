@@ -266,16 +266,25 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
             let task = tokio::spawn(async move {
                 let mut stream = NativeVideoStream::new(v.rtc_track());
                 let mut last = Instant::now() - Duration::from_secs(1);
+                let mut avail = Instant::now() - Duration::from_secs(2);
                 while let Some(frame) = stream.next().await {
                     if last.elapsed() < Duration::from_millis(100) {
                         continue; // ~10 fps is plenty for a thumbnail; skip the conversion work
                     }
                     last = Instant::now();
+                    if !crate::calls::wants_video(&k) {
+                        // nobody looks at this one: say it exists (an empty frame), do not convert
+                        if avail.elapsed() >= Duration::from_secs(1) {
+                            avail = Instant::now();
+                            emit2(MediaEvent::Video { key: k.clone(), name: name.clone(), w: 0, h: 0, rgba: vec![] });
+                        }
+                        continue;
+                    }
                     let (sw, sh) = (frame.buffer.width().max(1), frame.buffer.height().max(1));
                     let w = max_w.min(sw) & !1;
                     let h = ((w as u64 * sh as u64 / sw as u64) as u32 & !1).max(2);
                     let mut i420 = frame.buffer.to_i420();
-                    let mut scaled = i420.scale(w as i32, h as i32);
+                    let scaled = i420.scale(w as i32, h as i32);
                     let mut rgba = vec![0u8; (w * h * 4) as usize];
                     scaled.to_argb(VideoFormatType::ABGR, &mut rgba, w * 4, w as i32, h as i32);
                     emit2(MediaEvent::Video { key: k.clone(), name: name.clone(), w, h, rgba });
@@ -344,7 +353,7 @@ fn thumbnail(buf: &mut I420Buffer, max_w: u32) -> (u32, u32, Vec<u8>) {
     let (sw, sh) = (buf.width().max(1), buf.height().max(1));
     let w = max_w.min(sw) & !1;
     let h = ((w as u64 * sh as u64 / sw as u64) as u32 & !1).max(2);
-    let mut scaled = buf.scale(w as i32, h as i32);
+    let scaled = buf.scale(w as i32, h as i32);
     let mut rgba = vec![0u8; (w * h * 4) as usize];
     scaled.to_argb(VideoFormatType::ABGR, &mut rgba, w * 4, w as i32, h as i32);
     (w, h, rgba)
@@ -384,7 +393,7 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
         yuyv_to_i420(data, w, h, &mut i420);
         if last_preview.elapsed() >= Duration::from_millis(100) {
             last_preview = Instant::now();
-            let (pw, ph, rgba) = thumbnail(&mut i420, 480);
+            let (pw, ph, rgba) = if crate::calls::wants_video("me") { thumbnail(&mut i420, 480) } else { (0, 0, vec![]) };
             emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
         }
         source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });
@@ -492,7 +501,7 @@ fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
             if last_preview.elapsed() >= Duration::from_millis(150) && !stop2.load(Ordering::Relaxed) {
                 // our own share, as a tile in the meeting like everyone else's (key ends in ":screen" so it is pinned by default)
                 last_preview = Instant::now();
-                let (pw, ph, rgba) = thumbnail(&mut i420, 960);
+                let (pw, ph, rgba) = if crate::calls::wants_video("me:screen") { thumbnail(&mut i420, 960) } else { (0, 0, vec![]) };
                 emit(MediaEvent::Video { key: "me:screen".into(), name: "you".into(), w: pw, h: ph, rgba });
             }
             source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });
