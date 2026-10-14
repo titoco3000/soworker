@@ -127,7 +127,9 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let attrs = Window::default_attributes().with_title("SoWorker").with_inner_size(LogicalSize::new(1000.0, 700.0)).with_window_icon(app_icon());
         // the app id/class `soworker` is how the desktop finds assets/soworker.desktop (and with it the icon) on Wayland
+        #[cfg(target_os = "linux")]
         let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "soworker", "soworker");
+        #[cfg(target_os = "linux")]
         let attrs = winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "soworker", "soworker");
         let Ok(window) = el.create_window(attrs) else { return el.exit() };
         let window = Arc::new(window);

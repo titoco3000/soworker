@@ -106,9 +106,10 @@ pub fn save_space(session_path: &str, group: &str, alias: &str) {
     let _ = std::fs::write(space_path(session_path), serde_json::json!({"groupId": group, "alias": alias}).to_string());
 }
 
-/// Where the sign-in lives by default: `$XDG_CONFIG_HOME/soworker/` (else `~/.config/soworker/`), outside any repository.
+/// Where the sign-in lives by default: `$XDG_CONFIG_HOME/soworker/` (else `~/.config/soworker/`; `%APPDATA%\soworker\`
+/// on Windows), outside any repository.
 pub fn default_path() -> String {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    let base = std::env::var_os(if cfg!(windows) { "APPDATA" } else { "XDG_CONFIG_HOME" })
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))

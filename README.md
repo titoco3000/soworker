@@ -12,6 +12,7 @@ Needs a Rust toolchain and `clang` (calls use the LiveKit Rust SDK; the first bu
 ```
 make build                  # both clients: release binary in target/release/soworker
 make build-tui              # the terminal client only (smaller)
+make build-windows          # cross-compile soworker.exe from Linux (needs cargo-xwin, see the Makefile)
 make install                # install to ~/.cargo/bin (registers the launcher entry on first start)
 make dev                    # rebuild and restart on every source change (needs cargo-watch)
 make test                   # cargo test
@@ -35,6 +36,22 @@ On first start there is a sign-in screen: Enter opens Chrome on SoWork's login p
 signed in and closes it again. The token is stored in `~/.config/soworker/session.json` (use `--session <file>` for
 another path). `O` (log out) forgets it. Diagnostics go to `~/.local/state/soworker/soworker.log` (set
 `SOWORKER_LOG_STDERR=1` to see them on screen instead).
+
+## Windows
+
+`soworker.exe` is one self-contained file (no installer, no DLLs to ship). Both clients work; from Explorer or the
+Start menu the window client opens (a console flashes up for a moment), from a terminal the terminal client.
+
+- Sign-in uses Chrome if installed, else Edge. Files live in `%APPDATA%\soworker\` (session, `settings.json`,
+  `last-ui`); the log (and any crash message) is `%LOCALAPPDATA%\soworker\soworker.log`.
+- Calls: microphone, speakers, camera (Media Foundation) and screen share work. Screen share shares the first screen,
+  there is no picker.
+- Push to talk: the shortcut (`talkKey`, `Super+'` by default) works whichever window is in front, press and hold.
+- Not there yet: the "you are live" pill and desktop notifications, inline video in the terminal (it opens in a window).
+- Windows "N" editions need the Media Feature Pack, or the program does not start.
+
+Build it on Windows with the MSVC build tools: `cargo build --release` (the `.cargo/config.toml` sets the static C
+runtime libwebrtc needs). From Linux: `make build-windows`.
 
 ## Using it
 

@@ -9,6 +9,13 @@ const ID: u32 = 7;
 
 /// Does this terminal draw kitty graphics? Sends a 1x1 query plus a device-attributes request (every terminal answers
 /// the latter, so we never wait out a timeout on terminals that ignore the former). Needs raw mode.
+/// Not asked on Windows (no way to wait on the console with a timeout here): video goes to its own window there.
+#[cfg(windows)]
+pub fn probe() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
 pub fn probe() -> bool {
     if std::env::var_os("TMUX").is_some() || std::env::var_os("STY").is_some() || matches!(std::env::var("TERM").as_deref(), Ok("linux" | "dumb" | "")) {
         return false; // multiplexers swallow the escape codes

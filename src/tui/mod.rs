@@ -622,26 +622,30 @@ impl Tui {
     }
 }
 
+/// Memory of this process in MB: the private bytes.
+#[cfg(windows)]
+fn proc_mb() -> f32 {
+    use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: the struct is plain data and its size is passed along.
+    unsafe {
+        let mut c: PROCESS_MEMORY_COUNTERS_EX = std::mem::zeroed();
+        let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        c.cb = size;
+        if K32GetProcessMemoryInfo(GetCurrentProcess(), (&mut c as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(), size) == 0 {
+            return 0.0;
+        }
+        c.PrivateUsage as f32 / (1024.0 * 1024.0)
+    }
+}
+
 /// Memory of this process in MB: the proportional share (what it really costs next to shared libraries), else resident.
+#[cfg(not(windows))]
 fn proc_mb() -> f32 {
     let kb = |path: &str, key: &str| -> Option<f32> {
         std::fs::read_to_string(path).ok()?.lines().find(|l| l.starts_with(key))?.split_whitespace().nth(1)?.parse().ok()
     };
     kb("/proc/self/smaps_rollup", "Pss:").or_else(|| kb("/proc/self/status", "VmRSS:")).unwrap_or(0.0) / 1024.0
-}
-
-/// Everything that goes to stderr (a lot does) goes to a log file instead, so it cannot scribble over the screen.
-fn log_to_file() {
-    use std::os::fd::AsRawFd;
-    let base = std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/state")));
-    let dir = base.map_or_else(|| std::path::PathBuf::from("/nonexistent"), |b| b.join("soworker"));
-    let _ = std::fs::create_dir_all(&dir);
-    // no writable log: drop the noise rather than let it scribble over the screen
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("soworker.log")).or_else(|_| std::fs::OpenOptions::new().write(true).open("/dev/null"));
-    if let Ok(f) = file {
-        // SAFETY: both descriptors are open; dup2 just points fd 2 at the file.
-        unsafe { libc::dup2(f.as_raw_fd(), 2) };
-    }
 }
 
 /// Puts the terminal back however we leave.
@@ -687,7 +691,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     session::ensure_private_dir(&path);
     let exit_after: Option<f64> = opt("--exit-after").and_then(|s| s.parse().ok());
     if std::env::var_os("SOWORKER_LOG_STDERR").is_none() {
-        log_to_file();
+        crate::mode::log_to_file();
     }
 
     let (tx, rx) = channel::<Msg>();

@@ -1,6 +1,7 @@
 //! Desktop integration: on Wayland (and in launchers) the app icon comes from a `.desktop` entry whose name matches the
 //! window's app id (`soworker`), not from the window. On start we make sure the current user has that entry and icon,
 //! pointing at the running binary. Only files under `~/.local/share` are written, and only when they differ.
+#![cfg_attr(windows, allow(dead_code))]
 use std::path::PathBuf;
 
 const ENTRY: &str = include_str!("../assets/soworker.desktop");
@@ -28,6 +29,11 @@ fn write_if_changed(path: &std::path::Path, bytes: &[u8]) -> bool {
     path.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(path, bytes).is_ok()
 }
 
+/// Windows takes the icon from the executable and needs no launcher entry.
+#[cfg(windows)]
+pub fn ensure() {}
+
+#[cfg(not(windows))]
 pub fn ensure() {
     let (Some(data), Ok(exe)) = (data_dir(), std::env::current_exe()) else { return };
     let icon = data.join("icons/hicolor/256x256/apps/soworker.png");

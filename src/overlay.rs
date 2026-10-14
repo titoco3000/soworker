@@ -52,7 +52,7 @@ impl Handle {
     }
 }
 
-#[cfg(feature = "overlay")]
+#[cfg(all(feature = "overlay", target_os = "linux"))]
 fn start() -> Option<Sender<Overlay>> {
     let (tx, rx) = channel();
     let (ready_tx, ready_rx) = channel();
@@ -68,19 +68,19 @@ fn start() -> Option<Sender<Overlay>> {
     ready_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or(false).then_some(tx)
 }
 
-#[cfg(not(feature = "overlay"))]
+#[cfg(not(all(feature = "overlay", target_os = "linux")))]
 fn start() -> Option<Sender<Overlay>> {
     let _ = channel::<Overlay>();
     None
 }
 
 /// Pixels for the pill: premultiplied RGBA, `W` x `H`.
-#[cfg(feature = "overlay")]
+#[cfg(all(feature = "overlay", target_os = "linux"))]
 pub const W: u32 = 300;
-#[cfg(feature = "overlay")]
+#[cfg(all(feature = "overlay", target_os = "linux"))]
 pub const H: u32 = 52;
 
-#[cfg(feature = "overlay")]
+#[cfg(all(feature = "overlay", target_os = "linux"))]
 pub fn render(o: &Overlay, text: &mut crate::gui::render::Text) -> tiny_skia::Pixmap {
     use crate::gui::render::paint;
     use crate::gui::theme::*;
@@ -108,7 +108,7 @@ pub fn render(o: &Overlay, text: &mut crate::gui::render::Text) -> tiny_skia::Pi
     pm
 }
 
-#[cfg(feature = "overlay")]
+#[cfg(all(feature = "overlay", target_os = "linux"))]
 mod layer {
     use super::{render, Overlay, H, W};
     use smithay_client_toolkit::{
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(Overlay::Live { listeners: 3 }.text(), "Live · 3 listening");
     }
 
-    #[cfg(feature = "overlay")]
+    #[cfg(all(feature = "overlay", target_os = "linux"))]
     #[test]
     fn the_pill_draws_something_opaque_in_the_middle_and_clear_in_the_corner() {
         let mut t = crate::gui::render::Text::new();

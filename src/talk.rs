@@ -1,8 +1,11 @@
 //! Push to talk while the window is not focused (docs/push-to-talk.md). Three ways in, all ending in a `TalkAct`:
 //! the window's own key (handled in `window.rs`), `soworker --talk [down|up|toggle]` run by a desktop shortcut and
 //! delivered over a local socket, and the xdg-desktop-portal GlobalShortcuts portal (press and release events) on
-//! desktops that have it. COSMIC has no such portal yet, so there the desktop shortcut is the way.
+//! desktops that have it. COSMIC has no such portal yet, so there the desktop shortcut is the way. On Windows the
+//! socket is a localhost TCP port guarded by a token (both in a file only this user can read), and the global shortcut
+//! is a low-level keyboard hook.
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
@@ -24,6 +27,7 @@ pub fn parse(s: &str) -> Option<TalkAct> {
     }
 }
 
+#[cfg(unix)]
 fn socket_path() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from).join("soworker").join("ctl.sock")
 }
@@ -77,6 +81,7 @@ impl Combo {
     }
 
     /// The portal's trigger syntax (XDG shortcuts): `LOGO+apostrophe`, `CTRL+ALT+space`, `F1`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn portal_trigger(&self) -> String {
         let key = match self.key.as_str() {
             "'" => "apostrophe",
@@ -102,6 +107,7 @@ impl Combo {
 }
 
 /// `soworker --talk [down|up|toggle]`: tell the running app.
+#[cfg(unix)]
 pub fn send(act: &str) -> Result<(), String> {
     parse(act).ok_or("usage: soworker --talk [down|up|toggle]")?;
     let mut s = UnixStream::connect(socket_path()).map_err(|_| "SoWorker is not running".to_string())?;
@@ -109,6 +115,7 @@ pub fn send(act: &str) -> Result<(), String> {
 }
 
 /// Listen for `--talk` commands from other processes of this user.
+#[cfg(unix)]
 pub fn listen(emit: impl Fn(TalkAct) + Send + 'static) {
     let path = socket_path();
     if let Some(dir) = path.parent() {
@@ -139,9 +146,69 @@ pub fn listen(emit: impl Fn(TalkAct) + Send + 'static) {
         .expect("talk thread");
 }
 
+/// `%TEMP%\soworker\ctl.port`: "<port> <token>" of the running app. %TEMP% is private to the user.
+#[cfg(windows)]
+fn port_path() -> PathBuf {
+    std::env::temp_dir().join("soworker").join("ctl.port")
+}
+
+/// The running app's address and token, if it wrote them and still answers.
+#[cfg(windows)]
+fn connect() -> Option<(std::net::TcpStream, String)> {
+    let text = std::fs::read_to_string(port_path()).ok()?;
+    let (port, token) = text.trim().split_once(' ')?;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port.parse().ok()?));
+    let s = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).ok()?;
+    Some((s, token.to_string()))
+}
+
+/// `soworker --talk [down|up|toggle]`: tell the running app.
+#[cfg(windows)]
+pub fn send(act: &str) -> Result<(), String> {
+    parse(act).ok_or("usage: soworker --talk [down|up|toggle]")?;
+    let (mut s, token) = connect().ok_or("SoWorker is not running")?;
+    s.write_all(format!("{token} {act}\n").as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Listen for `--talk` commands from other processes of this user.
+#[cfg(windows)]
+pub fn listen(emit: impl Fn(TalkAct) + Send + 'static) {
+    if connect().is_some() {
+        return; // another SoWorker already listens
+    }
+    let path = port_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", 0)) else { return };
+    let Ok(addr) = listener.local_addr() else { return };
+    let mut b = [0u8; 16];
+    if getrandom::getrandom(&mut b).is_err() {
+        return;
+    }
+    let token: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    if std::fs::write(&path, format!("{} {token}", addr.port())).is_err() {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("talk-ctl".into())
+        .spawn(move || {
+            for conn in listener.incoming().flatten() {
+                let _ = conn.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut line = String::new();
+                if conn.take(128).read_to_string(&mut line).is_ok() {
+                    if let Some(act) = line.trim().split_once(' ').filter(|(t, _)| *t == token).and_then(|(_, a)| parse(a)) {
+                        emit(act);
+                    }
+                }
+            }
+        })
+        .expect("talk thread");
+}
+
 /// Register a push-to-talk shortcut with the GlobalShortcuts portal. `trigger` is the preferred key, e.g. "F1"; the
 /// desktop may let the user choose another. Does nothing (apart from a log line) where the portal does not exist.
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", target_os = "linux"))]
 pub fn portal(emit: impl Fn(TalkAct) + Send + Sync + 'static, trigger: String) {
     std::thread::Builder::new()
         .name("talk-portal".into())
@@ -153,10 +220,10 @@ pub fn portal(emit: impl Fn(TalkAct) + Send + Sync + 'static, trigger: String) {
         .expect("portal thread");
 }
 
-#[cfg(not(feature = "portal"))]
+#[cfg(not(all(feature = "portal", any(target_os = "linux", windows))))]
 pub fn portal(_emit: impl Fn(TalkAct) + Send + Sync + 'static, _trigger: String) {}
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", target_os = "linux"))]
 fn portal_run(emit: std::sync::Arc<dyn Fn(TalkAct) + Send + Sync>, trigger: &str) -> Result<(), String> {
     use std::collections::HashMap;
     use zbus::blocking::{Connection, Proxy};
@@ -217,6 +284,149 @@ fn portal_run(emit: std::sync::Arc<dyn Fn(TalkAct) + Send + Sync>, trigger: &str
     Err("portal connection closed".into())
 }
 
+/// Watch the keyboard for the push-to-talk combination, whichever window has focus (press and release events). The
+/// combination is swallowed so it does not also type into the focused app.
+#[cfg(all(feature = "portal", windows))]
+pub fn portal(emit: impl Fn(TalkAct) + Send + Sync + 'static, trigger: String) {
+    std::thread::Builder::new()
+        .name("talk-hook".into())
+        .spawn(move || {
+            if let Err(e) = hook::run(Box::new(emit), Combo::parse(&trigger)) {
+                eprintln!("push to talk: no global shortcut ({e})");
+            }
+        })
+        .expect("hook thread");
+}
+
+/// The Windows virtual-key code for a key as `Combo` writes it (US layout for the punctuation keys).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn virtual_key(key: &str) -> Option<u32> {
+    let c = |ch: char| key.chars().count() == 1 && key.starts_with(ch);
+    Some(match key {
+        k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => k.as_bytes()[0].to_ascii_uppercase() as u32,
+        k if k.len() >= 2 && k.starts_with('f') && k[1..].parse::<u32>().is_ok_and(|n| (1..=24).contains(&n)) => 0x6F + k[1..].parse::<u32>().ok()?,
+        "space" => 0x20,
+        "pause" => 0x13,
+        "scrolllock" => 0x91,
+        "insert" => 0x2D,
+        "home" => 0x24,
+        "end" => 0x23,
+        "pageup" => 0x21,
+        "pagedown" => 0x22,
+        _ if c(' ') => 0x20,
+        _ if c('\'') => 0xDE,
+        _ if c(';') => 0xBA,
+        _ if c('=') || c('+') => 0xBB,
+        _ if c(',') => 0xBC,
+        _ if c('-') => 0xBD,
+        _ if c('.') => 0xBE,
+        _ if c('/') => 0xBF,
+        _ if c('`') => 0xC0,
+        _ if c('[') => 0xDB,
+        _ if c('\\') => 0xDC,
+        _ if c(']') => 0xDD,
+        _ => return None,
+    })
+}
+
+#[cfg(all(feature = "portal", windows))]
+mod hook {
+    use super::{Combo, TalkAct};
+    use std::cell::RefCell;
+    use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
+        WM_SYSKEYDOWN, WM_SYSKEYUP,
+    };
+
+    struct State {
+        emit: Box<dyn Fn(TalkAct) + Send + Sync>,
+        combo: Combo,
+        vk: u32,
+        held: bool,
+    }
+
+    thread_local! {
+        // the hook procedure runs on the thread that installed it, inside its message loop
+        static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    }
+
+    pub fn run(emit: Box<dyn Fn(TalkAct) + Send + Sync>, combo: Combo) -> Result<(), String> {
+        let vk = super::virtual_key(&combo.key).ok_or_else(|| format!("unknown key {:?}", combo.key))?;
+        STATE.with(|s| *s.borrow_mut() = Some(State { emit, combo, vk, held: false }));
+        // SAFETY: a low-level hook needs no module handle; the procedure is a plain function.
+        let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(on_key), std::ptr::null_mut(), 0) };
+        if hook.is_null() {
+            return Err("cannot install the keyboard hook".into());
+        }
+        // SAFETY: an ordinary message loop on this thread, which is what keeps the hook called.
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        Err("message loop ended".into())
+    }
+
+    fn pressed(vk: u16) -> bool {
+        // SAFETY: only reads key state.
+        unsafe { GetAsyncKeyState(vk as i32) < 0 }
+    }
+
+    /// Tap an unassigned key, so releasing the Windows key after the combination does not open the Start menu.
+    fn mask_start_menu() {
+        let key = |flags| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: 0xE8, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 } } };
+        let inputs = [key(0), key(KEYEVENTF_KEYUP)];
+        // SAFETY: two well-formed keyboard inputs.
+        unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+    }
+
+    unsafe extern "system" fn on_key(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code == HC_ACTION as i32 {
+            // SAFETY: for HC_ACTION, lparam points at the event's KBDLLHOOKSTRUCT.
+            let k = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+            let down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+            let up = matches!(wparam as u32, WM_KEYUP | WM_SYSKEYUP);
+            let swallow = STATE.with(|s| {
+                let mut s = s.borrow_mut();
+                let Some(st) = s.as_mut().filter(|st| st.vk == k.vkCode) else { return false };
+                if down {
+                    if st.held {
+                        return true; // auto-repeat
+                    }
+                    let c = &st.combo;
+                    let mods = pressed(VK_CONTROL) == c.ctrl && pressed(VK_MENU) == c.alt && pressed(VK_SHIFT) == c.shift && (pressed(VK_LWIN) || pressed(VK_RWIN)) == c.sup;
+                    if !mods {
+                        return false;
+                    }
+                    st.held = true;
+                    if c.sup {
+                        mask_start_menu();
+                    }
+                    (st.emit)(TalkAct::Down);
+                    true
+                } else if up && st.held {
+                    st.held = false;
+                    (st.emit)(TalkAct::Up);
+                    true
+                } else {
+                    false
+                }
+            });
+            if swallow {
+                return 1;
+            }
+        }
+        // SAFETY: passes the event on unchanged.
+        unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +441,19 @@ mod tests {
         let plus = Combo::parse("Ctrl++");
         assert_eq!((plus.ctrl, plus.key.as_str()), (true, "+"));
         assert_eq!(Combo::parse("Pause"), Combo { key: "pause".into(), ..Combo::default() });
+    }
+
+    #[test]
+    fn keys_map_to_windows_virtual_keys() {
+        assert_eq!(virtual_key("'"), Some(0xDE));
+        assert_eq!(virtual_key("a"), Some(0x41));
+        assert_eq!(virtual_key("7"), Some(0x37));
+        assert_eq!(virtual_key("f1"), Some(0x70));
+        assert_eq!(virtual_key("f24"), Some(0x87));
+        assert_eq!(virtual_key("space"), Some(0x20));
+        assert_eq!(virtual_key("+"), Some(0xBB));
+        assert_eq!(virtual_key("f25"), None);
+        assert_eq!(virtual_key("nope"), None);
     }
 
     #[test]

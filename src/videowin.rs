@@ -31,8 +31,12 @@ fn event_loop() -> Option<&'static EventLoopProxy<Msg>> {
             .name("video-window".into())
             .spawn(move || {
                 let mut b = EventLoop::<Msg>::with_user_event();
+                #[cfg(target_os = "linux")]
                 winit::platform::x11::EventLoopBuilderExtX11::with_any_thread(&mut b, true);
+                #[cfg(target_os = "linux")]
                 winit::platform::wayland::EventLoopBuilderExtWayland::with_any_thread(&mut b, true);
+                #[cfg(windows)]
+                winit::platform::windows::EventLoopBuilderExtWindows::with_any_thread(&mut b, true);
                 let el = match b.build() {
                     Ok(el) => el,
                     Err(e) => {
@@ -210,7 +214,9 @@ impl ApplicationHandler<Msg> for Win {
                     return;
                 }
                 let attrs = Window::default_attributes().with_title("SoWorker").with_inner_size(LogicalSize::new(800.0, 450.0));
+                #[cfg(target_os = "linux")]
                 let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "soworker", "soworker-video");
+                #[cfg(target_os = "linux")]
                 let attrs = winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "soworker", "soworker-video");
                 match el.create_window(attrs) {
                     Ok(window) => {

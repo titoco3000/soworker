@@ -27,10 +27,7 @@ pub fn tls_stream(host: &str) -> Result<Tls, String> {
 fn random_id() -> String {
     use base64::Engine;
     let mut b = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read;
-        let _ = f.read_exact(&mut b);
-    }
+    let _ = getrandom::getrandom(&mut b);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)[..21].to_string()
 }
 

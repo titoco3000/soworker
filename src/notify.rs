@@ -1,5 +1,7 @@
 //! Desktop notifications through `notify-send` (no D-Bus library needed for this): short messages that disappear by
-//! themselves, shown over whatever window is in front.
+//! themselves, shown over whatever window is in front. Windows has no such command, so there these do nothing.
+#![cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
 use std::process::{Command, Stdio};
 
 pub const HINT_SECONDS: u32 = 5;
@@ -8,7 +10,14 @@ pub fn talk_text(key: &str) -> String {
     format!("Press {key} to talk")
 }
 
+#[cfg(windows)]
+pub fn talk_hint(_key: &str) {}
+
+#[cfg(windows)]
+pub fn status(_text: &str) {}
+
 /// "Press F1 to talk", gone after a few seconds. A new one replaces the previous instead of stacking.
+#[cfg(not(windows))]
 pub fn talk_hint(key: &str) {
     let text = talk_text(key);
     std::thread::spawn(move || {
@@ -25,6 +34,7 @@ pub fn talk_hint(key: &str) {
 }
 
 /// A short status line ("Live · 2 listening"), replacing the previous one.
+#[cfg(not(windows))]
 pub fn status(text: &str) {
     let text = text.to_string();
     std::thread::spawn(move || {

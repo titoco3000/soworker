@@ -24,11 +24,20 @@ pub struct Captured {
     pub space: (String, String),
 }
 
+#[cfg(not(windows))]
 fn find_chrome() -> Option<std::path::PathBuf> {
     let names = ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "chrome"];
     std::env::var_os("PATH").and_then(|p| {
         std::env::split_paths(&p).find_map(|d| names.iter().map(|n| d.join(n)).find(|c| c.is_file()))
     })
+}
+
+/// Chrome where its installer puts it, else Edge (Chromium too, and always there on Windows).
+#[cfg(windows)]
+fn find_chrome() -> Option<std::path::PathBuf> {
+    let installs = [r"Google\Chrome\Application\chrome.exe", r"Chromium\Application\chrome.exe", r"Microsoft\Edge\Application\msedge.exe"];
+    let roots: Vec<std::path::PathBuf> = ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"].iter().filter_map(std::env::var_os).map(Into::into).collect();
+    installs.iter().find_map(|i| roots.iter().map(|r| r.join(i)).find(|c| c.is_file()))
 }
 
 /// Reads the Firebase login out of the page, but only when the page really is on `origin`
@@ -111,7 +120,8 @@ impl Drop for Browser {
 }
 
 pub fn capture(opts: &Options, cancel: &AtomicBool) -> Result<Captured, String> {
-    let chrome = find_chrome().ok_or("Chrome or Chromium is needed for signing in, but none was found in PATH")?;
+    let missing = if cfg!(windows) { "Chrome or Edge is needed for signing in, but neither was found" } else { "Chrome or Chromium is needed for signing in, but none was found in PATH" };
+    let chrome = find_chrome().ok_or(missing)?;
     let profile = std::env::temp_dir().join(format!("soworker-login-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&profile);
     std::fs::create_dir_all(&profile).map_err(|e| e.to_string())?;
@@ -125,6 +135,7 @@ pub fn capture(opts: &Options, cancel: &AtomicBool) -> Result<Captured, String> 
     let mut cmd = Command::new(chrome);
     cmd.arg(format!("--user-data-dir={}", profile.display()))
         .args(["--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check"])
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     if opts.headless {

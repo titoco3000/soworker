@@ -115,7 +115,7 @@ async fn join(url: &str, token: &str, room_id: String, emit: &Emit) -> Result<Se
     // A Bluetooth headset switches to its low-quality call profile whenever the mic opens and back when it closes, so
     // opening and closing it on every mute toggle made the sound flip. With such a mic, keep the capture device open
     // for the whole meeting.
-    let keep_capture = audio.as_ref().is_some_and(default_mic_is_bluetooth);
+    let keep_capture = cfg!(target_os = "linux") && audio.as_ref().is_some_and(default_mic_is_bluetooth);
     if keep_capture {
         if let Some(a) = audio.as_ref() {
             match a.start_recording() {
@@ -322,7 +322,8 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
 }
 
 
-// ---- camera: V4L2 (YUYV) -> I420 -> NativeVideoSource, published as the camera track
+// ---- camera: V4L2 (YUYV) on Linux, Media Foundation (NV12, YUYV or MJPEG) on Windows -> I420 -> NativeVideoSource,
+// published as the camera track
 
 fn now_us() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as i64)
@@ -359,6 +360,7 @@ fn thumbnail(buf: &mut I420Buffer, max_w: u32) -> (u32, u32, Vec<u8>) {
     (w, h, rgba)
 }
 
+#[cfg(target_os = "linux")]
 fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
     use v4l::io::traits::CaptureStream;
     use v4l::prelude::*;
@@ -398,6 +400,83 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
         }
         source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });
     }
+}
+
+#[cfg(windows)]
+fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
+    use nokhwa::pixel_format::RgbFormat;
+    use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution};
+    // 640x480 in a format we can turn into I420 ourselves, else whatever the camera does fastest
+    let mut wanted: Vec<RequestedFormatType> = [FrameFormat::NV12, FrameFormat::YUYV, FrameFormat::MJPEG]
+        .into_iter()
+        .map(|f| RequestedFormatType::Closest(CameraFormat::new(Resolution::new(640, 480), f, 30)))
+        .collect();
+    wanted.push(RequestedFormatType::AbsoluteHighestFrameRate);
+    let mut last_err = String::from("no camera");
+    let mut cam = None;
+    for w in wanted {
+        match nokhwa::Camera::new(CameraIndex::Index(0), RequestedFormat::new::<RgbFormat>(w)) {
+            Ok(c) => {
+                cam = Some(c);
+                break;
+            }
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    let Some(mut cam) = cam else { return drop(ready.send(Err(format!("no camera: {last_err}")))) };
+    if let Err(e) = cam.open_stream() {
+        return drop(ready.send(Err(format!("camera stream: {e}"))));
+    }
+    eprintln!("camera: {}", cam.camera_format());
+    let _ = ready.send(Ok(()));
+    let (mut n, mut last_preview) = (0u64, Instant::now() - Duration::from_secs(1));
+    while !stop.load(Ordering::Relaxed) {
+        let Ok(frame) = cam.frame() else { break };
+        n += 1;
+        if n % 2 == 1 {
+            continue; // 15 fps is enough and halves the encode cost
+        }
+        let (w, h) = (frame.resolution().width() as usize & !1, frame.resolution().height() as usize & !1);
+        let Some(mut i420) = frame_to_i420(frame.source_frame_format(), frame.buffer(), w, h) else { continue };
+        if last_preview.elapsed() >= Duration::from_millis(100) {
+            last_preview = Instant::now();
+            let (pw, ph, rgba) = if crate::calls::wants_video("me") { thumbnail(&mut i420, 480) } else { (0, 0, vec![]) };
+            emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
+        }
+        source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });
+    }
+    let _ = cam.stop_stream();
+}
+
+/// One camera frame as I420, for the formats Windows cameras commonly deliver (MJPEG only in builds with the window
+/// client, which brings the JPEG decoder).
+#[cfg(windows)]
+fn frame_to_i420(fmt: nokhwa::utils::FrameFormat, data: &[u8], w: usize, h: usize) -> Option<I420Buffer> {
+    use nokhwa::utils::FrameFormat;
+    let mut i420 = I420Buffer::new(w as u32, h as u32);
+    let (sy, su, sv) = i420.strides();
+    match fmt {
+        FrameFormat::NV12 if data.len() >= w * h * 3 / 2 => {
+            let (y, uv) = data.split_at(w * h);
+            let (dy, du, dv) = i420.data_mut();
+            yuv_helper::nv12_to_i420(y, w as u32, uv, w as u32, dy, sy, du, su, dv, sv, w as i32, h as i32);
+        }
+        FrameFormat::YUYV if data.len() >= w * h * 2 => yuyv_to_i420(data, w, h, &mut i420),
+        #[cfg(feature = "gui")]
+        FrameFormat::MJPEG => {
+            let rgba = image::load_from_memory_with_format(data, image::ImageFormat::Jpeg).ok()?.to_rgba8();
+            let (iw, ih) = (rgba.width() as usize & !1, rgba.height() as usize & !1);
+            if (iw, ih) != (w, h) {
+                return None;
+            }
+            let stride = rgba.width() * 4;
+            let (dy, du, dv) = i420.data_mut();
+            // libyuv's "ABGR" is R, G, B, A in memory
+            yuv_helper::abgr_to_i420(rgba.as_raw(), stride, dy, sy, du, su, dv, sv, w as i32, h as i32);
+        }
+        _ => return None,
+    }
+    Some(i420)
 }
 
 async fn set_camera(s: &mut Session, on: bool, emit: &Emit) {
@@ -453,7 +532,7 @@ async fn set_camera(s: &mut Session, on: bool, emit: &Emit) {
     emit(MediaEvent::CameraState(now_on));
 }
 
-// ---- screen share: libwebrtc desktop capturer (X11 or the Wayland portal picker) -> screencast source
+// ---- screen share: libwebrtc desktop capturer (X11, the Wayland portal picker, or the first screen on Windows) -> screencast source
 
 #[derive(serde::Serialize)]
 struct Meta {
@@ -482,13 +561,22 @@ async fn announce_share(s: &Session, start: bool, sid: Option<&TrackSid>) {
 }
 
 fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
-    let Some(mut cap) = DesktopCapturer::new(DesktopCapturerOptions::new(DesktopCaptureSourceType::Generic)) else {
+    // Linux: the portal (or X11) lets the user pick. Windows has no picker: share the first screen.
+    #[cfg(not(windows))]
+    let kind = DesktopCaptureSourceType::Generic;
+    #[cfg(windows)]
+    let kind = DesktopCaptureSourceType::Screen;
+    let Some(mut cap) = DesktopCapturer::new(DesktopCapturerOptions::new(kind)) else {
         return drop(ready.send(Err("screen capture is not available here".into())));
     };
+    #[cfg(not(windows))]
+    let pick = None;
+    #[cfg(windows)]
+    let pick = cap.get_source_list().into_iter().next();
     let (ready, dead) = (std::sync::Mutex::new(Some(ready)), Arc::new(AtomicBool::new(false)));
     let (dead2, stop2) = (dead.clone(), stop.clone());
     let mut last_preview = Instant::now() - Duration::from_secs(1);
-    cap.start_capture(None, move |res| match res {
+    cap.start_capture(pick, move |res| match res {
         Ok(frame) => {
             if let Some(r) = ready.lock().ok().and_then(|mut g| g.take()) {
                 let _ = r.send(Ok(())); // the user accepted the picker: frames flow

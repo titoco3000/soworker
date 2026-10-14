@@ -47,6 +47,11 @@ fn icon_sheet(out: &str) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // started by the other client as it quits (see `mode::relaunch`): give it a moment to let go of its sockets
+    if let Some(ms) = std::env::var("SOWORKER_START_DELAY_MS").ok().and_then(|v| v.parse().ok()) {
+        std::env::remove_var("SOWORKER_START_DELAY_MS");
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
     if let Some(i) = args.iter().position(|a| a == "--login-test") {
         // capture a login from a local test page (see tools/login-test) without touching SoWork
         let origin = args.get(i + 1).cloned().unwrap_or_default();
@@ -113,9 +118,10 @@ fn main() {
 /// terminal client is started inside a terminal emulator instead and this process ends.
 fn frontend(args: &[String]) -> Result<(), String> {
     use mode::UiMode;
+    mode::adopt_console();
     let terminal = mode::in_terminal();
     let mut m = mode::choose(args, terminal, mode::last());
-    if m == UiMode::Tui && !terminal {
+    if m == UiMode::Tui && !mode::has_terminal() {
         match mode::relaunch(UiMode::Tui, args) {
             Ok(()) => return Ok(()),
             Err(e) if UiMode::Gui.built() => {
@@ -126,6 +132,9 @@ fn frontend(args: &[String]) -> Result<(), String> {
         }
     }
     mode::remember(m);
+    if m == UiMode::Gui {
+        mode::drop_console();
+    }
     match m {
         #[cfg(feature = "gui")]
         UiMode::Gui => gui::run(args),

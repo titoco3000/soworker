@@ -36,15 +36,23 @@ pub struct Text {
 
 impl Text {
     pub fn new() -> Self {
-        const CANDIDATES: [&str; 6] = [
+        #[cfg(not(windows))]
+        let candidates: Vec<std::path::PathBuf> = [
             "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
             "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
             "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/google-droid-sans-fonts/DroidSans.ttf",
             "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        ];
-        let font = CANDIDATES
+        ]
+        .map(std::path::PathBuf::from)
+        .into();
+        #[cfg(windows)]
+        let candidates: Vec<std::path::PathBuf> = {
+            let fonts = std::env::var_os("WINDIR").map_or_else(|| std::path::PathBuf::from(r"C:\Windows"), std::path::PathBuf::from).join("Fonts");
+            ["segoeui.ttf", "arial.ttf", "tahoma.ttf"].iter().map(|f| fonts.join(f)).collect()
+        };
+        let font = candidates
             .iter()
             .find_map(|p| std::fs::read(p).ok())
             .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok());
@@ -120,7 +128,25 @@ pub fn hue_rgb(id: &str) -> (u8, u8, u8) {
     (((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b + m) * 255.0) as u8)
 }
 
+/// (working set, private) memory of this process in bytes.
+#[cfg(windows)]
+pub fn proc_mem() -> (u64, u64) {
+    use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: the struct is plain data and its size is passed along.
+    unsafe {
+        let mut c: PROCESS_MEMORY_COUNTERS_EX = std::mem::zeroed();
+        let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        c.cb = size;
+        if K32GetProcessMemoryInfo(GetCurrentProcess(), (&mut c as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(), size) == 0 {
+            return (0, 0);
+        }
+        (c.WorkingSetSize as u64, c.PrivateUsage as u64)
+    }
+}
+
 /// (resident, proportional) memory of this process in bytes, from /proc.
+#[cfg(not(windows))]
 pub fn proc_mem() -> (u64, u64) {
     let rss = std::fs::read_to_string("/proc/self/statm")
         .ok()
