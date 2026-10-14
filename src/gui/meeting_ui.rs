@@ -2,7 +2,7 @@
 //! MeetingControls, MeetingChat). Same structure and measurements (CSS px x display scale), same controls:
 //! a floating draggable card that snaps to one of eight slots (or full window), a header with a fullscreen toggle,
 //! one tile per attendee in a gallery grid or pinned + sidebar, hover buttons (mute / camera off / pin), a status line,
-//! the controls row (leave, lock, camera, mic, share screen) and the chat toggle with its column.
+//! the controls row (leave, noise cancellation, camera, mic, share screen) and the chat toggle with its column.
 use crate::app::{Frame, State};
 use crate::gui::icon;
 use crate::gui::icons::{self, Shape};
@@ -148,7 +148,7 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
         }
     }
 
-    // controls row: Leave, lock, camera, mic, share on the left; chat toggle on the right
+    // controls row: Leave, noise cancellation, camera, mic, share on the left; chat toggle on the right
     let bh = 34.0 * u;
     let by = bar.y + 12.0 * u + 1.0 * u;
     let (fs, icon_sz, gp) = (14.0 * u, 14.0 * u, 6.0 * u);
@@ -158,7 +158,7 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
     let leave_w = 12.0 * u + icon_sz + gp + text_w(text, "Leave", fs) + 12.0 * u + 2.0;
     let share_label = if st.call.share { "Stop sharing screen" } else { "Share screen" };
     let share_w = 12.0 * u + icon_sz + gp + text_w(text, share_label, fs) + 12.0 * u + 2.0;
-    for (c, wd) in [(Ctl::Leave, leave_w), (Ctl::Lock, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Share, share_w)] {
+    for (c, wd) in [(Ctl::Leave, leave_w), (Ctl::NoiseCancel, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Share, share_w)] {
         controls.push((c, R { x, y: by, w: wd, h: bh }));
         x += wd + 8.0 * u; // gap-2
     }
@@ -367,7 +367,7 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
         let isz = 14.0 * u;
         let (shapes, label, rgb, dim): (&[Shape], Option<&str>, Rgb, bool) = match c {
             Ctl::Leave => (icons::PHONE_OFF, Some("Leave"), theme::DANGER, false),
-            Ctl::Lock => (icons::UNLOCK, None, theme::INK_MUTED, false),
+            Ctl::NoiseCancel => (if st.noise_cancel { icons::NOISE_CANCEL } else { icons::NOISE_CANCEL_OFF }, None, if st.noise_cancel { theme::INK } else { theme::INK_MUTED }, false),
             Ctl::Cam => (if st.call.cam { icons::VIDEO } else { icons::VIDEO_OFF }, None, if st.call.cam { theme::INK } else { theme::INK_MUTED }, !joined),
             Ctl::Mic => (if st.call.mic { icons::MIC } else { icons::MIC_OFF }, None, if st.call.mic { theme::INK } else { theme::INK_MUTED }, !joined),
             Ctl::Share => (

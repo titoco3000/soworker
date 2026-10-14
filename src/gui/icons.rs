@@ -51,14 +51,24 @@ pub const STOP_CIRCLE: &[Shape] = &[
     Shape::Rect { x: 9.0, y: 9.0, w: 6.0, h: 6.0, rx: 0.0 },
 ];
 
-pub const LOCK: &[Shape] = &[
-    Shape::Rect { x: 3.0, y: 11.0, w: 18.0, h: 11.0, rx: 2.0 },
-    Shape::Path("M7 11V7a5 5 0 0 1 10 0v4"),
+/// Noise cancellation: a voice waveform (Lucide's audio-lines, ISC), struck through when off.
+pub const NOISE_CANCEL: &[Shape] = &[
+    Shape::Line(2.0, 10.0, 2.0, 13.0),
+    Shape::Line(6.0, 6.0, 6.0, 17.0),
+    Shape::Line(10.0, 3.0, 10.0, 21.0),
+    Shape::Line(14.0, 8.0, 14.0, 15.0),
+    Shape::Line(18.0, 5.0, 18.0, 18.0),
+    Shape::Line(22.0, 10.0, 22.0, 13.0),
 ];
 
-pub const UNLOCK: &[Shape] = &[
-    Shape::Rect { x: 3.0, y: 11.0, w: 18.0, h: 11.0, rx: 2.0 },
-    Shape::Path("M7 11V7a5 5 0 0 1 9.9-1"),
+pub const NOISE_CANCEL_OFF: &[Shape] = &[
+    Shape::Line(2.0, 10.0, 2.0, 13.0),
+    Shape::Line(6.0, 6.0, 6.0, 17.0),
+    Shape::Line(10.0, 3.0, 10.0, 21.0),
+    Shape::Line(14.0, 8.0, 14.0, 15.0),
+    Shape::Line(18.0, 5.0, 18.0, 18.0),
+    Shape::Line(22.0, 10.0, 22.0, 13.0),
+    Shape::Line(1.0, 1.0, 23.0, 23.0),
 ];
 
 pub const MAXIMIZE: &[Shape] = &[

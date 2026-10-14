@@ -128,6 +128,8 @@ pub struct State {
     pub toast: Option<(String, f64)>,
     pub outbox: Vec<Cmd>,
     pub media_out: Vec<MediaCmd>,
+    /// Noise cancellation on the microphone (the `noiseCancellation` setting); the media thread is told at start.
+    pub noise_cancel: bool,
     pub call: CallUi,
     pub dock: Dock,
     /// Circle-masked avatar pictures by user id, and what we already asked the loader for.
@@ -158,6 +160,7 @@ pub struct State {
 
 impl State {
     pub fn new(me_id: &str, dry: bool) -> Self {
+        let noise_cancel = crate::calls::noise_cancel_setting();
         State {
             world: World::default(),
             me_id: me_id.into(),
@@ -188,7 +191,8 @@ impl State {
             status: "connecting…".into(),
             toast: None,
             outbox: vec![],
-            media_out: vec![],
+            media_out: vec![MediaCmd::NoiseCancel(noise_cancel)],
+            noise_cancel,
             call: CallUi::default(),
             dock: Dock::default(),
             pics: HashMap::new(),
@@ -496,6 +500,13 @@ impl State {
         }
     }
 
+    pub fn toggle_noise_cancel(&mut self, now: f64) {
+        self.noise_cancel = !self.noise_cancel;
+        crate::calls::save_noise_cancel(self.noise_cancel);
+        self.media_out.push(MediaCmd::NoiseCancel(self.noise_cancel));
+        self.say(if self.noise_cancel { "Noise cancellation on" } else { "Noise cancellation off" }, now);
+    }
+
     pub fn toggle_mic(&mut self) {
         if self.call.joined.is_some() {
             self.media_out.push(MediaCmd::Mic(!self.call.mic));
@@ -511,7 +522,7 @@ impl State {
             Hit::Ctl(Ctl::Mic) => self.toggle_mic(),
             Hit::Ctl(Ctl::Cam) => self.toggle_cam(),
             Hit::Ctl(Ctl::Share) => self.toggle_share(),
-            Hit::Ctl(Ctl::Lock) => self.say("Locking a meeting is not something SoWork supports", now),
+            Hit::Ctl(Ctl::NoiseCancel) => self.toggle_noise_cancel(now),
             Hit::Ctl(Ctl::Leave) => {
                 // leaving = tell the server we are in no zone, drop the call, and do not rejoin until we walk out and back
                 self.call.ignore_room = self.call.want.clone().or_else(|| self.call.joined.clone());

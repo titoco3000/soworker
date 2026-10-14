@@ -93,7 +93,7 @@ const HELP: &[&str] = &[
     "Walk        WASD / arrows, or click the map (Shift+click: teleport)",
     "Zoom        + / -  (or the mouse wheel over the map)",
     "People      Tab to focus, up/down, Enter opens Join / Wave / Message",
-    "Call        m mic   c camera   v share screen   l leave   Space talk",
+    "Call        m mic   c camera   v share screen   l leave   Space talk   N noise cancellation",
     "Video       n next picture   V open the video window",
     "Chat        t open and type, T close, Tab switches between chats, Esc leaves the input",
     "Other       b available/away   r respawn   p people   O log out   q quit",
@@ -117,6 +117,7 @@ fn header(f: &mut Frame, t: &Tui, r: Rect) {
     if st.call.joined.is_some() {
         let flag = |on: bool, label: &'static str, bad: bool| Span::styled(format!(" {label} "), if on { Style::new().fg(if bad { DANGER } else { OK }).add_modifier(Modifier::BOLD) } else { Style::new().fg(DIM) });
         l.push(flag(st.call.mic, if st.call.mic { "MIC ON" } else { "mic off" }, true));
+        l.push(flag(st.noise_cancel, "nc", false));
         l.push(flag(st.call.cam, "cam", false));
         l.push(flag(st.call.share, "share", false));
     }

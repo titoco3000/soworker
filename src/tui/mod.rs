@@ -473,6 +473,7 @@ impl Tui {
             KeyCode::Char(c) => match c {
                 'q' => self.quit = true,
                 'm' => st.toggle_mic(),
+                'N' => st.toggle_noise_cancel(now),
                 ' ' => st.talk(crate::talk::TalkAct::Toggle, now),
                 'c' => st.toggle_cam(),
                 'v' => st.toggle_share(),

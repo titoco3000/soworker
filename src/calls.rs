@@ -10,6 +10,8 @@ pub enum MediaCmd {
     Share(bool),
     /// Ask another participant (by user id) to mute their microphone.
     AskToMute(String),
+    /// Noise cancellation (DeepFilterNet) on the microphone, for this call and the next ones.
+    NoiseCancel(bool),
 }
 
 #[derive(Debug)]
@@ -60,6 +62,30 @@ pub fn set_video_width(cam: u32, screen: u32) {
 
 pub fn video_width(screen: bool) -> u32 {
     (if screen { &SCREEN_W } else { &CAM_W }).load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn settings_path() -> std::path::PathBuf {
+    std::path::Path::new(&crate::session::default_path()).with_file_name("settings.json")
+}
+
+/// The `noiseCancellation` setting of settings.json (on unless set to false).
+pub fn noise_cancel_setting() -> bool {
+    std::fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v["noiseCancellation"].as_bool())
+        .unwrap_or(true)
+}
+
+/// Remembers the noise cancellation choice in settings.json, keeping everything else in the file.
+pub fn save_noise_cancel(on: bool) {
+    let path = settings_path();
+    let mut v = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).filter(|v| v.is_object()).unwrap_or_else(|| serde_json::json!({}));
+    v["noiseCancellation"] = on.into();
+    let saved = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n"));
+    if let Err(e) = saved {
+        eprintln!("settings: cannot save {}: {e}", path.display());
+    }
 }
 
 /// Sender for media commands. Without the `calls` feature it is a stub, so the UI code compiles either way.

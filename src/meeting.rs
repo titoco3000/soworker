@@ -47,7 +47,7 @@ impl Default for Dock {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Ctl {
     Leave,
-    Lock,
+    NoiseCancel,
     Cam,
     Mic,
     Share,

@@ -1,0 +1,59 @@
+# DeepFilterNet's libDF (https://github.com/Rikorose/DeepFilterNet, commit d375b2d, MIT/Apache-2.0), trimmed to what
+# real-time inference needs and moved to tract 0.21.18 / ndarray 0.16 (see README.md).
+[package]
+name = "deep_filter"
+version = "0.5.7-pre"
+authors = ["Hendrik Schröter"]
+edition = "2021"
+description = "Noise supression using deep filtering"
+repository = "https://github.com/Rikorose/DeepFilterNet"
+license = "MIT/Apache-2.0"
+
+[lib]
+name = "df"
+path = "src/lib.rs"
+
+[features]
+default = ["default-model"]
+transforms = ["dep:thiserror", "dep:ndarray", "dep:rubato"]
+logging = ["dep:log", "dep:crossbeam-channel"]
+tract = [
+  "transforms",
+  "logging",
+  "dep:tract-core",
+  "dep:tract-onnx",
+  "dep:tract-pulse",
+  "dep:tract-hir",
+  "dep:rust-ini",
+  "dep:ndarray",
+  "dep:anyhow",
+  "dep:flate2",
+  "dep:tar",
+]
+default-model = [] # Include the DFN3 model
+# upstream features whose code was left out; declared so the remaining `cfg`s stay valid
+default-model-ll = []
+timings = []
+dataset = []
+capi = []
+wasm = []
+wav-utils = []
+
+[dependencies]
+rustfft = "6.1"
+realfft = "3.1"
+itertools = "0.12"
+num-complex = "0.4"
+log = { version = "0.4", features = ["std"], optional = true }
+thiserror = { version = "1.0", optional = true }
+rubato = { version = "0.14", optional = true }
+anyhow = { version = "1.0", optional = true }
+ndarray = { version = "0.16", optional = true }
+crossbeam-channel = { version = "0.5", optional = true }
+rust-ini = { version = "0.21", optional = true }
+tract-core = { version = "0.21.18", optional = true }
+tract-onnx = { version = "0.21.18", optional = true }
+tract-pulse = { version = "0.21.18", optional = true }
+tract-hir = { version = "0.21.18", optional = true }
+flate2 = { version = "1.0.24", optional = true }
+tar = { version = "0.4.38", optional = true }

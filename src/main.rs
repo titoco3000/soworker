@@ -25,6 +25,8 @@ mod avatars;
 mod gui;
 #[cfg(feature = "calls")]
 mod media;
+#[cfg(feature = "calls")]
+mod mic;
 #[cfg(feature = "tui")]
 mod tui;
 #[cfg(feature = "tui")]
@@ -38,7 +40,7 @@ fn icon_sheet(out: &str) {
     use gui::icons::*;
     let mut pm = tiny_skia::Pixmap::new(420, 80).unwrap();
     pm.fill(tiny_skia::Color::from_rgba8(26, 30, 38, 255));
-    for (i, s) in [MIC, MIC_OFF, VIDEO, VIDEO_OFF, MONITOR, PHONE_OFF, STOP_CIRCLE, LOCK, UNLOCK, MAXIMIZE, MINIMIZE, MESSAGE_CIRCLE].iter().enumerate() {
+    for (i, s) in [MIC, MIC_OFF, VIDEO, VIDEO_OFF, MONITOR, PHONE_OFF, STOP_CIRCLE, NOISE_CANCEL, NOISE_CANCEL_OFF, MAXIMIZE, MINIMIZE, MESSAGE_CIRCLE].iter().enumerate() {
         gui::icon::draw(&mut pm.as_mut(), s, 10.0 + i as f32 * 34.0, 10.0, 24.0, gui::theme::INK);
         gui::icon::draw(&mut pm.as_mut(), s, 10.0 + i as f32 * 34.0, 48.0, 16.0, gui::theme::BRAND);
     }

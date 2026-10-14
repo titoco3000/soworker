@@ -1,10 +1,17 @@
 //! Calls on the official LiveKit Rust SDK: join with the token from gaia's `cluster` event,
-//! audio through the SDK's platform audio (mic capture + playout + echo cancellation),
+//! audio through the SDK's platform audio (playout, and mic capture + echo cancellation unless noise cancellation is on:
+//! then the mic goes through our own path in `mic.rs`),
 //! remote video decoded by libwebrtc and delivered as small RGBA frames.
 use crate::calls::{ask_to_mute_payload, ask_to_mute_target, MediaCmd, MediaEvent, ASK_TO_MUTE};
+use crate::mic;
 use futures_util::StreamExt;
 use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
 use livekit::prelude::*;
+use livekit::rtc_engine::lk_runtime::LkRuntime;
+use livekit::webrtc::audio_source::native::NativeAudioSource;
+use livekit::webrtc::audio_source::AudioSourceOptions;
+use livekit::webrtc::audio_stream::native::NativeAudioStream;
+use livekit::webrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
 use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
 use livekit::webrtc::native::yuv_helper;
 use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer, VideoFormatType, VideoFrame, VideoRotation};
@@ -40,7 +47,16 @@ struct Session {
     room: Room,
     events: UnboundedReceiver<RoomEvent>,
     audio: Option<PlatformAudio>,
-    mic: Option<LocalAudioTrack>,
+    /// The published microphone track and its sid (republished when noise cancellation is switched).
+    mic: Option<(LocalAudioTrack, TrackSid)>,
+    /// Noise cancellation: the mic comes from `mic.rs` into `mic_src` instead of libwebrtc's own capture.
+    nc: bool,
+    mic_src: Option<NativeAudioSource>,
+    /// Our capture thread, while noise cancellation is on.
+    mic_run: Option<mic::Mic>,
+    /// Remote audio, collected as the echo reference for our capture; one reader task per remote audio track.
+    far: Arc<mic::Far>,
+    audio_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     cam: Option<Camera>,
     share: Option<Capture>,
     video_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
@@ -64,6 +80,7 @@ pub fn spawn(emit: impl Fn(MediaEvent) + Send + Sync + 'static) -> UnboundedSend
 
 async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
     let mut session: Option<Session> = None;
+    let mut nc = false;
     loop {
         tokio::select! {
             cmd = rx.recv() => {
@@ -72,7 +89,7 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                     MediaCmd::Join { url, token, room_id } => {
                         if session.as_ref().is_some_and(|s| s.room_id == room_id) { continue; }
                         if let Some(s) = session.take() { close(s, &emit).await; }
-                        match join(&url, &token, room_id, &emit).await {
+                        match join(&url, &token, room_id, nc, &emit).await {
                             Ok(s) => session = Some(s),
                             Err(e) => { emit(MediaEvent::Error(format!("call failed: {e}"))); emit(MediaEvent::Left); }
                         }
@@ -82,6 +99,10 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                     MediaCmd::Camera(on) => if let Some(s) = session.as_mut() { set_camera(s, on, &emit).await; },
                     MediaCmd::Share(on) => if let Some(s) = session.as_mut() { set_share(s, on, &emit).await; },
                     MediaCmd::AskToMute(target) => if let Some(s) = session.as_ref() { ask_to_mute(s, &target, &emit).await; },
+                    MediaCmd::NoiseCancel(on) => {
+                        nc = on;
+                        if let Some(s) = session.as_mut() { set_noise_cancel(s, on, &emit).await; }
+                    }
                 }
             }
             ev = async { match session.as_mut() { Some(s) => s.events.recv().await, None => std::future::pending().await } } => {
@@ -98,7 +119,7 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
     }
 }
 
-async fn join(url: &str, token: &str, room_id: String, emit: &Emit) -> Result<Session, String> {
+async fn join(url: &str, token: &str, room_id: String, nc: bool, emit: &Emit) -> Result<Session, String> {
     let mut opts = RoomOptions::default();
     opts.auto_subscribe = true;
     opts.adaptive_stream = true;
@@ -116,20 +137,52 @@ async fn join(url: &str, token: &str, room_id: String, emit: &Emit) -> Result<Se
     // opening and closing it on every mute toggle made the sound flip. With such a mic, keep the capture device open
     // for the whole meeting.
     let keep_capture = cfg!(target_os = "linux") && audio.as_ref().is_some_and(default_mic_is_bluetooth);
-    if keep_capture {
-        if let Some(a) = audio.as_ref() {
-            match a.start_recording() {
-                Ok(()) => eprintln!("audio: bluetooth mic, capture kept open (recording initialized: {})", a.is_recording_initialized()),
-                Err(e) => {
-                    eprintln!("audio: start_recording failed: {e}");
-                    emit(MediaEvent::Error(format!("microphone: {e}")));
-                }
+    let mut s = Session {
+        room,
+        events,
+        audio,
+        mic: None,
+        nc,
+        mic_src: None,
+        mic_run: None,
+        far: Arc::new(mic::Far::default()),
+        audio_tasks: HashMap::new(),
+        cam: None,
+        share: None,
+        video_tasks: HashMap::new(),
+        room_id: room_id.clone(),
+        keep_capture,
+    };
+    // creating the platform audio switched libwebrtc's own mic capture on; with noise cancellation we capture instead
+    set_adm_recording(!nc);
+    keep_mic_open(&mut s, false, emit);
+    emit(MediaEvent::Joined(room_id));
+    emit_peers(&s.room, emit);
+    Ok(s)
+}
+
+/// Whether libwebrtc may open the microphone itself (the platform audio's capture). Off while we capture.
+fn set_adm_recording(on: bool) {
+    LkRuntime::instance().pc_factory().set_adm_recording_enabled(on);
+}
+
+/// Opens or closes the capture to match the mic: open while it is on, or all meeting long for a Bluetooth headset
+/// (see `join`). With noise cancellation that is our capture thread; otherwise libwebrtc's.
+fn keep_mic_open(s: &mut Session, mic_on: bool, emit: &Emit) {
+    if s.nc {
+        let src = s.mic_src.get_or_insert_with(|| NativeAudioSource::new(AudioSourceOptions::default(), mic::RATE, 1, 0)).clone();
+        let (far, emit) = (s.far.clone(), emit.clone());
+        s.mic_run.get_or_insert_with(|| mic::Mic::start(src, far, emit)).capture(mic_on || s.keep_capture);
+    } else if let Some(audio) = s.audio.as_ref().filter(|_| s.keep_capture) {
+        // a muted track makes libwebrtc stop capturing; start it again so the device stays open
+        match audio.start_recording() {
+            Ok(()) => eprintln!("audio: bluetooth mic, capture kept open (mic {}, recording initialized: {})", if mic_on { "on" } else { "off" }, audio.is_recording_initialized()),
+            Err(e) => {
+                eprintln!("audio: start_recording failed: {e}");
+                emit(MediaEvent::Error(format!("microphone: {e}")));
             }
         }
     }
-    emit(MediaEvent::Joined(room_id.clone()));
-    emit_peers(&room, emit);
-    Ok(Session { room, events, audio, mic: None, cam: None, share: None, video_tasks: HashMap::new(), room_id, keep_capture })
 }
 
 /// Whether the system default microphone (the first listed, shown as "default: <name>") is Bluetooth. The SDK gives no
@@ -200,6 +253,10 @@ async fn close(mut s: Session, emit: &Emit) {
         t.abort();
         emit(MediaEvent::VideoGone(key));
     }
+    for (_, t) in s.audio_tasks.drain() {
+        t.abort();
+    }
+    drop(s.mic_run.take());
     let _ = s.room.close().await;
     drop(s.mic.take());
     drop(s.audio.take()); // last reference releases the audio device
@@ -209,23 +266,46 @@ async fn close(mut s: Session, emit: &Emit) {
 
 async fn set_mic(s: &mut Session, on: bool, emit: &Emit) {
     if on && s.mic.is_none() {
-        let Some(audio) = &s.audio else { return emit(MediaEvent::Error("no audio device".into())) };
-        let track = LocalAudioTrack::create_audio_track("microphone", audio.rtc_source());
+        let source = if s.nc {
+            RtcAudioSource::Native(s.mic_src.get_or_insert_with(|| NativeAudioSource::new(AudioSourceOptions::default(), mic::RATE, 1, 0)).clone())
+        } else {
+            let Some(audio) = &s.audio else { return emit(MediaEvent::Error("no audio device".into())) };
+            audio.rtc_source()
+        };
+        let track = LocalAudioTrack::create_audio_track("microphone", source);
         let mut opts = TrackPublishOptions::default();
         opts.source = TrackSource::Microphone;
-        if let Err(e) = s.room.local_participant().publish_track(LocalTrack::Audio(track.clone()), opts).await {
-            return emit(MediaEvent::Error(format!("microphone: {e}")));
+        match s.room.local_participant().publish_track(LocalTrack::Audio(track.clone()), opts).await {
+            Ok(p) => s.mic = Some((track, p.sid())),
+            Err(e) => return emit(MediaEvent::Error(format!("microphone: {e}"))),
         }
-        s.mic = Some(track);
-    } else if let Some(t) = &s.mic {
+    } else if let Some((t, _)) = &s.mic {
         if on { t.unmute() } else { t.mute() }
     }
-    // a muted track makes libwebrtc stop capturing; start it again so the device stays open
-    if let Some(audio) = s.audio.as_ref().filter(|_| s.keep_capture) {
-        let r = audio.start_recording();
-        eprintln!("audio: mic {} -> start_recording {r:?}, recording initialized: {}", if on { "on" } else { "off" }, audio.is_recording_initialized());
-    }
+    keep_mic_open(s, on && s.mic.is_some(), emit);
     emit(MediaEvent::MicState(on && s.mic.is_some()));
+}
+
+/// Switch between libwebrtc's mic capture and ours (noise cancelled): the track is republished from the other source,
+/// muted or not as it was.
+async fn set_noise_cancel(s: &mut Session, on: bool, emit: &Emit) {
+    if s.nc == on {
+        return;
+    }
+    eprintln!("audio: noise cancellation {}", if on { "on" } else { "off" });
+    let was_on = s.mic.as_ref().is_some_and(|(t, _)| !t.is_muted());
+    if let Some((_, sid)) = s.mic.take() {
+        let _ = s.room.local_participant().unpublish_track(&sid).await;
+    }
+    s.mic_run = None;
+    s.mic_src = None;
+    s.nc = on;
+    set_adm_recording(!on);
+    if was_on {
+        set_mic(s, true, emit).await;
+    } else {
+        keep_mic_open(s, false, emit);
+    }
 }
 
 /// Mute someone else: a reliable data message on SoWork's `ask-to-mute` topic. The receiving client decides
@@ -248,8 +328,27 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
         RoomEvent::ActiveSpeakersChanged { speakers } => {
             emit(MediaEvent::Speakers(speakers.iter().map(|p| p.identity().to_string()).collect()));
         }
-        RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(_), publication, participant } => {
+        RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(a), publication, participant } => {
             emit(MediaEvent::PeerMuted(participant.identity().to_string(), publication.is_muted()));
+            // read what this track plays, as the echo reference for our own capture (ignored while that is off)
+            let key = format!("{}:{}", participant.identity(), publication.sid());
+            let (far, k) = (s.far.clone(), key.clone());
+            let task = tokio::spawn(async move {
+                let mut stream = NativeAudioStream::new(a.rtc_track(), mic::RATE as i32, 1);
+                while let Some(frame) = stream.next().await {
+                    far.push(&k, &frame.data);
+                }
+            });
+            if let Some(old) = s.audio_tasks.insert(key, task) {
+                old.abort();
+            }
+        }
+        RoomEvent::TrackUnsubscribed { track: RemoteTrack::Audio(_), publication, participant } => {
+            let key = format!("{}:{}", participant.identity(), publication.sid());
+            if let Some(t) = s.audio_tasks.remove(&key) {
+                t.abort();
+            }
+            s.far.remove(&key);
         }
         RoomEvent::TrackMuted { participant: Participant::Remote(p), publication } if publication.source() == TrackSource::Microphone => {
             emit(MediaEvent::PeerMuted(p.identity().to_string(), true));
@@ -305,6 +404,13 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
         RoomEvent::ParticipantConnected(_) => emit_peers(&s.room, emit),
         RoomEvent::ParticipantDisconnected(p) => {
             emit_peers(&s.room, emit);
+            let prefix = format!("{}:", p.identity());
+            for key in s.audio_tasks.keys().filter(|k| k.starts_with(&prefix)).cloned().collect::<Vec<_>>() {
+                if let Some(t) = s.audio_tasks.remove(&key) {
+                    t.abort();
+                }
+                s.far.remove(&key);
+            }
             for key in [p.identity().to_string(), format!("{}:screen", p.identity())] {
                 if let Some(t) = s.video_tasks.remove(&key) {
                     t.abort();

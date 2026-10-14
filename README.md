@@ -60,6 +60,11 @@ runtime libwebrtc needs). From Linux: `make build-windows`.
   `p` hides it. A wave shows up there too: Enter walks to the person, `x` dismisses.
 - **Calls:** `m` mic, `c` camera, `v` share screen, `l` leave, `Space` talk (hold it where the terminal reports key
   releases, otherwise it toggles). `t` opens the chat and starts typing, `Esc` leaves the input, `T` closes it.
+- **Noise cancellation:** on by default: the microphone goes through [DeepFilterNet 3](https://github.com/Rikorose/DeepFilterNet)
+  (built in) after WebRTC's echo cancellation. `N` in the terminal, or the waveform button left of the camera in the
+  window, switches it (also during a call); the choice is kept as `noiseCancellation` in `settings.json`. While it is
+  on, the mic is captured with `parec` (or `pw-record`) on Linux and WASAPI on Windows; off, libwebrtc captures it
+  itself and uses its own noise suppression.
 - **Video:** where the terminal draws kitty graphics (kitty, ghostty, WezTerm, Konsole) the picture is shown inline in
   the call panel and `n` switches between camera and screen share. Anywhere else (and inside tmux) it opens in a small
   window of its own, started on demand. Force one with `--video inline|window|off`; `soworker --term-check` says what your terminal supports. COSMIC Terminal draws no inline graphics, so there the window is used. Pictures nobody looks at are not
@@ -98,5 +103,5 @@ so the in-app hint matches. Test with `soworker --talk` in a terminal while the 
 - `docs/`: reverse-engineered protocol and behaviour notes (start with `docs/FINDINGS.md`).
 - `src/`: the core has no drawing in it: `session` (sign-in), `net` (socket), `proto` (events), `world` (collision,
   pathfinding), `app` (state), `directory` / `meeting` / `chatstate` (what the people list, the call and the chat show),
-  `media` (calls), `backend` (the threads behind a session). `tui/` is the terminal client (`view` draws, `kitty` is
+  `media` (calls), `mic` (the noise-cancelled microphone), `backend` (the threads behind a session). `tui/` is the terminal client (`view` draws, `kitty` is
   the inline video), `videowin` the bare video window, `gui/` the window client.

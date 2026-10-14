@@ -19,12 +19,15 @@ portal = ["dep:zbus"]
 # a small always-on-top "you are live" pill through the wlr layer-shell protocol (Wayland; nothing elsewhere)
 overlay = ["render", "dep:smithay-client-toolkit", "dep:wayland-client"]
 # Audio/video calls through the official LiveKit Rust SDK (needs clang++ and the libwebrtc prebuilt at build time).
-calls = ["dep:livekit", "dep:tokio", "dep:futures-util", "dep:v4l", "dep:nokhwa"]
+calls = ["dep:livekit", "dep:tokio", "dep:futures-util", "dep:v4l", "dep:nokhwa", "dep:deep_filter", "dep:ndarray", "dep:cpal"]
 
 [dependencies]
 livekit = { version = "0.9.3", features = ["rustls-tls-native-roots", "glib-main-loop"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 futures-util = { version = "0.3", default-features = false, optional = true }
+# Noise cancellation (DeepFilterNet 3, model built in) for the microphone; vendored, see vendor/deep_filter/README.md
+deep_filter = { path = "vendor/deep_filter", default-features = false, features = ["tract", "default-model"], optional = true }
+ndarray = { version = "0.16", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
@@ -53,6 +56,8 @@ wayland-client = { version = "0.31", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 nokhwa = { version = "0.10", default-features = false, features = ["input-msmf"], optional = true }
+# microphone capture (WASAPI) for the noise-cancelled path; on Linux `parec` / `pw-record` do it
+cpal = { version = "0.18", optional = true }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Media_Audio",
