@@ -334,6 +334,13 @@ impl State {
                     u.mode = mode;
                 }
             }
+            Net::ClusterToken { conversation_id, token } => {
+                if let Some(c) = self.cluster.as_mut().filter(|c| c.conversation_id == conversation_id && c.token.is_none()) {
+                    eprintln!("[{now:6.1}] call token for the meeting fetched over REST");
+                    c.token = Some(token);
+                    self.sync_call();
+                }
+            }
             Net::Cluster(c) => {
                 self.clusters_seen += 1;
                 eprintln!("[{now:6.1}] gaia cluster event: {}", match &c {

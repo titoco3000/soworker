@@ -261,7 +261,7 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
             let screen = publication.source() == TrackSource::Screenshare;
             let key = format!("{}{}", participant.identity(), if screen { ":screen" } else { "" });
             let name = participant.name();
-            let (max_w, emit2) = (if screen { 960u32 } else { 480 }, emit.clone());
+            let emit2 = emit.clone();
             let k = key.clone();
             let task = tokio::spawn(async move {
                 let mut stream = NativeVideoStream::new(v.rtc_track());
@@ -281,7 +281,7 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
                         continue;
                     }
                     let (sw, sh) = (frame.buffer.width().max(1), frame.buffer.height().max(1));
-                    let w = max_w.min(sw) & !1;
+                    let w = crate::calls::video_width(screen).min(sw) & !1;
                     let h = ((w as u64 * sh as u64 / sw as u64) as u32 & !1).max(2);
                     let mut i420 = frame.buffer.to_i420();
                     let scaled = i420.scale(w as i32, h as i32);

@@ -153,7 +153,7 @@ fn layout(tiles: &[(String, String, Frame)], w: u32, h: u32) -> Vec<(usize, (u32
     (0..tiles.len()).map(|i| (i, ((i as u32 % cols) * cw + pad / 2, (i as u32 / cols) * ch + pad / 2, cw.saturating_sub(pad), ch.saturating_sub(pad)))).collect()
 }
 
-/// Scale a frame into a rectangle (contain, centred, nearest neighbour; `mirror` flips it like a mirror).
+/// Scale a frame into a rectangle (contain, centred, bilinear; `mirror` flips it like a mirror).
 fn blit(buf: &mut [u32], bw: u32, bh: u32, f: &Frame, (rx, ry, rw, rh): (u32, u32, u32, u32), mirror: bool) {
     if f.w == 0 || f.h == 0 || rw == 0 || rh == 0 {
         return;
@@ -161,22 +161,37 @@ fn blit(buf: &mut [u32], bw: u32, bh: u32, f: &Frame, (rx, ry, rw, rh): (u32, u3
     let s = (rw as f32 / f.w as f32).min(rh as f32 / f.h as f32);
     let (dw, dh) = (((f.w as f32 * s) as u32).max(1), ((f.h as f32 * s) as u32).max(1));
     let (ox, oy) = (rx + (rw - dw.min(rw)) / 2, ry + (rh - dh.min(rh)) / 2);
+    let (fw, fh) = (f.w as usize, f.h as usize);
+    // 8-bit fractions: source position of each destination column, computed once
+    let cols: Vec<(usize, usize, u32)> = (0..dw.min(rw))
+        .map(|x| {
+            let x = if mirror { dw - 1 - x } else { x };
+            let p = ((x as f32 + 0.5) * f.w as f32 / dw as f32 - 0.5).max(0.0);
+            let x0 = (p as usize).min(fw - 1);
+            (x0, (x0 + 1).min(fw - 1), ((p - x0 as f32) * 256.0) as u32)
+        })
+        .collect();
     for y in 0..dh.min(rh) {
         let py = oy + y;
         if py >= bh {
             break;
         }
-        let sy = (y as u64 * f.h as u64 / dh as u64) as usize;
-        let row = &f.rgba[sy * f.w as usize * 4..(sy + 1) * f.w as usize * 4];
-        for x in 0..dw.min(rw) {
-            let px = ox + x;
+        let p = ((y as f32 + 0.5) * f.h as f32 / dh as f32 - 0.5).max(0.0);
+        let y0 = (p as usize).min(fh - 1);
+        let (y1, wy) = ((y0 + 1).min(fh - 1), ((p - y0 as f32) * 256.0) as u32);
+        let (r0, r1) = (&f.rgba[y0 * fw * 4..(y0 + 1) * fw * 4], &f.rgba[y1 * fw * 4..(y1 + 1) * fw * 4]);
+        for (x, &(x0, x1, wx)) in cols.iter().enumerate() {
+            let px = ox + x as u32;
             if px >= bw {
                 break;
             }
-            let sx = (x as u64 * f.w as u64 / dw as u64) as usize;
-            let sx = if mirror { f.w as usize - 1 - sx } else { sx };
-            let p = &row[sx * 4..sx * 4 + 4];
-            buf[(py * bw + px) as usize] = (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32;
+            let mut out = 0u32;
+            for c in 0..3 {
+                let top = r0[x0 * 4 + c] as u32 * (256 - wx) + r0[x1 * 4 + c] as u32 * wx;
+                let bot = r1[x0 * 4 + c] as u32 * (256 - wx) + r1[x1 * 4 + c] as u32 * wx;
+                out = out << 8 | ((top * (256 - wy) + bot * wy) >> 16);
+            }
+            buf[(py * bw + px) as usize] = out;
         }
     }
 }

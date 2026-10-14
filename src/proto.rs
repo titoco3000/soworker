@@ -49,6 +49,8 @@ pub enum Net {
     Leave(String),
     Speaking(String, bool),
     Cluster(Option<ClusterInfo>),
+    /// The call token for a meeting the cluster event came without one (fetched over REST).
+    ClusterToken { conversation_id: String, token: LkToken },
     Presence { id: String, status: String },
     Mode { id: String, mode: String },
     /// A user entered (`Some`) or left (`None`) a meeting zone (`s` code 9).

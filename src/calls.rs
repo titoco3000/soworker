@@ -48,6 +48,20 @@ pub fn wants_video(key: &str) -> bool {
     WANTED.read().map_or(true, |w| w.as_ref().map_or(true, |s| s.contains(key)))
 }
 
+static CAM_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(480);
+static SCREEN_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(960);
+
+/// Widest picture (pixels) handed to the frontend for a camera / a screen share. Bigger = sharper and more work.
+#[cfg(feature = "tui")]
+pub fn set_video_width(cam: u32, screen: u32) {
+    CAM_W.store(cam, std::sync::atomic::Ordering::Relaxed);
+    SCREEN_W.store(screen, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn video_width(screen: bool) -> u32 {
+    (if screen { &SCREEN_W } else { &CAM_W }).load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Sender for media commands. Without the `calls` feature it is a stub, so the UI code compiles either way.
 #[cfg(feature = "calls")]
 pub type MediaTx = tokio::sync::mpsc::UnboundedSender<MediaCmd>;

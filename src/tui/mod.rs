@@ -149,6 +149,11 @@ impl Tui {
 
     /// Tell the media thread which pictures to convert: all for the window, the one in view inline, none otherwise.
     fn sync_wanted(&self) {
+        // the window is big, so it gets sharper pictures; the inline pane is small and every byte goes through the terminal
+        match self.video {
+            Video::Window(_) => crate::calls::set_video_width(960, 1920),
+            _ => crate::calls::set_video_width(640, 1280),
+        }
         crate::calls::want_video(match &self.video {
             Video::Off => Some(HashSet::new()),
             Video::Inline(_) => Some(self.picked_key().into_iter().collect()),

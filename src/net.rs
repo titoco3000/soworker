@@ -131,6 +131,15 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
                                 }
                                 ws.send(Message::Binary(cmd_packet(&Cmd::Available(link.available)))).map_err(|e| e.to_string())?;
                             }
+                            if let Net::Cluster(Some(c)) = &e {
+                                if c.token.is_none() && c.unsupported.is_none() {
+                                    // a busy meeting comes without a token: ask for it like the official client does
+                                    if let Ok(t) = auth.id_token() {
+                                        let (conv, tx) = (c.conversation_id.clone(), link.roster_tx.clone());
+                                        std::thread::spawn(move || fetch_call_token(&t, &conv, &tx));
+                                    }
+                                }
+                            }
                             emit(e);
                         }
                     }
@@ -201,6 +210,52 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
     }
 }
 
+/// `POST /api/v1/conversation/token {conversationId}`: the fallback the official client uses when the `cluster` event
+/// carries no token. The answer's format was never captured, so it is read loosely: an object with a `token` string
+/// (maybe nested one level), `apiHost` and `roomId` beside it. Only the field names are logged, never values.
+fn fetch_call_token(id_token: &str, conversation_id: &str, tx: &Sender<Net>) {
+    let res = ureq::post("https://api.sowork.com/api/v1/conversation/token")
+        .set("authorization", &format!("Bearer {id_token}"))
+        .set("source", "web")
+        .set("version", CLIENT_VERSION)
+        .timeout(Duration::from_secs(15))
+        .send_json(serde_json::json!({"conversationId": conversation_id}));
+    let body: serde_json::Value = match res {
+        Ok(r) => r.into_json().unwrap_or_default(),
+        Err(ureq::Error::Status(code, r)) => {
+            let msg = format!("call token: HTTP {code} {}", r.into_string().unwrap_or_default().chars().take(160).collect::<String>());
+            eprintln!("{msg}");
+            return drop(tx.send(Net::Error(msg)));
+        }
+        Err(e) => {
+            eprintln!("call token: {e}");
+            return drop(tx.send(Net::Error(format!("call token: {e}"))));
+        }
+    };
+    match parse_call_token(&body) {
+        Some(token) => drop(tx.send(Net::ClusterToken { conversation_id: conversation_id.into(), token })),
+        None => {
+            let keys = |v: &serde_json::Value| v.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
+            eprintln!("call token: no usable token in the answer (fields: {})", keys(&body));
+            let _ = tx.send(Net::Error("could not get the call token for this meeting".into()));
+        }
+    }
+}
+
+fn parse_call_token(body: &serde_json::Value) -> Option<crate::proto::LkToken> {
+    let obj = [body, &body["data"], &body["token"], &body["result"]].into_iter().find(|v| v["token"].as_str().is_some_and(|t| !t.is_empty()) || v["accessToken"].as_str().is_some())?;
+    if obj["provider"].as_str().is_some_and(|p| p != "livekit") {
+        return None;
+    }
+    let get = |names: &[&str]| names.iter().find_map(|n| obj[*n].as_str()).unwrap_or("").to_string();
+    let host = get(&["apiHost", "api_host", "host"]);
+    Some(crate::proto::LkToken {
+        token: get(&["token", "accessToken"]),
+        api_host: if host.is_empty() { "sowork-production-7a7l3zs5.livekit.cloud".into() } else { host },
+        room_id: get(&["roomId", "room_id", "room"]),
+    })
+}
+
 /// SoWork's own sequence for a status change (observed in the recording): for "away" first cancel any scheduled
 /// status clear and store "never clear", then set the status; "available" is just the status update.
 fn rest_presence(token: &str, uid: &str, away: bool) {
@@ -257,5 +312,21 @@ pub fn run(mut auth: Auth, dry: bool, emit: impl Fn(Net) + Send + 'static, cmds:
             emit(Net::Error(e));
         }
         std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_token_flat_or_nested() {
+        let flat = serde_json::json!({"provider": "livekit", "token": "jwt", "apiHost": "h.livekit.cloud", "roomId": "RM_1"});
+        let t = parse_call_token(&flat).unwrap();
+        assert_eq!((t.token.as_str(), t.api_host.as_str(), t.room_id.as_str()), ("jwt", "h.livekit.cloud", "RM_1"));
+        let nested = serde_json::json!({"data": {"token": "jwt2", "roomId": "RM_2"}});
+        assert_eq!(parse_call_token(&nested).unwrap().token, "jwt2");
+        assert!(parse_call_token(&serde_json::json!({"provider": "chime", "token": "x"})).is_none());
+        assert!(parse_call_token(&serde_json::json!({})).is_none());
     }
 }
