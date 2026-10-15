@@ -61,8 +61,10 @@ struct Session {
     share: Option<Capture>,
     video_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     room_id: String,
-    /// The default mic is a Bluetooth headset's: keep the capture open all meeting (see `join`).
+    /// The mic is a Bluetooth headset's: keep the capture open all meeting (see `join`).
     keep_capture: bool,
+    /// The speaker, microphone and camera the call uses now (see `apply_devices`).
+    devices: crate::devices::Choice,
 }
 
 pub fn spawn(emit: impl Fn(MediaEvent) + Send + Sync + 'static) -> UnboundedSender<MediaCmd> {
@@ -103,6 +105,7 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                         nc = on;
                         if let Some(s) = session.as_mut() { set_noise_cancel(s, on, &emit).await; }
                     }
+                    MediaCmd::Devices => if let Some(s) = session.as_mut() { apply_devices(s, &emit).await; },
                 }
             }
             ev = async { match session.as_mut() { Some(s) => s.events.recv().await, None => std::future::pending().await } } => {
@@ -136,7 +139,7 @@ async fn join(url: &str, token: &str, room_id: String, nc: bool, emit: &Emit) ->
     // A Bluetooth headset switches to its low-quality call profile whenever the mic opens and back when it closes, so
     // opening and closing it on every mute toggle made the sound flip. With such a mic, keep the capture device open
     // for the whole meeting.
-    let keep_capture = cfg!(target_os = "linux") && audio.as_ref().is_some_and(default_mic_is_bluetooth);
+    let keep_capture = cfg!(target_os = "linux") && audio.as_ref().is_some_and(mic_is_bluetooth);
     let mut s = Session {
         room,
         events,
@@ -152,7 +155,9 @@ async fn join(url: &str, token: &str, room_id: String, nc: bool, emit: &Emit) ->
         video_tasks: HashMap::new(),
         room_id: room_id.clone(),
         keep_capture,
+        devices: Default::default(),
     };
+    apply_devices(&mut s, emit).await;
     // creating the platform audio switched libwebrtc's own mic capture on; with noise cancellation we capture instead
     set_adm_recording(!nc);
     keep_mic_open(&mut s, false, emit);
@@ -185,12 +190,21 @@ fn keep_mic_open(s: &mut Session, mic_on: bool, emit: &Emit) {
     }
 }
 
-/// Whether the system default microphone (the first listed, shown as "default: <name>") is Bluetooth. The SDK gives no
-/// device ids here, so ask PulseAudio / PipeWire (`pactl`) which sources are Bluetooth (`device.api = bluez5`, or a
-/// `bluez_` name) and match on the description. Logs everything so a miss can be checked.
-fn default_mic_is_bluetooth(audio: &PlatformAudio) -> bool {
+/// Whether the microphone we use is Bluetooth: the one chosen in the profile panel (a PulseAudio / PipeWire source
+/// name), else the system default (the first listed, shown as "default: <name>"). The SDK gives no useful ids here, so
+/// ask `pactl` which sources are Bluetooth (`device.api = bluez5`, or a `bluez_` name) and match on the name or the
+/// description. Logs everything so a miss can be checked.
+fn mic_is_bluetooth(audio: &PlatformAudio) -> bool {
     for d in audio.recording_devices() {
         eprintln!("audio: mic #{} {:?} id {:?}", d.index, d.name, d.id.as_str());
+    }
+    for d in audio.playout_devices() {
+        eprintln!("audio: speaker #{} {:?} id {:?}", d.index, d.name, d.id.as_str());
+    }
+    if let Some(want) = crate::devices::chosen().input {
+        let bt = want.starts_with("bluez_") || pactl_bluetooth_sources().is_ok_and(|list| list.iter().any(|(n, _, bt)| *bt && *n == want));
+        eprintln!("audio: chosen mic {want:?}, bluetooth: {bt}");
+        return bt;
     }
     let Some(d) = audio.recording_devices().next() else {
         eprintln!("audio: no microphone listed");
@@ -231,6 +245,51 @@ fn pactl_bluetooth_sources() -> Result<Vec<(String, String, bool)>, String> {
                 .collect()
         })
         .unwrap_or_default())
+}
+
+/// The platform audio's device for a choice from the profile panel: its id there is the PulseAudio / PipeWire name on
+/// Linux (or a name the SDK does not report as such: then the description matches), the device name on Windows. No
+/// choice = the first device, which is the system default.
+fn pick(devices: impl Iterator<Item = (String, String)>, want: Option<&str>, kind: crate::devices::Kind) -> Option<String> {
+    let devices: Vec<(String, String)> = devices.collect();
+    let Some(want) = want else { return devices.first().map(|(id, _)| id.clone()) };
+    let desc = crate::devices::list().of(kind).iter().find(|d| d.id == want).map(|d| d.name.clone());
+    devices.iter().find(|(id, name)| id == want || name == want || Some(name) == desc.as_ref()).map(|(id, _)| id.clone())
+}
+
+/// Puts the call on the speaker, microphone and camera chosen in the profile panel (at the start, and whenever the
+/// choice changes during the call). Our own capture (noise cancellation) follows the choice by itself, see `mic::run`.
+async fn apply_devices(s: &mut Session, emit: &Emit) {
+    use crate::devices::Kind;
+    let want = crate::devices::chosen();
+    if let Some(audio) = &s.audio {
+        if want.output != s.devices.output {
+            match pick(audio.playout_devices().map(|d| (d.id.as_str().to_string(), d.name)), want.get(Kind::Output), Kind::Output) {
+                Some(id) => match audio.switch_playout_device(&PlayoutDeviceId::from_unchecked_guid(&id)) {
+                    Ok(()) => eprintln!("audio: speaker {id:?}"),
+                    Err(e) => emit(MediaEvent::Error(format!("speaker: {e}"))),
+                },
+                None => emit(MediaEvent::Error("the chosen speaker is not connected; using the default".into())),
+            }
+        }
+        if want.input != s.devices.input {
+            match pick(audio.recording_devices().map(|d| (d.id.as_str().to_string(), d.name)), want.get(Kind::Input), Kind::Input) {
+                Some(id) => match audio.switch_recording_device(&RecordingDeviceId::from_unchecked_guid(&id)) {
+                    Ok(()) => eprintln!("audio: microphone {id:?}"),
+                    Err(e) => emit(MediaEvent::Error(format!("microphone: {e}"))),
+                },
+                None => emit(MediaEvent::Error("the chosen microphone is not connected; using the default".into())),
+            }
+        }
+    }
+    let cam_on = s.cam.as_ref().is_some_and(|c| c.run.as_ref().is_some_and(|(stop, _)| !stop.load(Ordering::Relaxed)));
+    let new_cam = want.camera != s.devices.camera;
+    s.devices = want;
+    if new_cam && cam_on {
+        // the capture thread opens the chosen camera when it starts
+        set_camera(s, false, emit).await;
+        set_camera(s, true, emit).await;
+    }
 }
 
 fn emit_peers(room: &Room, emit: &Emit) {
@@ -472,7 +531,10 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
     use v4l::prelude::*;
     use v4l::video::Capture;
     let open = || -> Result<(Device, usize, usize), String> {
-        let dev = Device::new(0).map_err(|e| format!("no camera (/dev/video0): {e}"))?;
+        let dev = match crate::devices::chosen().camera {
+            Some(path) => Device::with_path(&path).map_err(|e| format!("no camera ({path}): {e}"))?,
+            None => Device::new(0).map_err(|e| format!("no camera (/dev/video0): {e}"))?,
+        };
         let mut fmt = dev.format().map_err(|e| e.to_string())?;
         (fmt.width, fmt.height, fmt.fourcc) = (640, 480, v4l::FourCC::new(b"YUYV"));
         let fmt = dev.set_format(&fmt).map_err(|e| e.to_string())?;
@@ -518,10 +580,15 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
         .map(|f| RequestedFormatType::Closest(CameraFormat::new(Resolution::new(640, 480), f, 30)))
         .collect();
     wanted.push(RequestedFormatType::AbsoluteHighestFrameRate);
+    // the camera chosen in the profile panel (by name), else the first
+    let index = crate::devices::chosen()
+        .camera
+        .and_then(|want| nokhwa::query(nokhwa::utils::ApiBackend::MediaFoundation).ok()?.into_iter().find(|c| c.human_name() == want))
+        .map_or(CameraIndex::Index(0), |c| c.index().clone());
     let mut last_err = String::from("no camera");
     let mut cam = None;
     for w in wanted {
-        match nokhwa::Camera::new(CameraIndex::Index(0), RequestedFormat::new::<RgbFormat>(w)) {
+        match nokhwa::Camera::new(index.clone(), RequestedFormat::new::<RgbFormat>(w)) {
             Ok(c) => {
                 cam = Some(c);
                 break;

@@ -392,6 +392,7 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     crate::gui::sidebar::draw(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
     crate::gui::meeting_ui::draw(st, pm, text, w, h);
     crate::gui::chatui::draw(st, pm, text);
+    crate::gui::profile_ui::draw(st, pm, text);
     if st.confirm_logout {
         pm.fill_rect(Rect::from_xywh(0.0, 0.0, w, h).unwrap(), &paint(0, 0, 0, 140), id, None);
         let (card, cancel, confirm) = modal(st, w, h);

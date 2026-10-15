@@ -34,7 +34,8 @@ quits; in the window, the Terminal button in the sidebar footer does the opposit
 
 On first start there is a sign-in screen: Enter opens Chrome on SoWork's login page, takes the token once you are
 signed in and closes it again. The token is stored in `~/.config/soworker/session.json` (use `--session <file>` for
-another path). `O` (log out) forgets it. Diagnostics go to `~/.local/state/soworker/soworker.log` (set
+another path). Log out (in the profile: `u` in the terminal, the user icon in the window's sidebar footer; `O` also
+works in the terminal) forgets it. Diagnostics go to `~/.local/state/soworker/soworker.log` (set
 `SOWORKER_LOG_STDERR=1` to see them on screen instead).
 
 ## Windows
@@ -65,6 +66,11 @@ runtime libwebrtc needs). From Linux: `make build-windows`.
   window, switches it (also during a call); the choice is kept as `noiseCancellation` in `settings.json`. While it is
   on, the mic is captured with `parec` (or `pw-record`) on Linux and WASAPI on Windows; off, libwebrtc captures it
   itself and uses its own noise suppression.
+- **Profile and devices:** `u` in the terminal (or the `u profile` button top right), the user icon next to the memory
+  use in the window. It shows who is signed in, Log out, and the settings: the speaker (with a test sound), the
+  microphone (with a level meter) and the camera, each the system default or a device picked from what is plugged in
+  (`pactl` and `/dev/video*` on Linux, WASAPI and Media Foundation on Windows). A change applies to a running call too;
+  the choices are kept as `audioOutput`, `audioInput` and `camera` in `settings.json`.
 - **Video:** where the terminal draws kitty graphics (kitty, ghostty, WezTerm, Konsole) the picture is shown inline in
   the call panel and `n` switches between camera and screen share. Anywhere else (and inside tmux) it opens in a small
   window of its own, started on demand. Force one with `--video inline|window|off`; `soworker --term-check` says what your terminal supports. COSMIC Terminal draws no inline graphics, so there the window is used. Pictures nobody looks at are not

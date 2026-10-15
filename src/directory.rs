@@ -44,7 +44,8 @@ pub enum Row {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
     Away,
-    Logout,
+    /// The user icon: opens the profile panel.
+    Profile,
     /// Move to the terminal client.
     Terminal,
     Chat,

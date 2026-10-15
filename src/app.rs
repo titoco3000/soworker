@@ -140,6 +140,8 @@ pub struct State {
     pub dirty: bool,
     /// Set when the user asked to move to the other client; the frontend hands over and closes.
     pub switch: Option<crate::mode::UiMode>,
+    /// The profile panel (log out, devices), while it is open.
+    pub profile: Option<crate::profile::Profile>,
     /// Logout flow: the confirmation dialog, then the request the window acts on.
     pub confirm_logout: bool,
     pub logout_requested: bool,
@@ -201,6 +203,7 @@ impl State {
             left_zone: None,
             dirty: true,
             switch: None,
+            profile: None,
             confirm_logout: false,
             logout_requested: false,
             login: None,
@@ -549,6 +552,45 @@ impl State {
         }
     }
 
+    /// Open the profile panel, or close it if it is open.
+    pub fn toggle_profile(&mut self) {
+        self.profile = match self.profile {
+            Some(_) => None,
+            None => Some(crate::profile::Profile::new()),
+        };
+        self.dirty = true;
+    }
+
+    /// Something in the profile panel was clicked or chosen.
+    pub fn profile_act(&mut self, act: crate::profile::Act) {
+        use crate::devices::{self, Kind};
+        use crate::profile::Act;
+        let Some(p) = self.profile.as_mut() else { return };
+        match act {
+            Act::Logout => {
+                self.profile = None;
+                self.confirm_logout = true;
+            }
+            Act::Toggle(k) => p.open = if p.open == Some(k) { None } else { Some(k) },
+            Act::Pick(k, id) => {
+                p.open = None;
+                if p.chosen.get(k) != id.as_deref() {
+                    devices::choose(k, id.clone());
+                    p.chosen = devices::chosen();
+                    if k == Kind::Input {
+                        p.meter = None; // let go of the old microphone first
+                        p.meter = devices::Meter::start(id);
+                    }
+                    self.media_out.push(MediaCmd::Devices);
+                }
+            }
+            Act::TestSound => self.sounds.push(crate::sound::Sound::ReceiveWave),
+            Act::Close => self.profile = None,
+            Act::Panel => p.open = None,
+        }
+        self.dirty = true;
+    }
+
     /// The logout dialog's buttons.
     pub fn logout_choice(&mut self, confirm: bool) {
         self.confirm_logout = false;
@@ -579,7 +621,7 @@ impl State {
                 let a = !self.available;
                 self.set_available(a);
             }
-            Hit::Logout => self.confirm_logout = true,
+            Hit::Profile => self.toggle_profile(),
             Hit::Terminal => self.switch = Some(crate::mode::UiMode::Tui),
             Hit::Row(key) => self.sidebar.open = if self.sidebar.open.as_deref() == Some(key.as_str()) { None } else { Some(key) },
             Hit::Join(key) => {
@@ -746,6 +788,7 @@ impl State {
         let k = self.keys;
         self.moving
             || self.path.is_some()
+            || self.profile.as_ref().is_some_and(|p| p.meter.is_some()) // the level meter moves
             || k.up || k.down || k.left || k.right
             || self.users.values().any(|u| u.id != self.me_id && (u.tx - u.x).hypot(u.ty - u.y) > 0.5)
     }
@@ -760,7 +803,7 @@ impl State {
             self.toast = None;
             self.dirty = true;
         }
-        let mut active = self.moving || self.path.is_some();
+        let mut active = self.moving || self.path.is_some() || self.profile.as_ref().is_some_and(|p| p.meter.is_some());
         let k = self.keys;
         let (mut dx, mut dy) = ((k.right as i32 - k.left as i32) as f32, (k.down as i32 - k.up as i32) as f32);
         if (dx != 0.0 || dy != 0.0) && self.path.take().is_some() {

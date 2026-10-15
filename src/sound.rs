@@ -60,16 +60,105 @@ fn scaled(wav: &[u8], vol: f32) -> Vec<u8> {
     out
 }
 
-/// Fire and forget; a missing audio device is not an error worth showing.
+/// Fire and forget; a missing audio device is not an error worth showing. `PlaySound` only knows the default output,
+/// so a speaker chosen in the profile panel is played through WASAPI (cpal) instead.
 #[cfg(windows)]
 pub fn play(s: Sound) {
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT};
+    let device = crate::devices::chosen().output;
     std::thread::spawn(move || {
+        #[cfg(feature = "calls")]
+        if let Some(d) = &device {
+            match play_on(s.bytes(), s.volume(), d) {
+                Ok(()) => return,
+                Err(e) => eprintln!("sound: cannot play on {d}: {e}"),
+            }
+        }
+        let _ = &device;
         let wav = scaled(s.bytes(), s.volume());
         // SAFETY: with SND_MEMORY the first argument points at a whole WAV file in memory; playing synchronously keeps
         // `wav` alive until the sound is done.
         unsafe { PlaySoundW(wav.as_ptr().cast(), std::ptr::null_mut(), SND_MEMORY | SND_NODEFAULT) };
     });
+}
+
+/// The samples of a 16-bit mono WAV file (-1..1) and its sample rate.
+#[cfg_attr(not(all(windows, feature = "calls")), allow(dead_code))]
+fn pcm(wav: &[u8]) -> Option<(u32, Vec<f32>)> {
+    let (mut rate, mut at) = (None, 12);
+    while at + 8 <= wav.len() {
+        let len = u32::from_le_bytes(wav[at + 4..at + 8].try_into().ok()?) as usize;
+        let body = wav.get(at + 8..(at + 8 + len).min(wav.len()))?;
+        match &wav[at..at + 4] {
+            b"fmt " if body.len() >= 16 => {
+                let (channels, bits) = (u16::from_le_bytes([body[2], body[3]]), u16::from_le_bytes([body[14], body[15]]));
+                if channels != 1 || bits != 16 {
+                    return None;
+                }
+                rate = Some(u32::from_le_bytes(body[4..8].try_into().ok()?));
+            }
+            b"data" => return Some((rate?, body.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect())),
+            _ => {}
+        }
+        at += 8 + len + (len & 1);
+    }
+    None
+}
+
+/// Plays a WAV clip on the named output device and waits until it is done.
+#[cfg(all(windows, feature = "calls"))]
+fn play_on(wav: &[u8], vol: f32, want: &str) -> Result<(), String> {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (rate, clip) = pcm(wav).ok_or("not a 16-bit mono WAV")?;
+    let dev = cpal::default_host()
+        .output_devices()
+        .map_err(|e| e.to_string())?
+        .find(|d| d.description().is_ok_and(|n| n.name() == want))
+        .ok_or("not connected")?;
+    let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
+    let (ch, out_rate) = (cfg.channels().max(1) as usize, cfg.sample_rate());
+    // to the device's rate (linear interpolation), with the volume applied
+    let n = (clip.len() as u64 * out_rate as u64 / rate.max(1) as u64) as usize;
+    let mono: Vec<f32> = (0..n)
+        .map(|i| {
+            let p = i as f64 * rate as f64 / out_rate as f64;
+            let (j, f) = (p as usize, (p - (p as usize) as f64) as f32);
+            let a = clip.get(j).copied().unwrap_or(0.0);
+            let b = clip.get(j + 1).copied().unwrap_or(a);
+            ((a + (b - a) * f) * vol).clamp(-1.0, 1.0)
+        })
+        .collect();
+    let mono = std::sync::Arc::new(mono);
+    let pos = std::sync::Arc::new(AtomicUsize::new(0));
+    let err = |e| eprintln!("sound: stream error: {e}");
+    macro_rules! build {
+        ($t:ty, $from:expr) => {{
+            let (mono, pos) = (mono.clone(), pos.clone());
+            dev.build_output_stream(
+                cfg.config(),
+                move |out: &mut [$t], _: &_| {
+                    for frame in out.chunks_mut(ch) {
+                        let i = pos.fetch_add(1, Ordering::Relaxed);
+                        let v = mono.get(i).copied().unwrap_or(0.0);
+                        frame.iter_mut().for_each(|s| *s = $from(v));
+                    }
+                },
+                err,
+                None,
+            )
+        }};
+    }
+    let stream = match cfg.sample_format() {
+        cpal::SampleFormat::F32 => build!(f32, |v: f32| v),
+        cpal::SampleFormat::I16 => build!(i16, |v: f32| (v * 32767.0) as i16),
+        cpal::SampleFormat::I32 => build!(i32, |v: f32| (v as f64 * 2147483647.0) as i32),
+        f => return Err(format!("unsupported output format {f}")),
+    }
+    .map_err(|e| e.to_string())?;
+    stream.play().map_err(|e| e.to_string())?;
+    std::thread::sleep(std::time::Duration::from_millis((n as u64 * 1000 / out_rate.max(1) as u64) + 200));
+    Ok(())
 }
 
 /// The sound as a file on disk (players want a path), written once per run into the private runtime directory.
@@ -84,18 +173,23 @@ fn file(s: Sound) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
-/// Fire and forget; a missing player or audio device is not an error worth showing.
+/// Fire and forget; a missing player or audio device is not an error worth showing. Plays on the speaker chosen in
+/// the profile panel (`aplay`, the last resort, only knows the default).
 #[cfg(not(windows))]
 pub fn play(s: Sound) {
     let Some(path) = file(s) else { return };
+    let device = crate::devices::chosen().output;
     std::thread::spawn(move || {
         let vol = format!("{}", s.volume());
         let pa_vol = format!("{}", (s.volume() * 65536.0) as u32);
-        let attempts: [(&str, Vec<&str>); 3] = [
-            ("pw-play", vec!["--volume", &vol]),
-            ("paplay", vec!["--volume", &pa_vol]),
-            ("aplay", vec!["-q"]),
-        ];
+        let mut pw = vec!["--volume", &vol];
+        let mut pa = vec!["--volume", &pa_vol];
+        let pa_dev = device.as_ref().map(|d| format!("--device={d}"));
+        if let (Some(d), Some(pd)) = (&device, &pa_dev) {
+            pw.extend(["--target", d]);
+            pa.push(pd);
+        }
+        let attempts: [(&str, Vec<&str>); 3] = [("pw-play", pw), ("paplay", pa), ("aplay", vec!["-q"])];
         for (cmd, args) in attempts {
             let started = Command::new(cmd).args(args).arg(&path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
             if started.is_ok_and(|st| st.success()) {
@@ -114,6 +208,13 @@ mod tests {
         for s in [Sound::SendWave, Sound::ReceiveWave] {
             assert!(s.bytes().starts_with(b"RIFF") && s.bytes().len() > 10_000, "{s:?}");
         }
+    }
+
+    #[test]
+    fn the_clips_decode_to_samples() {
+        let (rate, samples) = pcm(Sound::ReceiveWave.bytes()).unwrap();
+        assert_eq!(rate, 32_000);
+        assert!(samples.len() > 5_000 && samples.iter().any(|s| s.abs() > 0.1));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! The left sidebar: availability and log out buttons, then everyone in the office: people in meetings (grouped by
+//! The left sidebar: availability and chat buttons, then everyone in the office: people in meetings (grouped by
 //! meeting zone), other people who are online, and people who are offline. Clicking an online person or a meeting
 //! opens a small menu with Join (walk there) and Wave (not implemented yet).
 use crate::app::State;
@@ -11,7 +11,7 @@ pub use crate::directory::*;
 
 pub const WIDTH: f32 = 252.0;
 const HEADER: f32 = 92.0;
-const FOOTER: f32 = 28.0;
+pub const FOOTER: f32 = 28.0;
 const PAD: f32 = 12.0;
 
 pub fn width(st: &State) -> f32 {
@@ -30,7 +30,8 @@ pub struct Layout {
     pub panel: R,
     pub away: R,
     pub chat: R,
-    pub logout: R,
+    /// The user icon in the footer, next to the memory use: opens the profile panel.
+    pub profile: R,
     /// The "Terminal" button in the footer.
     pub term: R,
     pub list: R,
@@ -42,12 +43,12 @@ pub fn layout(st: &State, h: f32) -> Layout {
     let u = st.ui;
     let panel = R { x: 0.0, y: 0.0, w: WIDTH * u, h };
     let gap = 8.0 * u;
-    let bw = (panel.w - 2.0 * PAD * u - 2.0 * gap) / 3.0;
+    let bw = (panel.w - 2.0 * PAD * u - gap) / 2.0;
     let by = (HEADER - 36.0) * u;
     let away = R { x: PAD * u, y: by, w: bw, h: 28.0 * u };
     let chat = R { x: PAD * u + bw + gap, y: by, w: bw, h: 28.0 * u };
-    let logout = R { x: PAD * u + 2.0 * (bw + gap), y: by, w: bw, h: 28.0 * u };
     let list = R { x: 0.0, y: HEADER * u, w: panel.w, h: (h - (HEADER + FOOTER) * u).max(0.0) };
+    let profile = R { x: (PAD - 4.0) * u, y: list.y + list.h + 3.0 * u, w: 22.0 * u, h: (FOOTER - 6.0) * u };
     let rows = rows(st);
     let total: f32 = rows.iter().map(|r| row_h(r) * u).sum::<f32>() + 8.0 * u;
     let max_scroll = (total - list.h).max(0.0);
@@ -63,7 +64,7 @@ pub fn layout(st: &State, h: f32) -> Layout {
         })
         .collect();
     let term = if cfg!(feature = "tui") { R { x: panel.w - (PAD + 84.0) * u, y: list.y + list.h + 3.0 * u, w: 84.0 * u, h: (FOOTER - 6.0) * u } } else { R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 } };
-    Layout { panel, away, chat, logout, term, list, items, max_scroll }
+    Layout { panel, away, chat, profile, term, list, items, max_scroll }
 }
 
 /// The buttons of a Menu row, side by side.
@@ -93,8 +94,8 @@ pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Hit> {
     if l.chat.contains(px, py) {
         return Some(Hit::Chat);
     }
-    if l.logout.contains(px, py) {
-        return Some(Hit::Logout);
+    if l.profile.contains(px, py) {
+        return Some(Hit::Profile);
     }
     if l.term.w > 0.0 && l.term.contains(px, py) {
         return Some(Hit::Terminal);
@@ -155,14 +156,14 @@ pub fn fit(text: &mut Text, s: &str, px: f32, max_w: f32) -> String {
     format!("{}…", out.trim_end())
 }
 
-fn fill(pm: &mut PixmapMut<'_>, r: &R, radius: f32, col: Rgb, a: u8) {
+pub fn fill(pm: &mut PixmapMut<'_>, r: &R, radius: f32, col: Rgb, a: u8) {
     if let Some(p) = crate::gui::icon::rounded_rect(r.x, r.y, r.w, r.h, radius) {
         let c = paint(col[0], col[1], col[2], a);
         pm.fill_path(&p, &c, FillRule::Winding, Transform::identity(), None);
     }
 }
 
-fn outline(pm: &mut PixmapMut<'_>, r: &R, radius: f32, col: Rgb) {
+pub fn outline(pm: &mut PixmapMut<'_>, r: &R, radius: f32, col: Rgb) {
     if let Some(p) = crate::gui::icon::rounded_rect(r.x, r.y, r.w, r.h, radius) {
         pm.stroke_path(&p, &paint(col[0], col[1], col[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, Transform::identity(), None);
     }
@@ -316,12 +317,16 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
     }
     outline(pm, &l.chat, 6.0 * u, LINE);
     text.draw(pm, &chat_label, l.chat.x + l.chat.w / 2.0, l.chat.y + l.chat.h / 2.0 + 4.5 * u, 12.0 * u, if unread > 0 { BRAND } else { INK_MUTED }, 0.5);
-    outline(pm, &l.logout, 6.0 * u, LINE);
-    text.draw(pm, "Log out", l.logout.x + l.logout.w / 2.0, l.logout.y + l.logout.h / 2.0 + 4.5 * u, 12.0 * u, INK_MUTED, 0.5);
     let footer = R { x: 0.0, y: l.list.y + l.list.h, w: l.panel.w, h: FOOTER * u };
     fill(pm, &footer, 0.0, SURFACE, 255);
     fill(pm, &R { h: 1.0, ..footer }, 0.0, LINE, 255);
-    text.draw(pm, &format!("Memory {:.1} MB", pss_mb()), PAD * u, footer.y + footer.h / 2.0 + 4.0 * u, 11.0 * u, INK_FAINT, 0.0);
+    let open = st.profile.is_some();
+    if open {
+        fill(pm, &l.profile, 6.0 * u, LINE, 255);
+    }
+    let s = 16.0 * u;
+    crate::gui::icon::draw(pm, crate::gui::icons::USER, l.profile.x + (l.profile.w - s) / 2.0, l.profile.y + (l.profile.h - s) / 2.0, s, if open { INK } else { INK_MUTED });
+    text.draw(pm, &format!("Memory {:.1} MB", pss_mb()), l.profile.x + l.profile.w + 6.0 * u, footer.y + footer.h / 2.0 + 4.0 * u, 11.0 * u, INK_FAINT, 0.0);
     if l.term.w > 0.0 {
         outline(pm, &l.term, 6.0 * u, LINE);
         text.draw(pm, "Terminal", l.term.x + l.term.w / 2.0, l.term.y + l.term.h / 2.0 + 4.0 * u, 11.0 * u, INK_MUTED, 0.5);
@@ -347,7 +352,7 @@ mod tests {
         let (_, eve) = l.items.iter().find(|(r, _)| matches!(r, Row::Person { p, .. } if p.id == "e")).unwrap();
         assert_eq!(hit(&st, 100.0, eve.y + 5.0, 700.0), Some(Hit::Row("e".into())), "offline people can be messaged");
         assert_eq!(hit(&st, l.away.x + 2.0, l.away.y + 2.0, 700.0), Some(Hit::Away));
-        assert_eq!(hit(&st, l.logout.x + 2.0, l.logout.y + 2.0, 700.0), Some(Hit::Logout));
+        assert_eq!(hit(&st, l.profile.x + 2.0, l.profile.y + 2.0, 700.0), Some(Hit::Profile));
         assert_eq!(hit(&st, 600.0, 300.0, 700.0), None, "the map starts right of the panel");
     }
 }

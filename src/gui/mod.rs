@@ -3,6 +3,7 @@ pub mod chatui;
 pub mod icon;
 pub mod icons;
 pub mod meeting_ui;
+pub mod profile_ui;
 pub mod render;
 pub mod sidebar;
 pub mod theme;
@@ -216,6 +217,10 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(choice) = render::modal_hit(&self.st, c.0, c.1, sw, sh) {
                             self.st.logout_choice(choice);
                         }
+                    } else if self.st.profile.is_some() {
+                        // a click outside the profile panel closes it (and does nothing else)
+                        let act = profile_ui::hit(&self.st, c.0, c.1, sh).unwrap_or(crate::profile::Act::Close);
+                        self.st.profile_act(act);
                     } else if let Some(h) = chatui::hit(&self.st, c.0, c.1, sw, sh) {
                         chatui::press(&mut self.st, h);
                     } else if let Some(h) = sidebar::hit(&self.st, c.0, c.1, sh) {
@@ -267,6 +272,10 @@ impl ApplicationHandler<UserEvent> for App {
                     Key::Named(NamedKey::ArrowLeft) => k.left = down,
                     Key::Named(NamedKey::ArrowRight) => k.right = down,
                     Key::Named(NamedKey::Escape) if down && self.st.confirm_logout => self.st.logout_choice(false),
+                    Key::Named(NamedKey::Escape) if down && self.st.profile.is_some() => {
+                        let list_open = self.st.profile.as_ref().is_some_and(|p| p.open.is_some());
+                        self.st.profile_act(if list_open { crate::profile::Act::Panel } else { crate::profile::Act::Close });
+                    }
                     Key::Character(c) => match (c.to_lowercase().as_str(), down, event.repeat) {
                         ("w", ..) => k.up = down,
                         ("s", ..) => k.down = down,

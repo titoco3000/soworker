@@ -31,6 +31,11 @@ pub const PEOPLE_W: u16 = 30;
 pub const CHAT_W: u16 = 42;
 /// Width of the "G window" button at the right end of the header (only with a GUI built in).
 pub const GUI_BUTTON_W: u16 = 10;
+/// Width of the "u profile" button left of it.
+pub const PROFILE_BUTTON_W: u16 = 11;
+/// Size of the profile dialog.
+const PROFILE_W: u16 = 72;
+const PROFILE_H: u16 = 18;
 
 /// Where each panel sits; also what the mouse is matched against.
 #[derive(Clone, Copy, Debug, Default)]
@@ -43,6 +48,8 @@ pub struct Areas {
     pub video: Option<Rect>,
     pub chat: Option<Rect>,
     pub footer: Rect,
+    /// The profile dialog, while it is open.
+    pub profile: Option<Rect>,
 }
 
 pub fn areas(t: &Tui, full: Rect) -> Areas {
@@ -62,7 +69,8 @@ pub fn areas(t: &Tui, full: Rect) -> Areas {
         let w = c.width * 3 / 5;
         Rect { x: c.x + c.width - w + 1, y: c.y + 1, width: w.saturating_sub(2), height: c.height.saturating_sub(2) }
     });
-    Areas { header, people, map, call, video, chat, footer }
+    let profile = (t.modal == Modal::Profile).then(|| centred(full, PROFILE_W, PROFILE_H));
+    Areas { header, people, map, call, video, chat, footer, profile }
 }
 
 pub fn draw(f: &mut Frame, t: &Tui) {
@@ -85,6 +93,7 @@ pub fn draw(f: &mut Frame, t: &Tui) {
     match t.modal {
         Modal::Logout => dialog(f, " Log out? ", &["This forgets your saved sign-in on this computer.", "", "y: log out    n: cancel"]),
         Modal::Help => dialog(f, " Keys ", HELP),
+        Modal::Profile => profile(f, t, a.profile.unwrap_or_else(|| centred(f.area(), PROFILE_W, PROFILE_H))),
         Modal::None => {}
     }
 }
@@ -97,6 +106,7 @@ const HELP: &[&str] = &[
     "Video       n next picture   V open the video window",
     "Chat        t open and type, T close, Tab switches between chats, Esc leaves the input",
     "Other       b available/away   r respawn   p people   O log out   q quit",
+    "Profile     u  (log out; speaker, microphone and camera)",
     "Window      G switch to the window client (also the button top right)",
     "",
     "any key closes this",
@@ -129,10 +139,14 @@ fn header(f: &mut Frame, t: &Tui, r: Rect) {
         l.push(Span::styled(format!(" {unread} unread "), Style::new().fg(BRAND).add_modifier(Modifier::BOLD)));
     }
     f.render_widget(Paragraph::new(Line::from(l)), r);
-    let btn = if cfg!(feature = "gui") { GUI_BUTTON_W.min(r.width) } else { 0 };
-    if btn > 0 {
-        f.render_widget(Paragraph::new(Span::styled(" G window ", Style::new().fg(Color::Black).bg(MUTED))), Rect { x: r.x + r.width - btn, width: btn, ..r });
+    let gui = if cfg!(feature = "gui") { GUI_BUTTON_W.min(r.width) } else { 0 };
+    if gui > 0 {
+        f.render_widget(Paragraph::new(Span::styled(" G window ", Style::new().fg(Color::Black).bg(MUTED))), Rect { x: r.x + r.width - gui, width: gui, ..r });
     }
+    let me = PROFILE_BUTTON_W.min(r.width - gui);
+    let open = t.modal == Modal::Profile;
+    f.render_widget(Paragraph::new(Span::styled(" u profile ", Style::new().fg(Color::Black).bg(if open { BRAND } else { MUTED }))), Rect { x: r.x + r.width - gui - me, width: me, ..r });
+    let btn = gui + me + 1;
     if let Some((msg, _)) = &st.toast {
         let w = (msg.width() as u16 + 2).min(r.width.saturating_sub(2 + btn));
         let tr = Rect { x: r.x + r.width - btn - w, width: w, ..r };
@@ -146,8 +160,9 @@ fn footer(f: &mut Frame, t: &Tui, r: Rect) {
         Focus::Chat => "type to chat · Enter send · Tab next chat · PgUp/PgDn scroll · Esc back",
         Focus::People => "↑↓ select · Enter open menu · ←→ choose · x dismiss wave · Esc back · ? keys",
         Focus::Map if t.st.call.joined.is_some() => "wasd walk · m mic · c cam · v share · l leave · t chat · p people · ? keys · q quit",
-        Focus::Map => "wasd walk · Tab people · t chat · b away · +/- zoom · ? keys · q quit",
+        Focus::Map => "wasd walk · Tab people · t chat · b away · u profile · +/- zoom · ? keys · q quit",
     };
+    let hint = if t.modal == Modal::Profile { "↑↓ select · ←→ change device · Enter play sound / log out · t test sound · Esc close" } else { hint };
     let mem = format!(" mem {:.1} MB ", t.mem.0);
     let mw = (mem.width() as u16).min(r.width);
     f.render_widget(Paragraph::new(Span::styled(format!(" {}", fit(hint, (r.width.saturating_sub(mw + 1)) as usize)), Style::new().fg(DIM))), r);
@@ -615,6 +630,70 @@ fn dialog(f: &mut Frame, title: &str, lines: &[&str]) {
     f.render_widget(Paragraph::new(lines.iter().map(|l| Line::from(format!(" {l}"))).collect::<Vec<_>>()), inner);
 }
 
+/// The profile dialog: a big user icon and the name, Log out, then the settings with their tests.
+fn profile(f: &mut Frame, t: &Tui, r: Rect) {
+    use crate::devices::Kind;
+    use crate::profile::{Line as L, LINES};
+    let st = &t.st;
+    let Some(p) = st.profile.as_ref() else { return };
+    f.render_widget(Clear, r);
+    let block = Block::default().borders(Borders::ALL).border_style(Style::new().fg(BRAND)).title(" Profile ");
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let w = inner.width as usize;
+    let sel = LINES.get(p.sel).copied();
+    let name = if st.me_id.is_empty() { "Not signed in".to_string() } else { st.name_of(&st.me_id, None) };
+    let sub = format!("{}{}", if st.available { "Available" } else { "Away" }, if st.room.is_empty() { String::new() } else { format!(" · {}", st.room) });
+    let icon = Style::new().fg(MUTED);
+    let mut lines = vec![
+        Line::raw(""),
+        Line::from(vec![Span::styled("    ▗███▖    ", icon), Span::styled(fit(&name, w.saturating_sub(14)), Style::new().fg(Color::White).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![Span::styled("    ▝███▘    ", icon), Span::styled(fit(&sub, w.saturating_sub(14)), Style::new().fg(MUTED))]),
+        Line::from(Span::styled("   ▟█████▙", icon)),
+        Line::raw(""),
+    ];
+    let on = |l: L| sel == Some(l);
+    let logout = Style::new().fg(DANGER);
+    lines.push(Line::from(vec![Span::raw("  "), Span::styled(" Log out ", if on(L::Logout) { logout.add_modifier(Modifier::REVERSED) } else { logout })]));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("  Settings", Style::new().fg(Color::White).add_modifier(Modifier::BOLD))));
+    // label, then the device between arrows, then the test beside it
+    let (label_w, side_w) = (13, 16);
+    let field = w.saturating_sub(2 + label_w + side_w + 1).max(8);
+    for kind in Kind::ALL {
+        let picked = on(L::Device(kind));
+        let dev = format!("‹ {} ›", fit(&p.label(kind), field.saturating_sub(4)));
+        let pad = field.saturating_sub(dev.width());
+        let mut v = vec![
+            Span::raw("  "),
+            Span::styled(format!("{:<label_w$}", kind.label()), Style::new().fg(MUTED)),
+            Span::styled(dev, if picked { Style::new().fg(Color::Black).bg(BRAND) } else { Style::new().fg(Color::White) }),
+            Span::raw(" ".repeat(pad + 1)),
+        ];
+        match kind {
+            Kind::Output => v.push(Span::styled("t: play sound", Style::new().fg(if picked { BRAND } else { DIM }))),
+            Kind::Input => v.extend(meter(p.level(), p.meter.is_some(), 14)),
+            Kind::Camera => {}
+        }
+        lines.push(Line::from(v));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(fit("  ↑↓ select · ←→ change · Enter play sound / log out · Esc close", w), Style::new().fg(DIM))));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The microphone level as a row of blocks: green, then amber and red at the top.
+fn meter(level: Option<f32>, running: bool, n: usize) -> Vec<Span<'static>> {
+    let Some(level) = level else { return vec![Span::styled(if running { "no signal" } else { "no meter" }, Style::new().fg(DIM))] };
+    (0..n)
+        .map(|i| {
+            let lit = (i as f32 + 0.5) / n as f32 <= level;
+            let col = if !lit { Color::Rgb(50, 56, 67) } else if i >= n - 2 { DANGER } else if i >= n - 4 { WARN } else { OK };
+            Span::styled(if lit { "█" } else { "▁" }, Style::new().fg(col))
+        })
+        .collect()
+}
+
 fn draw_login(f: &mut Frame, t: &Tui) {
     let (head, body, key): (&str, Vec<String>, &str) = match t.st.login.as_ref() {
         Some(LoginPhase::Waiting) => ("Waiting for you…", vec!["Finish signing in in the Chrome window that just opened.".into(), "It closes by itself when you are done.".into()], "Esc cancel · q quit"),
@@ -692,6 +771,19 @@ mod tests {
             let (wx, wy) = g.to_world(41, 14);
             let back = g.from_world(wx, wy).expect("on screen");
             assert_eq!(back, (41, 14), "zoom {zoom}");
+        }
+    }
+
+    #[test]
+    fn the_profile_dialog_shows_the_settings() {
+        use crate::devices::{Device, Devices};
+        let mut t = tui();
+        let devices = Devices { outputs: vec![Device { id: "sink.a".into(), name: "Speakers".into() }], ..Default::default() };
+        t.st.profile = Some(crate::profile::Profile { devices, chosen: Default::default(), open: None, meter: None, sel: 1 });
+        t.modal = Modal::Profile;
+        let s = render(&t, 100, 30);
+        for want in ["Profile", "Me", "Log out", "Settings", "Speaker", "System default", "Microphone", "Camera", "play sound", "no meter"] {
+            assert!(s.contains(want), "{want}\n{s}");
         }
     }
 

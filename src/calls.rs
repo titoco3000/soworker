@@ -12,6 +12,8 @@ pub enum MediaCmd {
     AskToMute(String),
     /// Noise cancellation (DeepFilterNet) on the microphone, for this call and the next ones.
     NoiseCancel(bool),
+    /// The chosen speaker, microphone or camera changed (see `devices::chosen`): switch the call over to them.
+    Devices,
 }
 
 #[derive(Debug)]
@@ -68,24 +70,36 @@ fn settings_path() -> std::path::PathBuf {
     std::path::Path::new(&crate::session::default_path()).with_file_name("settings.json")
 }
 
-/// The `noiseCancellation` setting of settings.json (on unless set to false).
-pub fn noise_cancel_setting() -> bool {
+/// One value of settings.json (`Null` when the file or the key is missing).
+pub fn setting(key: &str) -> serde_json::Value {
     std::fs::read_to_string(settings_path())
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v["noiseCancellation"].as_bool())
-        .unwrap_or(true)
+        .map_or(serde_json::Value::Null, |v| v[key].clone())
 }
 
-/// Remembers the noise cancellation choice in settings.json, keeping everything else in the file.
-pub fn save_noise_cancel(on: bool) {
+/// Sets one value in settings.json (`Null` removes it), keeping everything else in the file.
+pub fn save_setting(key: &str, value: serde_json::Value) {
     let path = settings_path();
     let mut v = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).filter(|v| v.is_object()).unwrap_or_else(|| serde_json::json!({}));
-    v["noiseCancellation"] = on.into();
+    match (value, v.as_object_mut()) {
+        (serde_json::Value::Null, Some(o)) => drop(o.remove(key)),
+        (value, _) => v[key] = value,
+    }
     let saved = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n"));
     if let Err(e) = saved {
         eprintln!("settings: cannot save {}: {e}", path.display());
     }
+}
+
+/// The `noiseCancellation` setting of settings.json (on unless set to false).
+pub fn noise_cancel_setting() -> bool {
+    setting("noiseCancellation").as_bool().unwrap_or(true)
+}
+
+/// Remembers the noise cancellation choice in settings.json.
+pub fn save_noise_cancel(on: bool) {
+    save_setting("noiseCancellation", on.into());
 }
 
 /// Sender for media commands. Without the `calls` feature it is a stub, so the UI code compiles either way.

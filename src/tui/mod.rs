@@ -38,6 +38,8 @@ pub enum Modal {
     None,
     Logout,
     Help,
+    /// Who is signed in, log out, and the speaker / microphone / camera settings (`State::profile`).
+    Profile,
 }
 
 enum Msg {
@@ -378,6 +380,9 @@ impl Tui {
             if !down {
                 return;
             }
+            if self.modal == Modal::Profile {
+                return self.profile_key(k);
+            }
             match (self.modal, k.code) {
                 (Modal::Logout, KeyCode::Char('y') | KeyCode::Enter) => self.st.logout_choice(true),
                 (Modal::Logout, KeyCode::Char('n') | KeyCode::Esc) => self.st.logout_choice(false),
@@ -435,6 +440,44 @@ impl Tui {
             Focus::Map => self.map_key(k, now),
         }
         self.sync_focus();
+        self.st.dirty = true;
+    }
+
+    fn open_profile(&mut self) {
+        if self.st.profile.is_none() {
+            self.st.toggle_profile();
+        }
+        self.modal = Modal::Profile;
+        self.st.dirty = true;
+    }
+
+    fn close_profile(&mut self) {
+        self.st.profile_act(crate::profile::Act::Close);
+        self.modal = Modal::None;
+        self.st.dirty = true;
+    }
+
+    /// Keys in the profile dialog: up / down pick a line, left / right change the device on it, Enter runs it.
+    fn profile_key(&mut self, k: KeyEvent) {
+        use crate::profile::{Act, Line, LINES};
+        let Some(p) = self.st.profile.as_mut() else { return self.close_profile() };
+        let line = LINES[p.sel.min(LINES.len() - 1)];
+        match (k.code, line) {
+            (KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('u'), _) => return self.close_profile(),
+            (KeyCode::Up | KeyCode::Char('k'), _) => p.sel = p.sel.saturating_sub(1),
+            (KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab, _) => p.sel = (p.sel + 1).min(LINES.len() - 1),
+            (KeyCode::Enter | KeyCode::Char(' '), Line::Logout) => {
+                self.close_profile();
+                self.modal = Modal::Logout;
+            }
+            (KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('t'), Line::Device(crate::devices::Kind::Output)) => self.st.profile_act(Act::TestSound),
+            (KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' '), Line::Device(kind)) => {
+                let id = p.cycle(kind, !matches!(k.code, KeyCode::Left | KeyCode::Char('h')));
+                self.st.profile_act(Act::Pick(kind, id));
+            }
+            (KeyCode::Char('t'), _) => self.st.profile_act(Act::TestSound),
+            _ => {}
+        }
         self.st.dirty = true;
     }
 
@@ -504,6 +547,7 @@ impl Tui {
                     self.quit = true;
                 }
                 'O' => self.modal = Modal::Logout,
+                'u' => self.open_profile(),
                 '?' => self.modal = Modal::Help,
                 _ => {}
             },
@@ -518,6 +562,9 @@ impl Tui {
     }
 
     fn mouse(&mut self, m: MouseEvent) {
+        if self.modal == Modal::Profile && matches!(m.kind, MouseEventKind::Down(_)) && !self.areas.profile.is_some_and(|r| m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height) {
+            return self.close_profile(); // a click outside the dialog closes it
+        }
         if self.modal != Modal::None || self.st.login.is_some() {
             return;
         }
@@ -527,9 +574,13 @@ impl Tui {
         let now = self.now();
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if cfg!(feature = "gui") && row == a.header.y && col + view::GUI_BUTTON_W >= a.header.x + a.header.width {
+                let gui_w = if cfg!(feature = "gui") { view::GUI_BUTTON_W } else { 0 };
+                let right = a.header.x + a.header.width;
+                if gui_w > 0 && row == a.header.y && col + gui_w >= right {
                     self.to_gui = true;
                     self.quit = true;
+                } else if row == a.header.y && col + gui_w + view::PROFILE_BUTTON_W >= right {
+                    self.open_profile();
                 } else if inside(a.chat) {
                     self.focus = Focus::Chat;
                 } else if inside(a.people) {
@@ -859,6 +910,19 @@ mod tests {
         t.key(press(KeyCode::Char('O')));
         t.key(press(KeyCode::Char('y')));
         assert!(t.st.logout_requested);
+    }
+
+    #[test]
+    fn the_profile_dialog_leads_to_the_logout_question() {
+        let mut t = Tui::for_test();
+        t.st.profile = Some(crate::profile::Profile { devices: Default::default(), chosen: Default::default(), open: None, meter: None, sel: 1 });
+        t.modal = Modal::Profile;
+        t.key(press(KeyCode::Up));
+        assert_eq!(t.st.profile.as_ref().unwrap().sel, 0, "the first line is Log out");
+        t.key(press(KeyCode::Enter));
+        assert_eq!(t.modal, Modal::Logout);
+        assert!(t.st.profile.is_none(), "the profile closed (and its meter with it)");
+        assert!(!t.st.logout_requested, "still asks first");
     }
 
     #[test]

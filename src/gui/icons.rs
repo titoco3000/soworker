@@ -82,3 +82,15 @@ pub const MINIMIZE: &[Shape] = &[
 pub const MESSAGE_CIRCLE: &[Shape] = &[
     Shape::Path("M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"),
 ];
+
+pub const USER: &[Shape] = &[
+    Shape::Path("M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"),
+    Shape::Circle(12.0, 7.0, 4.0),
+];
+
+pub const CHEVRON_DOWN: &[Shape] = &[Shape::Path("M6 9l6 6 6-6")];
+
+pub const VOLUME: &[Shape] = &[
+    Shape::Poly("11 5 6 9 2 9 2 15 6 15 11 19 11 5 z"),
+    Shape::Path("M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"),
+];
