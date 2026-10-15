@@ -321,11 +321,10 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
     fill(pm, &footer, 0.0, SURFACE, 255);
     fill(pm, &R { h: 1.0, ..footer }, 0.0, LINE, 255);
     let open = st.profile.is_some();
-    if open {
-        fill(pm, &l.profile, 6.0 * u, LINE, 255);
-    }
-    let s = 16.0 * u;
-    crate::gui::icon::draw(pm, crate::gui::icons::USER, l.profile.x + (l.profile.w - s) / 2.0, l.profile.y + (l.profile.h - s) / 2.0, s, if open { INK } else { INK_MUTED });
+    // a solid round button, brand-coloured while the profile panel is open
+    fill(pm, &l.profile, l.profile.w.min(l.profile.h) / 2.0, if open { BRAND } else { LINE }, 255);
+    let s = 14.0 * u;
+    crate::gui::icon::draw(pm, crate::gui::icons::USER, l.profile.x + (l.profile.w - s) / 2.0, l.profile.y + (l.profile.h - s) / 2.0, s, if open { ON_BRAND } else { INK });
     text.draw(pm, &format!("Memory {:.1} MB", pss_mb()), l.profile.x + l.profile.w + 6.0 * u, footer.y + footer.h / 2.0 + 4.0 * u, 11.0 * u, INK_FAINT, 0.0);
     if l.term.w > 0.0 {
         outline(pm, &l.term, 6.0 * u, LINE);

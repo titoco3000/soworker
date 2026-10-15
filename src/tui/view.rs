@@ -160,7 +160,10 @@ fn footer(f: &mut Frame, t: &Tui, r: Rect) {
         Focus::Map if t.st.call.joined.is_some() => "wasd walk · m mic · c cam · v share · l leave · t chat · p people · ? keys · q quit",
         Focus::Map => "wasd walk · Tab people · t chat · b away · u profile · +/- zoom · ? keys · q quit",
     };
-    let hint = if t.modal == Modal::Profile { "↑↓ select · ←→ change device · Enter play sound / log out · t test sound · Esc close" } else { hint };
+    let hint = match (t.modal, t.st.profile.as_ref()) {
+        (Modal::Profile, Some(p)) => profile_hint(p.sel),
+        _ => hint,
+    };
     let mem = format!(" mem {:.1} MB ", t.mem.0);
     let mw = (mem.width() as u16).min(r.width);
     f.render_widget(Paragraph::new(Span::styled(format!(" {}", fit(hint, (r.width.saturating_sub(mw + 1)) as usize)), Style::new().fg(DIM))), r);
@@ -672,8 +675,19 @@ fn profile(f: &mut Frame, t: &Tui, r: Rect) {
         lines.push(Line::from(v));
     }
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(fit("  ↑↓ select · ←→ change · Enter play sound / log out · Esc close", w), Style::new().fg(DIM))));
+    lines.push(Line::from(Span::styled(fit(&format!("  {}", profile_hint(p.sel)), w), Style::new().fg(DIM))));
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The profile dialog's keys for the selected line: Enter logs out on Log out, plays a sound on the speaker, and is not shown elsewhere.
+fn profile_hint(sel: usize) -> &'static str {
+    use crate::devices::Kind;
+    use crate::profile::{Line as L, LINES};
+    match LINES.get(sel) {
+        Some(L::Logout) => "↑↓ select · Enter log out · Esc close",
+        Some(L::Device(Kind::Output)) => "↑↓ select · ←→ change · Enter play sound · Esc close",
+        _ => "↑↓ select · ←→ change · Esc close",
+    }
 }
 
 /// The microphone level as a row of blocks: green, then amber and red at the top.

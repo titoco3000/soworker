@@ -57,6 +57,8 @@ struct App {
     fps: u32,
     fps_t: Instant,
     cursor: (f32, f32),
+    /// The mouse is over the user icon, so the pointer is a hand.
+    hand: bool,
     mods: ModifiersState,
     exit_after: Option<f64>,
     dry: bool,
@@ -181,6 +183,11 @@ impl ApplicationHandler<UserEvent> for App {
                         meeting_ui::drag_to(&mut self.st, c.0, c.1);
                     } else {
                         meeting_ui::update_hover(&mut self.st, &mut self.text, c.0, c.1, w, h);
+                    }
+                    let hand = sidebar::hit(&self.st, c.0, c.1, h) == Some(crate::directory::Hit::Profile);
+                    if hand != self.hand {
+                        self.hand = hand;
+                        win.set_cursor(if hand { winit::window::CursorIcon::Pointer } else { winit::window::CursorIcon::Default });
                     }
                 }
             }
@@ -384,6 +391,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         fps: 0,
         fps_t: Instant::now(),
         cursor: (0.0, 0.0),
+        hand: false,
         mods: ModifiersState::default(),
         exit_after: opt("--exit-after").and_then(|s| s.parse().ok()),
         dry,
