@@ -12,14 +12,12 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui::Frame;
-use std::collections::HashSet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const FLOOR: Color = Color::Rgb(43, 58, 82);
 const MEETING: Color = Color::Rgb(58, 52, 96);
 const WALL: Color = Color::Rgb(232, 195, 106);
 const SOFT: Color = Color::Rgb(116, 128, 156);
-const PROP: Color = Color::Rgb(96, 114, 138);
 const BRAND: Color = Color::Rgb(90, 162, 243);
 const OK: Color = Color::Rgb(111, 218, 117);
 const WARN: Color = Color::Rgb(232, 195, 106);
@@ -370,12 +368,11 @@ impl Widget for MapView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (st, g) = (self.st, self.geo);
         let world = &st.world;
-        let props: HashSet<(i32, i32)> = world.assets.iter().map(|&(x, y)| ((x / T).floor() as i32, (y / T).floor() as i32)).collect();
         let in_meeting = |i: i32, j: i32| world.zone_at((i as f32 + 0.5) * T, (j as f32 + 0.5) * T).is_some();
         for row in area.y..area.y + area.height {
             for col in area.x..area.x + area.width {
                 let ((x0, x1), (y0, y1), (lc, lr)) = g.cell(col as i32, row as i32);
-                let (mut floor, mut meeting, mut wall, mut soft, mut prop) = (false, false, 0u8, 0u8, false);
+                let (mut floor, mut meeting, mut wall, mut soft) = (false, false, 0u8, 0u8);
                 for j in y0..y1 {
                     for i in x0..x1 {
                         if world.floors.contains(&(i, j)) {
@@ -384,7 +381,6 @@ impl Widget for MapView<'_> {
                         }
                         wall |= world.walls.get(&(i, j)).copied().unwrap_or(0);
                         soft |= world.soft.get(&(i, j)).copied().unwrap_or(0);
-                        prop |= props.contains(&(i, j));
                     }
                 }
                 let cell = &mut buf[(col, row)];
@@ -397,8 +393,6 @@ impl Widget for MapView<'_> {
                     cell.set_char(QUADRANT[w]).set_fg(WALL);
                 } else if s != 0 {
                     cell.set_char(QUADRANT[s]).set_fg(SOFT);
-                } else if prop && lc == 0 && lr == ch / 2 {
-                    cell.set_char('·').set_fg(PROP);
                 }
             }
         }
@@ -818,7 +812,6 @@ mod tests {
         for j in 22..28 {
             *t.st.world.walls.entry((30, j)).or_default() |= E;
         }
-        t.st.world.assets = vec![(25.5 * T, 30.5 * T), (26.5 * T, 30.5 * T)];
         t.st.world.zones.push(Zone { id: "Z1".into(), x: 34.0 * T, y: 31.0 * T, sx: 2.0 * T, sy: 2.0 * T, meeting: true, name: Some("Standup".into()) });
         t.st.chat.open = true;
         for zoom in [1, 2, -1] {

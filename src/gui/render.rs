@@ -302,16 +302,6 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     edges(pm, &st.world.soft, [116, 128, 156], (2.5 * sc).max(1.5 * ui)); // walk-through walls, faint
     edges(pm, &st.world.walls, [232, 195, 106], (5.0 * sc).max(2.0 * ui)); // solid walls
 
-    let prop = paint(74, 90, 110, 255);
-    for &(ax, ay) in &st.world.assets {
-        let (sx, sy) = (xf(ax), yf(ay));
-        if sx > -5.0 && sx < w + 5.0 && sy > -5.0 && sy < h + 5.0 {
-            if let Some(r) = Rect::from_xywh(sx - ui, sy - ui, 3.0 * ui, 3.0 * ui) {
-                pm.fill_rect(r, &prop, id, None);
-            }
-        }
-    }
-
     for z in &st.world.zones {
         let (zx, zy) = (xf(z.x - z.sx * ZK), yf(z.y - z.sy * ZK));
         let (zw, zh) = (z.sx * ZK * 2.0 * sc, z.sy * ZK * 2.0 * sc);

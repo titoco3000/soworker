@@ -1,4 +1,4 @@
-//! World model: floors, walls, zones, props; collision, path finding and zone detection.
+//! World model: floors, walls, zones; collision, path finding and zone detection.
 //! Tile centres sit at odd multiples of G; tile pitch T = 2G. Walls are tile-edge segments.
 use crate::mapobj::{Kind, MapObj, SetObj};
 use std::cmp::Reverse;
@@ -32,7 +32,6 @@ pub struct World {
     pub walls: HashMap<(i32, i32), u8>,
     pub soft: HashMap<(i32, i32), u8>,
     pub zones: Vec<Zone>,
-    pub assets: Vec<(f32, f32)>,
     dirty: bool,
 }
 
@@ -88,7 +87,6 @@ impl World {
         self.walls.clear();
         self.soft.clear();
         self.zones.clear();
-        self.assets.clear();
         for (id, o) in &self.objects {
             let key = (tile(o.x), tile(o.y));
             match o.kind {
@@ -115,7 +113,7 @@ impl World {
                     meeting: o.interaction.as_deref() == Some("meeting"),
                     name: o.meeting_name.clone(),
                 }),
-                Kind::Asset => self.assets.push((o.x, o.y)),
+                Kind::Asset => {} // furniture and decor: not drawn
             }
         }
         self.zones.sort_by(|a, b| a.id.cmp(&b.id));
