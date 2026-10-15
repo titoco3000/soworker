@@ -773,7 +773,16 @@ impl State {
     #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     pub fn zoom(&mut self, up: bool) {
         self.scale = (self.scale * if up { 1.1 } else { 1.0 / 1.1 }).clamp(0.08, 1.5);
+        crate::calls::save_setting("guiZoom", self.scale.into());
         self.dirty = true;
+    }
+
+    /// The window's zoom as it was last left (`guiZoom` in settings.json).
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+    pub fn restore_zoom(&mut self) {
+        if let Some(s) = crate::calls::setting("guiZoom").as_f64() {
+            self.scale = (s as f32).clamp(0.08, 1.5);
+        }
     }
 
     pub fn set_available(&mut self, a: bool) {

@@ -81,6 +81,7 @@ impl App {
         self.be.start(auth, true);
         let ui = self.st.ui;
         self.st = State::new(&me, self.dry);
+        self.st.restore_zoom();
         self.st.ui = ui;
     }
 
@@ -89,6 +90,7 @@ impl App {
         self.be.finish_logout();
         let ui = self.st.ui;
         self.st = State::new("", self.dry);
+        self.st.restore_zoom();
         self.st.ui = ui;
         self.st.login = Some(LoginPhase::Idle);
         if let Some(w) = &self.window {

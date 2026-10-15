@@ -224,16 +224,19 @@ fn row_line(t: &Tui, row: &Row, sel: bool, w: usize) -> Line<'static> {
         Row::Person { p, indent } => {
             let (dot, col) = if !p.online { ("○", DIM) } else if p.away { ("●", WARN) } else { ("●", OK) };
             let pad = if *indent { "  " } else { "" };
-            let mut name = p.name.clone();
+            // the tag in the colour it has on the map
+            let tag = t.tags.get(&p.id).filter(|tag| **tag != p.name).map_or(String::new(), |tag| format!("{tag} "));
+            let mut name = if tag.is_empty() { p.name.clone() } else { format!("- {}", p.name) };
             if p.me {
                 name.push_str(" (you)");
             }
             let tail = if p.unread > 0 { format!(" ✉{}", p.unread) } else if !p.online { p.last_online.map(|ms| format!(" {}", directory::ago(now_ms(), Some(ms)))).unwrap_or_default() } else { String::new() };
-            let name = fit(&name, w.saturating_sub(4 + pad.len() + tail.width()));
+            let name = fit(&name, w.saturating_sub(4 + pad.len() + tag.width() + tail.width()));
             Line::from(vec![
                 Span::raw(pad.to_string()),
                 Span::styled(dot, Style::new().fg(col)),
                 Span::raw(" "),
+                Span::styled(tag, hi(Style::new().fg(if p.me { Color::White } else { hue(&p.id) }).add_modifier(Modifier::BOLD))),
                 Span::styled(name, hi(Style::new().fg(if p.online { Color::White } else { MUTED }))),
                 Span::styled(tail, Style::new().fg(if p.unread > 0 { BRAND } else { DIM })),
             ])
@@ -364,12 +367,13 @@ pub fn hue(id: &str) -> Color {
 
 struct MapView<'a> {
     st: &'a State,
+    tags: &'a std::collections::HashMap<String, String>,
     geo: Geo,
 }
 
 impl Widget for MapView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let (st, g) = (self.st, self.geo);
+        let (st, g, tags) = (self.st, self.geo, self.tags);
         let world = &st.world;
         let in_meeting = |i: i32, j: i32| world.zone_at((i as f32 + 0.5) * T, (j as f32 + 0.5) * T).is_some();
         for row in area.y..area.y + area.height {
@@ -422,10 +426,9 @@ impl Widget for MapView<'_> {
             if u.speaking {
                 style = style.fg(OK).add_modifier(Modifier::UNDERLINED);
             }
-            put(buf, area, c, r, if me { "@" } else { "●" }, style);
-            if g.k == 1 && !me {
-                put(buf, area, c + 2, r, &fit(&u.name, 12), Style::new().fg(if away { DIM } else { MUTED }).bg(Color::Rgb(30, 36, 48)));
-            }
+            // the tag, centred on where they stand
+            let tag = tags.get(&u.id).map_or("?", String::as_str);
+            put(buf, area, c.saturating_sub(tag.width() as u16 / 2), r, tag, style);
         }
     }
 }
@@ -459,7 +462,7 @@ fn map(f: &mut Frame, t: &Tui, r: Rect) {
         f.render_widget(Paragraph::new(Span::styled(msg, Style::new().fg(DIM))), inner);
         return;
     }
-    f.render_widget(MapView { st: &t.st, geo: Geo::new(&t.st, inner, t.zoom) }, inner);
+    f.render_widget(MapView { st: &t.st, tags: &t.tags, geo: Geo::new(&t.st, inner, t.zoom) }, inner);
 }
 
 // ---------------------------------------------------------------- call
@@ -727,6 +730,7 @@ mod tests {
         let user = |id: &str, name: &str, zone: Option<&str>, x: f32, y: f32| User { id: id.into(), name: name.into(), zone: zone.map(String::from), x, y, status: "online".into(), mode: "cluster".into(), ..User::default() };
         t.st = State::new("me", true);
         t.st.apply(Net::Room { name: "Office".into(), spawn: None, users: vec![user("me", "Me", None, 3000.0, 3000.0), user("a", "Ana", Some("Z1"), 3400.0, 3000.0), user("b", "Bo", Some("Z1"), 3000.0, 3400.0)] }, 0.0);
+        t.update_tags();
         t
     }
 
@@ -753,7 +757,9 @@ mod tests {
         let mut t = tui();
         t.st.world.floors.insert((28, 28));
         let s = render(&t, 100, 30);
-        assert!(s.contains('@'), "{s}");
+        assert!(s.contains("A - Ana"), "the people list shows tags: {s}");
+        assert_eq!((t.tags["me"].as_str(), t.tags["a"].as_str(), t.tags["b"].as_str()), ("M", "A", "B"));
+        assert!(!s.contains('@'), "my tag replaces the @: {s}");
     }
 
     #[test]

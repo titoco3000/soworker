@@ -2,6 +2,7 @@
 //! The loop sleeps until something arrives, applies it to `State`, and redraws only when the state says so. Video is the
 //! only graphics: inline where the terminal speaks the kitty protocol, otherwise in a small window of its own.
 mod kitty;
+mod tags;
 mod view;
 
 use crate::app::{Frame, LoginPhase, State};
@@ -79,6 +80,9 @@ pub struct Tui {
     dry: bool,
     /// Memory this process uses (MB, proportional share), and when it was read.
     pub mem: (f32, Instant),
+    /// Everyone's short tag (map and people list), by id, and the (id, name) list it was made from.
+    pub tags: std::collections::HashMap<String, String>,
+    tags_of: Vec<(String, String)>,
 }
 
 impl Tui {
@@ -91,7 +95,7 @@ impl Tui {
             sel: 0,
             menu_sel: 0,
             show_people: true,
-            zoom: 1,
+            zoom: crate::calls::setting("tuiZoom").as_i64().map_or(1, |z| z.clamp(-2, 3) as i32),
             lapse: [f64::MAX; 4],
             enhanced: false,
             video,
@@ -104,6 +108,8 @@ impl Tui {
             to_gui: false,
             dry,
             mem: (proc_mb(), Instant::now()),
+            tags: Default::default(),
+            tags_of: vec![],
         }
     }
 
@@ -443,6 +449,25 @@ impl Tui {
         self.st.dirty = true;
     }
 
+    /// Zoom the map, and remember it for next time (`tuiZoom` in settings.json).
+    fn set_zoom(&mut self, z: i32) {
+        let z = z.clamp(-2, 3);
+        if z != self.zoom {
+            self.zoom = z;
+            crate::calls::save_setting("tuiZoom", z.into());
+        }
+    }
+
+    /// Remake the tags whenever the people list changes.
+    pub fn update_tags(&mut self) {
+        let mut people: Vec<(String, String)> = crate::directory::people(&self.st).into_iter().map(|p| (p.id, p.name)).collect();
+        people.sort();
+        if people != self.tags_of {
+            self.tags = tags::assign(&people);
+            self.tags_of = people;
+        }
+    }
+
     fn open_profile(&mut self) {
         if self.st.profile.is_none() {
             self.st.toggle_profile();
@@ -538,8 +563,8 @@ impl Tui {
                         st.toggle_chat();
                     }
                 }
-                '+' | '=' => self.zoom = (self.zoom + 1).min(3),
-                '-' | '_' => self.zoom = (self.zoom - 1).max(-2),
+                '+' | '=' => self.set_zoom(self.zoom + 1),
+                '-' | '_' => self.set_zoom(self.zoom - 1),
                 'n' => self.next_picture(),
                 'V' => self.open_window(),
                 'G' if cfg!(feature = "gui") => {
@@ -619,7 +644,7 @@ impl Tui {
                 } else if inside(a.people) {
                     self.move_sel(!up);
                 } else if inside(Some(a.map)) {
-                    self.zoom = (self.zoom + if up { 1 } else { -1 }).clamp(-2, 3);
+                    self.set_zoom(self.zoom + if up { 1 } else { -1 });
                 }
             }
             _ => return,
@@ -850,6 +875,7 @@ fn event_loop(t: &mut Tui, terminal: &mut ratatui::DefaultTerminal, rx: Receiver
             last_draw = Instant::now();
             let area = terminal.size().map(|s| Rect::new(0, 0, s.width, s.height)).unwrap_or_default();
             t.areas = view::areas(t, area);
+            t.update_tags();
             terminal.draw(|f| view::draw(f, t)).map_err(|e| e.to_string())?;
             t.paint_video();
         }
