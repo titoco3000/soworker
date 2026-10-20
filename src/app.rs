@@ -84,12 +84,40 @@ pub enum LoginPhase {
     Idle,
     Waiting,
     Failed(String),
+    /// The saved sign-in could not be checked because there is no connection; retrying may well work.
+    Offline,
+}
+
+impl LoginPhase {
+    /// The screen for a sign-in that ended with `err`.
+    pub fn after_error(err: String) -> Self {
+        if err.contains("cancelled") {
+            LoginPhase::Idle
+        } else if crate::session::is_offline(&err) {
+            LoginPhase::Offline
+        } else {
+            LoginPhase::Failed(err)
+        }
+    }
+
+    /// The screen when loading the saved sign-in at start-up failed with `err`.
+    pub fn after_load_error(session_exists: bool, err: String) -> Self {
+        if !session_exists {
+            LoginPhase::Idle
+        } else if crate::session::is_offline(&err) {
+            LoginPhase::Offline
+        } else {
+            LoginPhase::Failed(format!("Your saved sign-in no longer works ({err})."))
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LoginAct {
     Start,
     Cancel,
+    /// Check the saved sign-in again (after it could not be checked offline).
+    Retry,
 }
 
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]

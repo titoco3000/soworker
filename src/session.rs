@@ -4,6 +4,13 @@ use std::time::{Duration, Instant};
 
 pub const CLIENT_VERSION: &str = "11.202.0";
 
+/// Starts the error of a request that never reached the server, as opposed to one the server turned down.
+const OFFLINE: &str = "no connection";
+
+pub fn is_offline(err: &str) -> bool {
+    err.starts_with(OFFLINE)
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SessionFile {
     #[serde(rename = "apiKey")]
@@ -41,7 +48,10 @@ impl Auth {
         let url = format!("https://securetoken.googleapis.com/v1/token?key={}", self.file.api_key);
         let resp: serde_json::Value = ureq::post(&url)
             .send_form(&[("grant_type", "refresh_token"), ("refresh_token", &self.file.refresh_token)])
-            .map_err(|e| format!("token refresh failed: {e}"))?
+            .map_err(|e| match e {
+                ureq::Error::Status(c, _) if c < 500 => format!("token refresh failed: {e}"),
+                e => format!("{OFFLINE} ({e})"), // no network, or the server is down: the token may be fine
+            })?
             .into_json()
             .map_err(|e| e.to_string())?;
         self.token = resp["id_token"].as_str().ok_or("no id_token in refresh response")?.to_string();

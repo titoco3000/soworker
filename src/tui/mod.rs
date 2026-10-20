@@ -406,6 +406,7 @@ impl Tui {
             match (k.code, phase) {
                 (KeyCode::Char('q'), _) => self.quit = true,
                 (KeyCode::Esc, LoginPhase::Waiting) => self.st.login_act = Some(crate::app::LoginAct::Cancel),
+                (KeyCode::Enter, LoginPhase::Offline) => self.st.login_act = Some(crate::app::LoginAct::Retry),
                 (KeyCode::Enter, LoginPhase::Idle | LoginPhase::Failed(_)) => self.st.login_act = Some(crate::app::LoginAct::Start),
                 _ => {}
             }
@@ -675,7 +676,7 @@ impl Tui {
             Msg::App(Event::Talk(a)) => self.st.talk(a, now),
             Msg::App(Event::Login(Ok(auth))) => self.sign_in(auth),
             Msg::App(Event::Login(Err(e))) => {
-                self.st.login = Some(if e.contains("cancelled") { LoginPhase::Idle } else { LoginPhase::Failed(e) });
+                self.st.login = Some(LoginPhase::after_error(e));
                 self.st.dirty = true;
             }
         }
@@ -814,7 +815,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     crate::talk::portal(move |a| e(Event::Talk(a)), t.st.talk_key.clone());
     match Auth::load(&path) {
         Ok(auth) => t.sign_in(auth),
-        Err(e) => t.st.login = Some(if std::path::Path::new(&path).exists() { LoginPhase::Failed(format!("Your saved sign-in no longer works ({e}).")) } else { LoginPhase::Idle }),
+        Err(e) => t.st.login = Some(LoginPhase::after_load_error(std::path::Path::new(&path).exists(), e)),
     }
     let res = event_loop(&mut t, &mut terminal, rx, exit_after);
     if t.to_gui && res.is_ok() {

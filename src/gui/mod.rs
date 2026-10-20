@@ -156,7 +156,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Talk(a) => self.st.talk(a, now),
             UserEvent::Login(Ok(auth)) => self.start_session(auth),
             UserEvent::Login(Err(e)) => {
-                self.st.login = Some(if e.contains("cancelled") { LoginPhase::Idle } else { LoginPhase::Failed(e) });
+                self.st.login = Some(LoginPhase::after_error(e));
                 self.st.dirty = true;
             }
         }
@@ -411,7 +411,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             Ok(auth) => app.start_session(auth),
             Err(e) => {
                 // no saved sign-in (or it no longer works): show the sign-in screen
-                app.st.login = Some(if std::path::Path::new(&path).exists() { LoginPhase::Failed(format!("Your saved sign-in no longer works ({e}).")) } else { LoginPhase::Idle });
+                app.st.login = Some(LoginPhase::after_load_error(std::path::Path::new(&path).exists(), e));
             }
         }
     }

@@ -96,6 +96,10 @@ impl Backend {
     pub fn flush(&mut self, st: &mut State, start: std::time::Instant) {
         match st.login_act.take() {
             Some(LoginAct::Start) => self.begin_login(st),
+            Some(LoginAct::Retry) => {
+                let (path, emit) = (self.session_path.clone(), self.emit.clone());
+                std::thread::spawn(move || emit(Event::Login(Auth::load(&path))));
+            }
             Some(LoginAct::Cancel) => {
                 if let Some(c) = &self.login_cancel {
                     c.store(true, Ordering::Relaxed);

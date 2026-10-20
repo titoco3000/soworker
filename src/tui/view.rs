@@ -709,6 +709,7 @@ fn draw_login(f: &mut Frame, t: &Tui) {
     let (head, body, key): (&str, Vec<String>, &str) = match t.st.login.as_ref() {
         Some(LoginPhase::Waiting) => ("Waiting for you…", vec!["Finish signing in in the Chrome window that just opened.".into(), "It closes by itself when you are done.".into()], "Esc cancel · q quit"),
         Some(LoginPhase::Failed(e)) => ("Sign-in failed", wrap(e, 56), "Enter try again · q quit"),
+        Some(LoginPhase::Offline) => ("No connection", vec!["Your sign-in is saved; check your network.".into()], "Enter retry · q quit"),
         _ => ("Sign in to SoWork", vec!["SoWorker needs you to sign in once.".into(), "Enter opens Chrome on SoWork's login page;".into(), "the token is saved in ~/.config/soworker/.".into()], "Enter sign in · q quit"),
     };
     let mut lines: Vec<String> = body;

@@ -181,7 +181,11 @@ pub fn login_hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<crate::
     if !b.contains(px, py) {
         return None;
     }
-    Some(if st.login == Some(LoginPhase::Waiting) { LoginAct::Cancel } else { LoginAct::Start })
+    Some(match st.login {
+        Some(LoginPhase::Waiting) => LoginAct::Cancel,
+        Some(LoginPhase::Offline) => LoginAct::Retry,
+        _ => LoginAct::Start,
+    })
 }
 
 fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
@@ -205,6 +209,10 @@ fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
             "Cancel",
         ),
         Some(LoginPhase::Failed(e)) => (vec![(e.clone(), DANGER)], "Try again"),
+        Some(LoginPhase::Offline) => (
+            vec![("No connection.".into(), DANGER), ("Your sign-in is saved; check your network and retry.".into(), INK_MUTED)],
+            "Retry",
+        ),
         _ => (
             vec![
                 ("A browser window opens on SoWork's own sign-in page.".into(), INK),
