@@ -34,12 +34,11 @@ pub struct Backend {
     pub session_path: String,
     login_cancel: Option<Arc<AtomicBool>>,
     logout_started: Option<std::time::Instant>,
-    pub overlay: Option<crate::overlay::Handle>,
 }
 
 impl Backend {
     pub fn new(emit: Emit, dry: bool, session_path: String) -> Self {
-        Backend { cmds: channel().0, media: None, chat: None, avatars: None, emit, dry, session_path, login_cancel: None, logout_started: None, overlay: None }
+        Backend { cmds: channel().0, media: None, chat: None, avatars: None, emit, dry, session_path, login_cancel: None, logout_started: None }
     }
 
     /// Connect everything for a signed-in user: gaia socket, chat, calls (and avatar pictures if `pictures`).
@@ -117,9 +116,6 @@ impl Backend {
         }
         for c in st.outbox.drain(..) {
             let _ = self.cmds.send(c);
-        }
-        if let Some(o) = st.overlay_out.take() {
-            self.overlay.get_or_insert_with(crate::overlay::Handle::new).show(o);
         }
         if std::mem::take(&mut st.hint_out) {
             crate::notify::talk_hint(&st.talk_key);
