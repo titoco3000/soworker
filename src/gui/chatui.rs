@@ -16,7 +16,7 @@ const PAD: f32 = 12.0;
 
 
 pub fn width(st: &State) -> f32 {
-    if st.login.is_none() && st.chat.open { WIDTH * st.ui } else { 0.0 }
+    if st.login.is_none() && st.chat.open && !st.dock.tile_full { WIDTH * st.ui } else { 0.0 }
 }
 
 #[derive(Clone, Debug, PartialEq)]

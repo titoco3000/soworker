@@ -280,6 +280,10 @@ impl ApplicationHandler<UserEvent> for App {
                     Key::Named(NamedKey::ArrowDown) => k.down = down,
                     Key::Named(NamedKey::ArrowLeft) => k.left = down,
                     Key::Named(NamedKey::ArrowRight) => k.right = down,
+                    Key::Named(NamedKey::Escape) if down && self.st.dock.tile_full => {
+                        self.st.dock.tile_full = false;
+                        self.st.dirty = true;
+                    }
                     Key::Named(NamedKey::Escape) if down && self.st.confirm_logout => self.st.logout_choice(false),
                     Key::Named(NamedKey::Escape) if down && self.st.profile.is_some() => {
                         let list_open = self.st.profile.as_ref().is_some_and(|p| p.open.is_some());
@@ -335,6 +339,18 @@ impl ApplicationHandler<UserEvent> for App {
         if self.be.logging_out().is_some_and(|d| d > Duration::from_millis(2500)) {
             return self.finish_logout(); // the socket thread did not answer in time (offline?): leave anyway
         }
+        // a fullscreen tile takes the whole OS window with it, and leaving either leaves both
+        if let Some(w) = &self.window {
+            if self.st.dock.tile_full != w.fullscreen().is_some() {
+                w.set_fullscreen(self.st.dock.tile_full.then_some(winit::window::Fullscreen::Borderless(None)));
+            }
+        }
+        if let Some(t) = self.st.dock.hover.moved {
+            if t.elapsed() >= crate::meeting::Hover::SHOW {
+                self.st.dock.hover.moved = None; // the fullscreen tile's buttons fade away
+                self.st.dirty = true;
+            }
+        }
         let redraw = self.st.update(dt, now);
         self.flush();
         if redraw {
@@ -345,6 +361,8 @@ impl ApplicationHandler<UserEvent> for App {
         // tick at ~60 Hz only while something moves; otherwise sleep until the next event
         el.set_control_flow(if self.st.is_active() {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(16))
+        } else if let Some(t) = self.st.dock.hover.moved {
+            ControlFlow::WaitUntil(t + crate::meeting::Hover::SHOW)
         } else if self.be.logging_out().is_some() {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100))
         } else if let Some(t) = self.logout_after.filter(|_| !self.st.logout_requested) {

@@ -40,6 +40,8 @@ pub struct Layout {
     pub area: R,
     pub side: Option<R>,
     pub max_scroll: f32,
+    /// The pinned tile fills the dock: nothing else is laid out.
+    pub tile_full: bool,
 }
 
 fn slot_pos(slot: Slot, dw: f32, dh: f32, w: f32, h: f32, margin: f32) -> (f32, f32) {
@@ -115,6 +117,11 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
     let specs = tiles(st);
     let gap = 8.0 * u;
     let pinned_idx = d.pinned.as_ref().and_then(|p| specs.iter().position(|t| &t.id == p));
+    if let (true, Some(pi)) = (d.tile_full, pinned_idx) {
+        let whole = R { x: sb, y: 0.0, w: mw, h };
+        let spec = specs.into_iter().nth(pi)?;
+        return Some(Layout { dock: whole, header: R::default(), full_btn: R::default(), tiles: vec![(spec, whole, true)], status: (0.0, 0.0), controls: vec![], chat_col: None, send_btn: None, input: None, bar: R::default(), area: whole, side: None, max_scroll: 0.0, tile_full: true });
+    }
     let mut out = Vec::new();
     let (mut max_scroll, mut side) = (0.0f32, None);
     match pinned_idx {
@@ -172,12 +179,21 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
         send_btn = Some(R { x: c.x + c.w - 8.0 * u - send_w, y, w: send_w, h: fh });
         input = Some(R { x: c.x + 8.0 * u, y, w: c.w - 16.0 * u - send_w - 4.0 * u, h: fh });
     }
-    Some(Layout { dock, header, full_btn, tiles: out, status: (dx + pad, body_top + body_h - 10.0 * u), controls, chat_col, send_btn, input, bar, area, side, max_scroll })
+    Some(Layout { dock, header, full_btn, tiles: out, status: (dx + pad, body_top + body_h - 10.0 * u), controls, chat_col, send_btn, input, bar, area, side, max_scroll, tile_full: false })
 }
 
-fn tile_buttons(spec: &TileSpec) -> Vec<TileBtn> {
-    // omoffice: self and content tiles only get pin; other attendees also get mute and camera off
-    if spec.is_self || spec.content { vec![TileBtn::Pin] } else { vec![TileBtn::Mute, TileBtn::CameraOff, TileBtn::Pin] }
+fn tile_buttons(spec: &TileSpec, pinned: bool, tile_full: bool) -> Vec<TileBtn> {
+    // omoffice: self and content tiles only get pin; other attendees also get mute and camera off.
+    // The pinned (focused) tile also gets fullscreen, which is all there is while it fills the area.
+    if tile_full {
+        return vec![TileBtn::Fullscreen];
+    }
+    let mut v = if spec.is_self || spec.content { vec![] } else { vec![TileBtn::Mute, TileBtn::CameraOff] };
+    if pinned {
+        v.push(TileBtn::Fullscreen);
+    }
+    v.push(TileBtn::Pin);
+    v
 }
 
 fn tile_button_rects(r: R, n: usize, u: f32) -> Vec<R> {
@@ -191,24 +207,26 @@ pub fn hit(st: &State, text: &mut Text, px: f32, py: f32, w: f32, h: f32) -> Opt
     if !l.dock.contains(px, py) {
         return None;
     }
-    if !st.dock.full && l.full_btn.contains(px, py) || st.dock.full && l.full_btn.contains(px, py) {
-        return Some(Hit::Ctl(Ctl::FullToggle));
-    }
-    if l.header.contains(px, py) {
-        return Some(Hit::Header);
-    }
-    for (c, r) in &l.controls {
-        if r.contains(px, py) {
-            return Some(Hit::Ctl(*c));
+    if !l.tile_full {
+        if l.full_btn.contains(px, py) {
+            return Some(Hit::Ctl(Ctl::FullToggle));
         }
-    }
-    if l.send_btn.is_some_and(|r| r.contains(px, py)) {
-        return Some(Hit::Ctl(Ctl::Send));
+        if l.header.contains(px, py) {
+            return Some(Hit::Header);
+        }
+        for (c, r) in &l.controls {
+            if r.contains(px, py) {
+                return Some(Hit::Ctl(*c));
+            }
+        }
+        if l.send_btn.is_some_and(|r| r.contains(px, py)) {
+            return Some(Hit::Ctl(Ctl::Send));
+        }
     }
     for (spec, r, pinned) in &l.tiles {
         let clipped = !*pinned && l.side.is_some() && !l.area.contains(px, py);
         if r.contains(px, py) && !clipped {
-            let btns = tile_buttons(spec);
+            let btns = tile_buttons(spec, *pinned, l.tile_full);
             for (b, br) in btns.iter().zip(tile_button_rects(*r, btns.len(), st.ui)) {
                 if br.contains(px, py) {
                     return Some(Hit::TileBtn(spec.id.clone(), *b));
@@ -297,6 +315,12 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
     let Some(l) = layout(st, text, w, h) else { return };
     let u = st.ui;
     let radius = theme::RADIUS_CARD * u;
+    if l.tile_full {
+        fill_rr(pm, l.dock, 0.0, [0, 0, 0], 255);
+        let (spec, r, pinned) = &l.tiles[0];
+        draw_tile(st, pm, text, spec, *r, *pinned, st.dock.hover.recent(), true, u, 0.0);
+        return;
+    }
     let full = st.dock.full;
     let rad = if full { 0.0 } else { radius };
 
@@ -330,14 +354,14 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
     // tiles
     let hover = st.dock.hover.tile.as_deref();
     for (spec, r, pinned) in l.tiles.iter().filter(|t| t.2 || l.side.is_none()) {
-        draw_tile(st, pm, text, spec, *r, *pinned, hover == Some(spec.id.as_str()), u, radius);
+        draw_tile(st, pm, text, spec, *r, *pinned, hover == Some(spec.id.as_str()), false, u, radius);
     }
     if let Some(side) = l.side {
         // the sidebar column scrolls and is clipped to the tiles area: draw it on its own canvas, then composite
         if let Some(mut tmp) = Pixmap::new(side.w.ceil().max(1.0) as u32, side.h.ceil().max(1.0) as u32) {
             for (spec, r, _) in l.tiles.iter().filter(|t| !t.2) {
                 let local = R { x: r.x - side.x, y: r.y - side.y, w: r.w, h: r.h };
-                draw_tile(st, &mut tmp.as_mut(), text, spec, local, false, hover == Some(spec.id.as_str()), u, radius);
+                draw_tile(st, &mut tmp.as_mut(), text, spec, local, false, hover == Some(spec.id.as_str()), false, u, radius);
             }
             pm.draw_pixmap(side.x as i32, side.y as i32, tmp.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
         }
@@ -395,7 +419,7 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpec, r: R, pinned: bool, hover: bool, u: f32, radius: f32) {
+fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpec, r: R, pinned: bool, hover: bool, tile_full: bool, u: f32, radius: f32) {
     fill_rr(pm, r, radius, theme::MUTED, 255);
     let video = spec.video_key.as_ref().and_then(|k| st.call.tiles.iter().find(|t| &t.key == k));
     match video {
@@ -422,18 +446,19 @@ fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpe
     // hover overlay: bg-black/40 with the tile's buttons
     if hover {
         fill_rr(pm, r, radius, [0, 0, 0], 102);
-        let btns = tile_buttons(spec);
+        let btns = tile_buttons(spec, pinned, tile_full);
         for (b, br) in btns.iter().zip(tile_button_rects(r, btns.len(), u)) {
             let disabled = match b {
                 TileBtn::Mute => spec.muted,
                 TileBtn::CameraOff => spec.video_key.is_none(),
-                TileBtn::Pin => false,
+                TileBtn::Pin | TileBtn::Fullscreen => false,
             };
             let a = if disabled { 115 } else { 230 };
             fill_rr(pm, br, radius, theme::SURFACE, a);
             let (shapes, col) = match b {
                 TileBtn::Mute => (icons::MIC_OFF, theme::INK),
                 TileBtn::CameraOff => (icons::VIDEO_OFF, theme::INK),
+                TileBtn::Fullscreen => (if tile_full { icons::MINIMIZE } else { icons::MAXIMIZE }, theme::INK),
                 TileBtn::Pin => (if pinned { icons::MINIMIZE } else { icons::MAXIMIZE }, if pinned { theme::BRAND } else { theme::INK }),
             };
             let col = if disabled { mix(col, theme::SURFACE, 0.5) } else { col };
@@ -474,6 +499,10 @@ pub fn end_drag(st: &mut State, w: f32, h: f32) {
 
 /// Track which tile the pointer is over (drives the hover overlay).
 pub fn update_hover(st: &mut State, text: &mut Text, px: f32, py: f32, w: f32, h: f32) {
+    if st.dock.tile_full {
+        st.dock.hover.moved = Some(std::time::Instant::now());
+        st.dirty = true;
+    }
     let new = match hit(st, text, px, py, w, h) {
         Some(Hit::Tile(id)) | Some(Hit::TileBtn(id, _)) => Some(id),
         _ => None,

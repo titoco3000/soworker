@@ -535,7 +535,9 @@ impl State {
                     self.outbox.push(Cmd::Zone(None));
                 }
             }
+            Hit::TileBtn(_, TileBtn::Fullscreen) => self.dock.tile_full = !self.dock.tile_full,
             Hit::TileBtn(id, TileBtn::Pin) => {
+                self.dock.tile_full = false;
                 self.dock.pinned = if self.dock.pinned.as_deref() == Some(id.as_str()) { None } else { Some(id) };
             }
             // stubs, as requested: the buttons exist (as in omoffice) but acting on other people is not implemented
@@ -699,6 +701,7 @@ impl State {
                 self.call.peer_muted.clear();
                 self.call.peers = None;
                 self.dock.pinned = None;
+                self.dock.tile_full = false;
                 self.dock.last_auto = None;
                 for u in self.users.values_mut() {
                     u.speaking = false;
@@ -765,6 +768,7 @@ impl State {
                 }
                 if self.dock.pinned.as_deref() == Some(format!("content:{key}").as_str()) {
                     self.dock.pinned = None;
+                    self.dock.tile_full = false;
                 }
             }
         }

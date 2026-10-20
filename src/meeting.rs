@@ -23,10 +23,22 @@ pub struct Drag {
 #[derive(Default)]
 pub struct Hover {
     pub tile: Option<String>,
+    /// When the pointer last moved; a fullscreen tile shows its buttons only for a moment after that.
+    pub moved: Option<std::time::Instant>,
+}
+
+impl Hover {
+    pub const SHOW: std::time::Duration = std::time::Duration::from_millis(500);
+
+    pub fn recent(&self) -> bool {
+        self.moved.is_some_and(|t| t.elapsed() < Self::SHOW)
+    }
 }
 
 pub struct Dock {
     pub full: bool,
+    /// The pinned tile fills the whole meeting area, with no header or controls.
+    pub tile_full: bool,
     pub slot: Slot,
     pub drag: Option<Drag>,
     pub chat_open: bool,
@@ -40,7 +52,7 @@ pub struct Dock {
 
 impl Default for Dock {
     fn default() -> Self {
-        Dock { full: false, slot: Slot::BotRight, drag: None, chat_open: false, pinned: None, last_auto: None, hover: Hover::default(), scroll: 0.0 }
+        Dock { full: false, tile_full: false, slot: Slot::BotRight, drag: None, chat_open: false, pinned: None, last_auto: None, hover: Hover::default(), scroll: 0.0 }
     }
 }
 
@@ -61,6 +73,7 @@ pub enum TileBtn {
     Mute,
     CameraOff,
     Pin,
+    Fullscreen,
 }
 
 #[derive(Clone, PartialEq, Debug)]

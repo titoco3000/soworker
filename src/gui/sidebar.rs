@@ -15,7 +15,7 @@ pub const FOOTER: f32 = 28.0;
 const PAD: f32 = 12.0;
 
 pub fn width(st: &State) -> f32 {
-    if st.login.is_some() { 0.0 } else { WIDTH * st.ui }
+    if st.login.is_some() || st.dock.tile_full { 0.0 } else { WIDTH * st.ui }
 }
 
 fn row_h(r: &Row) -> f32 {
@@ -84,6 +84,9 @@ fn wave_buttons(rect: &R, u: f32) -> (R, R) {
 }
 
 pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Hit> {
+    if st.dock.tile_full {
+        return None;
+    }
     let l = layout(st, h);
     if !l.panel.contains(px, py) {
         return None;
@@ -194,7 +197,7 @@ fn pss_mb() -> f64 {
 const AMBER: Rgb = [240, 170, 60];
 
 pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
-    if st.login.is_some() {
+    if st.login.is_some() || st.dock.tile_full {
         return;
     }
     let (u, h) = (st.ui, pm.height() as f32);
