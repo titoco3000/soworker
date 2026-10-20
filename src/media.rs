@@ -734,7 +734,7 @@ async fn announce_share(s: &Session, start: bool, sid: Option<&TrackSid>) {
 }
 
 fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
-    // Linux: the portal (or X11) lets the user pick. Windows has no picker: share the first screen.
+    // Linux: the portal (or X11) lets the user pick. Windows has no picker: share the screen chosen in the profile, else the first.
     #[cfg(not(windows))]
     let kind = DesktopCaptureSourceType::Generic;
     #[cfg(windows)]
@@ -745,7 +745,13 @@ fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
     #[cfg(not(windows))]
     let pick = None;
     #[cfg(windows)]
-    let pick = cap.get_source_list().into_iter().next();
+    let pick = {
+        let sources = cap.get_source_list();
+        let want = crate::devices::chosen().screen;
+        // the screen chosen in the profile; the first when none was, or when it is not plugged in any more
+        let at = want.and_then(|id| sources.iter().position(|s| s.id().to_string() == id)).unwrap_or(0);
+        sources.into_iter().nth(at)
+    };
     let (ready, dead) = (std::sync::Mutex::new(Some(ready)), Arc::new(AtomicBool::new(false)));
     let (dead2, stop2) = (dead.clone(), stop.clone());
     let mut last_preview = Instant::now() - Duration::from_secs(1);

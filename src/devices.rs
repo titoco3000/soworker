@@ -12,9 +12,14 @@ pub enum Kind {
     Output,
     Input,
     Camera,
+    /// The screen a share captures (Windows only: elsewhere the system's picker asks every time).
+    Screen,
 }
 
 impl Kind {
+    #[cfg(windows)]
+    pub const ALL: [Kind; 4] = [Kind::Output, Kind::Input, Kind::Camera, Kind::Screen];
+    #[cfg(not(windows))]
     pub const ALL: [Kind; 3] = [Kind::Output, Kind::Input, Kind::Camera];
 
     fn key(self) -> &'static str {
@@ -22,6 +27,7 @@ impl Kind {
             Kind::Output => "audioOutput",
             Kind::Input => "audioInput",
             Kind::Camera => "camera",
+            Kind::Screen => "screen",
         }
     }
 
@@ -30,6 +36,7 @@ impl Kind {
             Kind::Output => "Speaker",
             Kind::Input => "Microphone",
             Kind::Camera => "Camera",
+            Kind::Screen => "Screen",
         }
     }
 }
@@ -45,6 +52,7 @@ pub struct Devices {
     pub outputs: Vec<Device>,
     pub inputs: Vec<Device>,
     pub cameras: Vec<Device>,
+    pub screens: Vec<Device>,
 }
 
 impl Devices {
@@ -53,6 +61,7 @@ impl Devices {
             Kind::Output => &self.outputs,
             Kind::Input => &self.inputs,
             Kind::Camera => &self.cameras,
+            Kind::Screen => &self.screens,
         }
     }
 }
@@ -63,6 +72,7 @@ pub struct Choice {
     pub output: Option<String>,
     pub input: Option<String>,
     pub camera: Option<String>,
+    pub screen: Option<String>,
 }
 
 impl Choice {
@@ -71,6 +81,7 @@ impl Choice {
             Kind::Output => self.output.as_deref(),
             Kind::Input => self.input.as_deref(),
             Kind::Camera => self.camera.as_deref(),
+            Kind::Screen => self.screen.as_deref(),
         }
         .filter(|id| !id.is_empty())
     }
@@ -80,6 +91,7 @@ impl Choice {
             Kind::Output => &mut self.output,
             Kind::Input => &mut self.input,
             Kind::Camera => &mut self.camera,
+            Kind::Screen => &mut self.screen,
         } = id;
     }
 }
@@ -114,7 +126,27 @@ pub fn choose(k: Kind, id: Option<String>) {
 /// Everything that is plugged in right now. Asks the sound server and the kernel, so it takes a moment: call it when
 /// the list is about to be shown, not every frame.
 pub fn list() -> Devices {
-    Devices { outputs: outputs(), inputs: inputs(), cameras: cameras() }
+    Devices { outputs: outputs(), inputs: inputs(), cameras: cameras(), screens: screens() }
+}
+
+/// The screens a share can capture, in the order the system numbers them. Only Windows lets the user choose one.
+#[cfg(all(windows, feature = "calls"))]
+fn screens() -> Vec<Device> {
+    use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
+    let Some(cap) = DesktopCapturer::new(DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen)) else { return vec![] };
+    cap.get_source_list()
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let title = s.title();
+            Device { id: s.id().to_string(), name: if title.is_empty() { format!("Screen {}", i + 1) } else { title } }
+        })
+        .collect()
+}
+
+#[cfg(not(all(windows, feature = "calls")))]
+fn screens() -> Vec<Device> {
+    vec![]
 }
 
 /// Speakers and microphones as PulseAudio / PipeWire (`pactl`) sees them; the monitors of outputs are left out.

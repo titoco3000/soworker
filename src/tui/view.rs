@@ -673,7 +673,7 @@ fn profile(f: &mut Frame, t: &Tui, r: Rect) {
         match kind {
             Kind::Output => v.push(Span::styled("t: play sound", Style::new().fg(if picked { BRAND } else { DIM }))),
             Kind::Input => v.extend(meter(p.level(), p.meter.is_some(), 14)),
-            Kind::Camera => {}
+            Kind::Camera | Kind::Screen => {}
         }
         lines.push(Line::from(v));
     }

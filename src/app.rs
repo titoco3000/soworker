@@ -609,7 +609,9 @@ impl State {
                         p.meter = None; // let go of the old microphone first
                         p.meter = devices::Meter::start(id);
                     }
-                    self.media_out.push(MediaCmd::Devices);
+                    if k != Kind::Screen {
+                        self.media_out.push(MediaCmd::Devices); // a share picks its screen when it starts
+                    }
                 }
             }
             Act::TestSound => self.sounds.push(crate::sound::Sound::ReceiveWave),

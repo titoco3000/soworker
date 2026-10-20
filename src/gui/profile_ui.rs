@@ -19,6 +19,8 @@ const SIDE: f32 = 112.0;
 const CTRL_H: f32 = 30.0;
 /// One setting: its label, the control and the gap below.
 const ROW: f32 = 58.0;
+/// The last row has no gap under it.
+const ROW_LAST: f32 = ROW - 10.0;
 const OPT_H: f32 = 28.0;
 
 pub struct Layout {
@@ -27,7 +29,7 @@ pub struct Layout {
     pub logout: R,
     /// The line between the account and the settings.
     pub divider: f32,
-    pub lists: [(Kind, R); 3],
+    pub lists: Vec<(Kind, R)>,
     pub test: R,
     pub meter: R,
     /// The open list: its box and each choice in it.
@@ -36,7 +38,7 @@ pub struct Layout {
 
 pub fn layout(st: &State, p: &Profile, h: f32) -> Layout {
     let u = st.ui;
-    let ch = (PAD + AVATAR + 16.0 + CTRL_H + 16.0 + 36.0 + 3.0 * ROW - 10.0 + PAD) * u;
+    let ch = (PAD + AVATAR + 16.0 + CTRL_H + 16.0 + 36.0 + (Kind::ALL.len() - 1) as f32 * ROW + ROW_LAST + PAD) * u;
     let card = R { x: 8.0 * u, y: (h - FOOTER * u - 8.0 * u - ch).max(8.0 * u), w: W * u, h: ch };
     let (x, inner) = (card.x + PAD * u, card.w - 2.0 * PAD * u);
     let avatar = R { x, y: card.y + PAD * u, w: AVATAR * u, h: AVATAR * u };
@@ -44,11 +46,8 @@ pub fn layout(st: &State, p: &Profile, h: f32) -> Layout {
     let divider = logout.y + logout.h + 16.0 * u;
     let row = |i: usize| divider + 36.0 * u + i as f32 * ROW * u + 18.0 * u;
     let narrow = inner - (SIDE + 8.0) * u;
-    let lists = [
-        (Kind::Output, R { x, y: row(0), w: narrow, h: CTRL_H * u }),
-        (Kind::Input, R { x, y: row(1), w: narrow, h: CTRL_H * u }),
-        (Kind::Camera, R { x, y: row(2), w: inner, h: CTRL_H * u }),
-    ];
+    // speaker and microphone leave room for their test beside them; the rest span the card
+    let lists: Vec<(Kind, R)> = Kind::ALL.iter().enumerate().map(|(i, &k)| (k, R { x, y: row(i), w: if i < 2 { narrow } else { inner }, h: CTRL_H * u })).collect();
     let side = |i: usize| R { x: x + narrow + 8.0 * u, y: row(i), w: SIDE * u, h: CTRL_H * u };
     let options = p.open.and_then(|k| lists.iter().find(|(l, _)| *l == k)).map(|&(k, b)| {
         let opts = p.options(k);
@@ -199,6 +198,7 @@ mod tests {
             outputs: vec![Device { id: "sink.a".into(), name: "Speakers".into() }, Device { id: "sink.b".into(), name: "Headset".into() }],
             inputs: vec![Device { id: "src.a".into(), name: "Mic".into() }],
             cameras: vec![],
+            screens: vec![],
         };
         st.profile = Some(Profile { devices, chosen: Choice::default(), open: None, meter: None, sel: 0 });
         st
