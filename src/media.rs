@@ -426,8 +426,8 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
                 let mut last = Instant::now() - Duration::from_secs(1);
                 let mut avail = Instant::now() - Duration::from_secs(2);
                 while let Some(frame) = stream.next().await {
-                    if last.elapsed() < Duration::from_millis(100) {
-                        continue; // ~10 fps is plenty for a thumbnail; skip the conversion work
+                    if last.elapsed() < Duration::from_millis(33) {
+                        continue; // ~30 fps; skip the conversion work for the rest
                     }
                     last = Instant::now();
                     if !crate::calls::wants_video(&k) {
@@ -552,16 +552,15 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
         Err(e) => return drop(ready.send(Err(format!("camera stream: {e}")))),
     };
     let _ = ready.send(Ok(()));
-    let (mut n, mut last_preview) = (0u64, Instant::now() - Duration::from_secs(1));
+    let mut last_preview = Instant::now() - Duration::from_secs(1);
     while !stop.load(Ordering::Relaxed) {
         let Ok((data, _)) = stream.next() else { break };
-        n += 1;
-        if n % 2 == 1 || data.len() < w * h * 2 {
-            continue; // 15 fps is enough and halves the encode cost
+        if data.len() < w * h * 2 {
+            continue;
         }
         let mut i420 = I420Buffer::new(w as u32, h as u32);
         yuyv_to_i420(data, w, h, &mut i420);
-        if last_preview.elapsed() >= Duration::from_millis(100) {
+        if last_preview.elapsed() >= Duration::from_millis(33) {
             last_preview = Instant::now();
             let (pw, ph, rgba) = if crate::calls::wants_video("me") { thumbnail(&mut i420, 480) } else { (0, 0, vec![]) };
             emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
@@ -602,16 +601,12 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
     }
     eprintln!("camera: {}", cam.camera_format());
     let _ = ready.send(Ok(()));
-    let (mut n, mut last_preview) = (0u64, Instant::now() - Duration::from_secs(1));
+    let mut last_preview = Instant::now() - Duration::from_secs(1);
     while !stop.load(Ordering::Relaxed) {
         let Ok(frame) = cam.frame() else { break };
-        n += 1;
-        if n % 2 == 1 {
-            continue; // 15 fps is enough and halves the encode cost
-        }
         let (w, h) = (frame.resolution().width() as usize & !1, frame.resolution().height() as usize & !1);
         let Some(mut i420) = frame_to_i420(frame.source_frame_format(), frame.buffer(), w, h) else { continue };
-        if last_preview.elapsed() >= Duration::from_millis(100) {
+        if last_preview.elapsed() >= Duration::from_millis(33) {
             last_preview = Instant::now();
             let (pw, ph, rgba) = if crate::calls::wants_video("me") { thumbnail(&mut i420, 480) } else { (0, 0, vec![]) };
             emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
@@ -683,6 +678,7 @@ async fn set_camera(s: &mut Session, on: bool, emit: &Emit) {
                 let mut opts = TrackPublishOptions::default();
                 opts.source = TrackSource::Camera;
                 opts.video_codec = VideoCodec::VP8;
+                opts.video_encoding = Some(VideoEncoding { max_bitrate: 1_700_000, max_framerate: 30.0 });
                 match s.room.local_participant().publish_track(LocalTrack::Video(track.clone()), opts).await {
                     Ok(_) => s.cam = Some(Camera { track, source, run: Some((stop, handle)) }),
                     Err(e) => {
@@ -765,7 +761,7 @@ fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
             let (sy, su, sv) = i420.strides();
             let (dy, du, dv) = i420.data_mut();
             yuv_helper::argb_to_i420(frame.data(), frame.stride(), dy, sy, du, su, dv, sv, w, h);
-            if last_preview.elapsed() >= Duration::from_millis(150) && !stop2.load(Ordering::Relaxed) {
+            if last_preview.elapsed() >= Duration::from_millis(33) && !stop2.load(Ordering::Relaxed) {
                 // our own share, as a tile in the meeting like everyone else's (key ends in ":screen" so it is pinned by default)
                 last_preview = Instant::now();
                 let (pw, ph, rgba) = if crate::calls::wants_video("me:screen") { thumbnail(&mut i420, 960) } else { (0, 0, vec![]) };
@@ -783,7 +779,7 @@ fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
     });
     while !stop.load(Ordering::Relaxed) && !dead.load(Ordering::Relaxed) {
         cap.capture_frame();
-        std::thread::sleep(Duration::from_millis(66)); // ~15 fps
+        std::thread::sleep(Duration::from_millis(33)); // ~30 fps
     }
 }
 
@@ -812,7 +808,7 @@ async fn set_share(s: &mut Session, on: bool, emit: &Emit) {
         let mut opts = TrackPublishOptions::default();
         opts.source = TrackSource::Screenshare;
         opts.video_codec = VideoCodec::VP8;
-        opts.video_encoding = Some(VideoEncoding { max_bitrate: 4_000_000, max_framerate: 15.0 });
+        opts.video_encoding = Some(VideoEncoding { max_bitrate: 4_000_000, max_framerate: 30.0 });
         match s.room.local_participant().publish_track(LocalTrack::Video(track), opts).await {
             Ok(p) => {
                 let sid = p.sid();

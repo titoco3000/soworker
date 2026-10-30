@@ -56,6 +56,8 @@ struct App {
     frames: u32,
     fps: u32,
     fps_t: Instant,
+    /// (sum, max, count, since) of the draw times in ms this second, for SOWORKER_PERF
+    perf: (f64, f64, u32, Instant),
     cursor: (f32, f32),
     /// The mouse is over the user icon, so the pointer is a hand.
     hand: bool,
@@ -99,6 +101,20 @@ impl App {
     }
 
     fn draw(&mut self) {
+        let t0 = Instant::now();
+        self.draw_inner();
+        if std::env::var_os("SOWORKER_PERF").is_some() {
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let p = &mut self.perf;
+            (p.0, p.1, p.2) = (p.0 + ms, p.1.max(ms), p.2 + 1);
+            if p.3.elapsed() >= Duration::from_secs(1) {
+                eprintln!("perf: {} draws/s, draw avg {:.1} ms, max {:.1} ms", p.2, p.0 / p.2 as f64, p.1);
+                *p = (0.0, 0.0, 0, Instant::now());
+            }
+        }
+    }
+
+    fn draw_inner(&mut self) {
         let (Some(win), Some(surface)) = (&self.window, &mut self.surface) else { return };
         let size = win.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
@@ -409,6 +425,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         last: Instant::now(),
         frames: 0,
         fps: 0,
+        perf: (0.0, 0.0, 0, Instant::now()),
         fps_t: Instant::now(),
         cursor: (0.0, 0.0),
         hand: false,
