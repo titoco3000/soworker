@@ -426,7 +426,7 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
                 let mut last = Instant::now() - Duration::from_secs(1);
                 let mut avail = Instant::now() - Duration::from_secs(2);
                 while let Some(frame) = stream.next().await {
-                    if last.elapsed() < Duration::from_millis(33) {
+                    if last.elapsed() < Duration::from_millis(25) {
                         continue; // ~30 fps; skip the conversion work for the rest
                     }
                     last = Instant::now();
@@ -560,7 +560,7 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
         }
         let mut i420 = I420Buffer::new(w as u32, h as u32);
         yuyv_to_i420(data, w, h, &mut i420);
-        if last_preview.elapsed() >= Duration::from_millis(33) {
+        if last_preview.elapsed() >= Duration::from_millis(25) {
             last_preview = Instant::now();
             let (pw, ph, rgba) = if crate::calls::wants_video("me") { thumbnail(&mut i420, 480) } else { (0, 0, vec![]) };
             emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
@@ -606,7 +606,7 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
         let Ok(frame) = cam.frame() else { break };
         let (w, h) = (frame.resolution().width() as usize & !1, frame.resolution().height() as usize & !1);
         let Some(mut i420) = frame_to_i420(frame.source_frame_format(), frame.buffer(), w, h) else { continue };
-        if last_preview.elapsed() >= Duration::from_millis(33) {
+        if last_preview.elapsed() >= Duration::from_millis(25) {
             last_preview = Instant::now();
             let (pw, ph, rgba) = if crate::calls::wants_video("me") { thumbnail(&mut i420, 480) } else { (0, 0, vec![]) };
             emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
@@ -761,7 +761,7 @@ fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
             let (sy, su, sv) = i420.strides();
             let (dy, du, dv) = i420.data_mut();
             yuv_helper::argb_to_i420(frame.data(), frame.stride(), dy, sy, du, su, dv, sv, w, h);
-            if last_preview.elapsed() >= Duration::from_millis(33) && !stop2.load(Ordering::Relaxed) {
+            if last_preview.elapsed() >= Duration::from_millis(25) && !stop2.load(Ordering::Relaxed) {
                 // our own share, as a tile in the meeting like everyone else's (key ends in ":screen" so it is pinned by default)
                 last_preview = Instant::now();
                 let (pw, ph, rgba) = if crate::calls::wants_video("me:screen") { thumbnail(&mut i420, 960) } else { (0, 0, vec![]) };
@@ -777,9 +777,15 @@ fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
         }
         Err(_) => {}
     });
+    // paced against a clock, not a sleep after each grab, so the time a grab takes does not lower the rate
+    let (step, mut next) = (Duration::from_millis(33), Instant::now());
     while !stop.load(Ordering::Relaxed) && !dead.load(Ordering::Relaxed) {
         cap.capture_frame();
-        std::thread::sleep(Duration::from_millis(33)); // ~30 fps
+        next += step;
+        match next.checked_duration_since(Instant::now()) {
+            Some(d) => std::thread::sleep(d),
+            None => next = Instant::now(), // running behind: do not try to catch up
+        }
     }
 }
 

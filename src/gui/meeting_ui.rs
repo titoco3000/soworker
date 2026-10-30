@@ -276,11 +276,34 @@ fn draw_video(pm: &mut PixmapMut<'_>, img: &Frame, r: R, radius: f32, cover: boo
     let (dw, dh) = (iw * s, ih * s);
     let (ox, oy) = (r.x + (r.w - dw) / 2.0, r.y + (r.h - dh) / 2.0);
     let tf = if mirror { Transform::from_scale(-s, s).post_translate(ox + dw, oy) } else { Transform::from_scale(s, s).post_translate(ox, oy) };
-    let pat = Pattern::new(img.px(), SpreadMode::Pad, FilterQuality::Bilinear, 1.0, tf);
-    let p = Paint { shader: pat, anti_alias: true, ..Paint::default() };
-    let path = if cover { rr(r, radius) } else { PathBuilder::from_rect(tiny_skia::Rect::from_xywh(ox, oy, dw, dh).unwrap_or(tiny_skia::Rect::from_xywh(r.x, r.y, r.w, r.h).unwrap())).into() };
-    if let Some(path) = path {
-        pm.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
+    // a picture shown at about its own size needs no filtering
+    let quality = if (s - 1.0).abs() < 0.02 { FilterQuality::Nearest } else { FilterQuality::Bilinear };
+    let pat = Pattern::new(img.px(), SpreadMode::Pad, quality, 1.0, tf);
+    let id = Transform::identity();
+    if !cover {
+        // letterboxed: a plain rectangle, no edge smoothing
+        let p = Paint { shader: pat, anti_alias: false, ..Paint::default() };
+        if let Some(rect) = tiny_skia::Rect::from_xywh(ox, oy, dw, dh) {
+            pm.fill_rect(rect, &p, id, None);
+        }
+        return;
+    }
+    // Rounded corners only matter in the top and bottom `radius` rows. Smooth those two strips as paths and fill the
+    // middle with a plain rectangle: smoothing the whole tile costs several times more.
+    let band = radius.min(r.h / 2.0).max(0.0);
+    let smooth = Paint { shader: pat.clone(), anti_alias: true, ..Paint::default() };
+    if band >= 1.0 {
+        for y in [r.y, r.y + r.h - 2.0 * band] {
+            if let Some(path) = rr(R { x: r.x, y, w: r.w, h: 2.0 * band }, radius) {
+                pm.fill_path(&path, &smooth, FillRule::Winding, id, None);
+            }
+        }
+        let (x0, x1) = (r.x.ceil(), (r.x + r.w).floor());
+        if let Some(mid) = tiny_skia::Rect::from_ltrb(x0, r.y + band, x1, r.y + r.h - band) {
+            pm.fill_rect(mid, &Paint { shader: pat, anti_alias: false, ..Paint::default() }, id, None);
+        }
+    } else if let Some(path) = rr(r, radius) {
+        pm.fill_path(&path, &smooth, FillRule::Winding, id, None);
     }
 }
 

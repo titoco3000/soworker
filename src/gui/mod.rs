@@ -58,6 +58,7 @@ struct App {
     fps_t: Instant,
     /// (sum, max, count, since) of the draw times in ms this second, for SOWORKER_PERF
     perf: (f64, f64, u32, Instant),
+    map: render::MapCache,
     cursor: (f32, f32),
     /// The mouse is over the user icon, so the pointer is a hand.
     hand: bool,
@@ -126,10 +127,14 @@ impl App {
                 // SAFETY: a `[u32]` of n elements is 4n initialised bytes; u8 has no alignment requirement.
                 let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n * 4) };
                 if let Some(mut pm) = tiny_skia::PixmapMut::from_bytes(bytes, wp, hp) {
-                    render::draw(&self.st, &mut pm, &mut self.text);
+                    if self.st.scene || self.st.dirty {
+                        self.map.valid = false;
+                        self.st.scene = false;
+                    }
+                    render::draw(&self.st, &mut pm, &mut self.text, &mut self.map);
                 }
                 for px in buf.iter_mut() {
-                    *px = ((*px & 0xff) << 16) | (*px & 0xff00) | ((*px >> 16) & 0xff);
+                    *px = px.swap_bytes().rotate_right(8) & 0x00ff_ffff; // 0xAABBGGRR -> 0x00RRGGBB
                 }
                 let _ = buf.present();
             }
@@ -426,6 +431,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         frames: 0,
         fps: 0,
         perf: (0.0, 0.0, 0, Instant::now()),
+        map: render::MapCache::default(),
         fps_t: Instant::now(),
         cursor: (0.0, 0.0),
         hand: false,

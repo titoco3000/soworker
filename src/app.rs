@@ -162,6 +162,8 @@ pub struct State {
     avatar_asked: HashMap<String, String>,
     left_zone: Option<String>,
     pub dirty: bool,
+    /// Something besides a video frame changed since the last draw (the window redraws the map layer, not just the video).
+    pub scene: bool,
     /// Set when the user asked to move to the other client; the frontend hands over and closes.
     pub switch: Option<crate::mode::UiMode>,
     /// The profile panel (log out, devices), while it is open.
@@ -223,6 +225,7 @@ impl State {
             avatar_asked: HashMap::new(),
             left_zone: None,
             dirty: true,
+            scene: true,
             switch: None,
             profile: None,
             confirm_logout: false,
@@ -681,7 +684,8 @@ impl State {
     }
 
     pub fn apply_media(&mut self, ev: MediaEvent, now: f64) {
-        self.dirty = true;
+        // a new frame of a tile already shown repaints that tile only: the rest of the scene stays as drawn
+        self.dirty = !matches!(&ev, MediaEvent::Video { key, .. } if self.call.tiles.iter().any(|t| &t.key == key));
         match ev {
             MediaEvent::Joined(r) => {
                 eprintln!("[{now:6.1}] livekit joined {r}");
@@ -890,6 +894,7 @@ impl State {
             }
         }
         let redraw = active || self.dirty;
+        self.scene |= redraw;
         self.dirty = false;
         redraw
     }

@@ -256,11 +256,17 @@ impl State {
     }
 }
 
-pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
-    if st.login.is_some() {
-        return draw_login(st, pm, text);
-    }
-    let (w, h) = (pm.width() as f32, pm.height() as f32);
+/// The last picture of the map layer, kept while only video frames change.
+#[derive(Default)]
+pub struct MapCache {
+    data: Vec<u8>,
+    size: (u32, u32),
+    /// False once the scene changed: the next draw rasterizes the map again.
+    pub valid: bool,
+}
+
+/// The map, its walls, zones, the walking path and the people on it (everything under the panels).
+fn draw_world(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32) {
     pm.fill(Color::from_rgba8(20, 22, 27, 255));
     let me = st.me();
     let (cx, cy) = me.map_or((3000.0, 3000.0), |m| (m.x, m.y));
@@ -383,6 +389,29 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
         text.draw(pm, &label, sx, sy - r - 4.0 * ui, 11.0 * ui, [221, 221, 238], 0.5);
     }
 
+}
+
+pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, cache: &mut MapCache) {
+    if st.login.is_some() {
+        return draw_login(st, pm, text);
+    }
+    let (w, h) = (pm.width() as f32, pm.height() as f32);
+    let (id, ui) = (Transform::identity(), st.ui);
+    // The map and the people on it only change with the scene, not with each video frame: while a call shows video,
+    // keep the last picture of them and copy it back (a memcpy) instead of rasterizing it again.
+    let keep = !st.call.tiles.is_empty();
+    let size = (pm.width(), pm.height());
+    if keep && cache.valid && cache.size == size && cache.data.len() == pm.data_mut().len() {
+        pm.data_mut().copy_from_slice(&cache.data);
+    } else {
+        draw_world(st, pm, text, w, h);
+        cache.valid = keep;
+        if keep {
+            cache.size = size;
+            cache.data.clear();
+            cache.data.extend_from_slice(pm.data_mut());
+        }
+    }
     // transient messages (e.g. "Walking to ...")
     if let Some((t, _)) = &st.toast {
         text.shadowed(pm, t, crate::gui::sidebar::width(st) + 10.0 * ui, 20.0 * ui, 13.0 * ui, [240, 200, 120], 0.0);
