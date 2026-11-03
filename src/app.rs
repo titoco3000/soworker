@@ -198,6 +198,11 @@ pub struct State {
     moving: bool,
     last_send: f64,
     stuck: f32,
+    /// At start-up we walk to our desk once everything needed for it has arrived (see `walk_to_desk_at_start`): whether
+    /// that is still to do, how many routes were tried, and the map's size with when it last changed.
+    desk_at_start: bool,
+    desk_tries: u8,
+    desk_map: (usize, f64),
     cur_zone: Option<Option<String>>, // None = not reported yet
     pub cur_zone_id: Option<String>,
 }
@@ -258,6 +263,9 @@ impl State {
             moving: false,
             last_send: 0.0,
             stuck: 0.0,
+            desk_at_start: true,
+            desk_tries: 0,
+            desk_map: (0, 0.0),
             cur_zone: None,
             cur_zone_id: None,
         }
@@ -492,6 +500,66 @@ impl State {
                 self.click(x, y, false, now);
             }
             None => self.say("You have no desk in this room", now),
+        }
+    }
+
+    /// The walk to our desk at start-up: once the desks, who owns them and our position are known and the map has
+    /// stopped arriving (a second without change: a route over half a map is cut short, or blocked where we stand). Not
+    /// when we have no desk here, are at it already, or started walking ourselves first. A route not found yet is
+    /// tried again each second, ten times.
+    fn walk_to_desk_at_start(&mut self, now: f64) {
+        if !self.desk_at_start {
+            return;
+        }
+        if self.path.is_some() || self.moving {
+            self.desk_at_start = false; // the user is going somewhere: leave them be
+            return;
+        }
+        let Some(owners) = &self.desk_owners else { return };
+        let mine: Vec<&crate::desks::Desk> = owners.iter().filter(|d| d.owner == self.me_id).collect();
+        if mine.is_empty() {
+            self.desk_at_start = false;
+            return;
+        }
+        let floors = self.world.floors.len();
+        if floors != self.desk_map.0 {
+            self.desk_map = (floors, now); // the map is still coming in
+            return;
+        }
+        if floors == 0 || now - self.desk_map.1 < 1.0 {
+            return;
+        }
+        let (Some(me), false) = (self.me(), self.room_def.is_empty()) else { return };
+        let here = (me.x, me.y);
+        let Some(&desk) = mine.iter().find(|d| d.room == self.room_def).and_then(|d| self.desks.get(&d.desk)) else {
+            if self.desks.is_empty() {
+                return; // this room's desks have not arrived yet
+            }
+            self.desk_at_start = false; // our desk is in another room
+            return;
+        };
+        if (desk.0 - here.0).hypot(desk.1 - here.1) <= T {
+            eprintln!("[{now:6.1}] desk: already at it");
+            self.desk_at_start = false;
+            return;
+        }
+        match self.world.find_path(here, desk) {
+            Some((p, goal)) => {
+                eprintln!("[{now:6.1}] desk: walking from {here:?} to {desk:?} ({} waypoints, map {floors} tiles)", p.len());
+                self.path = Some(p);
+                self.path_goal = goal;
+                self.stuck = 0.0;
+                self.desk_at_start = false;
+                self.say("Walking to your desk", now);
+            }
+            None => {
+                self.desk_tries += 1;
+                eprintln!("[{now:6.1}] desk: no route from {here:?} to {desk:?} yet (try {}, map {floors} tiles)", self.desk_tries);
+                self.desk_map.1 = now; // try again in a second
+                if self.desk_tries >= 10 {
+                    self.desk_at_start = false;
+                }
+            }
         }
     }
 
@@ -1004,6 +1072,7 @@ impl State {
                 self.dirty = true;
             }
         }
+        self.walk_to_desk_at_start(now);
         let mut active = self.moving || self.path.is_some() || self.profile.as_ref().is_some_and(|p| p.meter.is_some());
         let k = self.keys;
         let (mut dx, mut dy) = ((k.right as i32 - k.left as i32) as f32, (k.down as i32 - k.up as i32) as f32);
@@ -1027,11 +1096,15 @@ impl State {
             let want = dx != 0.0 || dy != 0.0;
             if want {
                 let l = dx.hypot(dy);
+                // on a path, never step past the waypoint: a long frame overshot it by more than the 12 units that
+                // count as reached, the next step came back and overshot the other way, and the avatar shuttled forever
+                let len = if self.path.is_some() { (SPEED * dt).min(l) } else { SPEED * dt };
                 let before = p;
-                p = self.world.step(p, dx / l * SPEED * dt, dy / l * SPEED * dt);
+                p = self.world.step(p, dx / l * len, dy / l * len);
                 if self.path.is_some() {
-                    self.stuck = if (p.0 - before.0).hypot(p.1 - before.1) < SPEED * dt * 0.2 { self.stuck + dt } else { 0.0 };
+                    self.stuck = if (p.0 - before.0).hypot(p.1 - before.1) < len * 0.2 { self.stuck + dt } else { 0.0 };
                     if self.stuck > 0.4 {
+                        eprintln!("[{now:6.1}] walk: stuck at {p:?} on the way to {:?}, stopping", self.path_goal);
                         self.path = None;
                     }
                 }
@@ -1106,6 +1179,80 @@ mod tests {
         st.apply(Net::DeskOwners(vec![desk("R1", "d2", "me")]), 0.0);
         st.go_to_desk(0.0);
         assert_eq!(st.toast.as_ref().unwrap().0, "Walking to your desk");
+    }
+
+    /// A 10x10-tile open floor with us on it.
+    fn open_floor(at: (f32, f32)) -> State {
+        let mut st = State::new("me", true);
+        st.world.floors = (0..10).flat_map(|i| (0..10).map(move |j| (i, j))).collect();
+        st.users.insert("me".into(), Avatar { id: "me".into(), x: at.0, y: at.1, tx: at.0, ty: at.1, ..Default::default() });
+        st
+    }
+
+    #[test]
+    fn a_long_frame_does_not_overshoot_the_target() {
+        let mut st = open_floor((1.5 * T, 1.5 * T));
+        st.desk_at_start = false;
+        // 20 fps = 40 units a step. 420 away, the eleventh step ends 20 past the target, the next 20 short of it: both
+        // outside the 12 units that count as arrived, so it used to shuttle around the target for ever
+        let goal = (1.5 * T + 420.0, 1.5 * T);
+        st.click(goal.0, goal.1, false, 0.0);
+        assert_eq!(st.path.as_deref(), Some(&[goal][..]), "a straight walk");
+        for i in 0..200 {
+            st.update(0.05, i as f64 * 0.05);
+            if st.path.is_none() {
+                break;
+            }
+        }
+        assert!(st.path.is_none(), "arrived instead of shuttling around the target");
+        let me = st.me().unwrap();
+        assert!((me.x - goal.0).abs() < 12.0 && (me.y - goal.1).abs() < 12.0, "at {:?}", (me.x, me.y));
+    }
+
+    #[test]
+    fn at_start_we_walk_to_our_desk_once_it_is_known() {
+        let desk = |room: &str, owner: &str| Desk { room: room.into(), desk: "d1".into(), owner: owner.into() };
+        let mut st = open_floor((1.5 * T, 1.5 * T));
+        st.update(0.016, 0.0);
+        assert!(st.path.is_none(), "nothing known yet");
+        st.apply(Net::DeskOwners(vec![desk("R1", "me")]), 0.0);
+        st.update(0.016, 0.0);
+        assert!(st.path.is_none() && st.desk_at_start, "waits for the room's desks");
+        st.apply(Net::Desks { definition: "R1".into(), desks: vec![("d1".into(), 6.5 * T, 6.5 * T)] }, 0.0);
+        st.update(0.016, 0.5);
+        assert!(st.path.is_none() && st.desk_at_start, "waits for the map to settle");
+        st.world.floors.insert((10, 0)); // more of the map arrives
+        st.update(0.016, 1.2);
+        assert!(st.path.is_none(), "the wait starts again");
+        st.update(0.016, 2.3);
+        assert!(st.path.is_some() && !st.desk_at_start, "walks there, once");
+        assert_eq!(st.toast.as_ref().unwrap().0, "Walking to your desk");
+
+        let mut st = open_floor((1.5 * T, 1.5 * T));
+        st.apply(Net::Desks { definition: "R1".into(), desks: vec![("d1".into(), 6.5 * T, 6.5 * T)] }, 0.0);
+        st.apply(Net::DeskOwners(vec![desk("R2", "me")]), 0.0);
+        st.update(0.016, 0.0);
+        st.update(0.016, 1.5);
+        assert!(st.path.is_none() && !st.desk_at_start, "our desk is in another room");
+
+        // the desk's part of the map is not there yet: no message, tried again until it is
+        let mut st = open_floor((1.5 * T, 1.5 * T));
+        st.apply(Net::Desks { definition: "R1".into(), desks: vec![("d1".into(), 12.5 * T, 1.5 * T)] }, 0.0);
+        st.apply(Net::DeskOwners(vec![desk("R1", "me")]), 0.0);
+        st.update(0.016, 0.0);
+        st.update(0.016, 1.5);
+        assert!(st.path.is_none() && st.desk_at_start && st.toast.is_none(), "no route yet, nothing said");
+        st.world.floors.extend((10..13).map(|i| (i, 1)));
+        st.update(0.016, 2.0);
+        st.update(0.016, 3.1);
+        assert!(st.path.is_some(), "found once the map has it");
+
+        let mut st = open_floor((1.5 * T, 1.5 * T));
+        st.click(4.5 * T, 1.5 * T, false, 0.0);
+        st.apply(Net::Desks { definition: "R1".into(), desks: vec![("d1".into(), 6.5 * T, 6.5 * T)] }, 0.0);
+        st.apply(Net::DeskOwners(vec![desk("R1", "me")]), 0.0);
+        st.update(0.016, 0.0);
+        assert!(!st.desk_at_start && st.path_goal.0 < 5.0 * T, "we were already walking somewhere: no hijack");
     }
 
     #[test]
