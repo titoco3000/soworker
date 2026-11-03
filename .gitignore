@@ -7,3 +7,5 @@ app/node_modules
 local
 target/
 third_party/
+logs
+profile

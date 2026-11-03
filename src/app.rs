@@ -69,6 +69,11 @@ pub struct CallUi {
     pub ignore_room: Option<String>,
     pub tiles: Vec<Tile>,
     pub speakers: std::collections::HashSet<String>,
+    /// When we raised our hand (Unix ms), while it is up; and who else in the call has theirs up.
+    pub hand: Option<i64>,
+    pub hands: std::collections::HashSet<String>,
+    /// Since when LiveKit has listed us as speaking without a break: a second of it lowers our hand.
+    pub talking_since: Option<f64>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -126,6 +131,10 @@ pub struct State {
     pub me_id: String,
     pub room: String,
     pub spawn: Option<(f32, f32)>,
+    /// The room's desks by id, the room's definition id, and who owns which desk (None until Firestore answers).
+    pub desks: HashMap<String, (f32, f32)>,
+    pub room_def: String,
+    pub desk_owners: Option<Vec<crate::desks::Desk>>,
     pub users: HashMap<String, Avatar>,
     /// The office's member list (online and offline) and what the sidebar is showing.
     pub roster: Vec<crate::roster::Member>,
@@ -194,6 +203,9 @@ impl State {
             me_id: me_id.into(),
             room: String::new(),
             spawn: None,
+            desks: HashMap::new(),
+            room_def: String::new(),
+            desk_owners: None,
             users: HashMap::new(),
             roster: vec![],
             sidebar: crate::directory::Ui { collapsed: crate::calls::setting("sidebarCollapsed").as_bool().unwrap_or(false), ..Default::default() },
@@ -281,6 +293,11 @@ impl State {
                 self.say(e, now)
             }
             Net::Object(o) => self.world.apply(o),
+            Net::Desks { definition, desks } => {
+                self.room_def = definition;
+                self.desks = desks.into_iter().map(|(id, x, y)| (id, (x, y))).collect();
+            }
+            Net::DeskOwners(d) => self.desk_owners = Some(d),
             Net::Room { name, spawn, users } => {
                 self.room = name;
                 self.spawn = spawn;
@@ -448,6 +465,35 @@ impl State {
         self.dirty = true;
     }
 
+    /// Walk to the desk assigned to us in this room (Ctrl+D), the way SoWork's own client does: an ordinary walk.
+    pub fn go_to_desk(&mut self, now: f64) {
+        let Some(owners) = &self.desk_owners else { return self.say("Still looking up the desks, try again in a moment", now) };
+        let mine = owners.iter().find(|d| d.owner == self.me_id && d.room == self.room_def).and_then(|d| self.desks.get(&d.desk)).copied();
+        match mine {
+            Some((x, y)) => {
+                self.say("Walking to your desk", now);
+                self.click(x, y, false, now);
+            }
+            None => self.say("You have no desk in this room", now),
+        }
+    }
+
+    /// Raise or lower our hand in the meeting (H, or the hand button).
+    pub fn toggle_hand(&mut self, now: f64) {
+        if self.call.joined.is_none() {
+            return self.say("Not in a meeting", now);
+        }
+        self.call.hand = match self.call.hand {
+            Some(_) => None,
+            None => Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)),
+        };
+        self.media_out.push(MediaCmd::Hand(self.call.hand));
+        if self.call.hand.is_some() {
+            self.sounds.push(crate::sound::Sound::RaiseHand);
+        }
+        self.dirty = true;
+    }
+
     /// Join or leave the LiveKit room that matches the latest `cluster` event.
     fn sync_call(&mut self) {
         let want = self.cluster.as_ref().and_then(|c| c.token.clone());
@@ -458,7 +504,8 @@ impl State {
         match (want, &self.call.want) {
             (Some(t), cur) if cur.as_deref() != Some(t.room_id.as_str()) => {
                 self.call.want = Some(t.room_id.clone());
-                self.media_out.push(MediaCmd::Join { url: format!("wss://{}", t.api_host), token: t.token, room_id: t.room_id });
+                let portrait = self.me().and_then(|m| m.portrait.clone());
+                self.media_out.push(MediaCmd::Join { url: format!("wss://{}", t.api_host), token: t.token, room_id: t.room_id, portrait });
             }
             (None, Some(_)) => {
                 self.call.want = None;
@@ -528,6 +575,7 @@ impl State {
             Hit::Ctl(Ctl::Cam) => self.toggle_cam(),
             Hit::Ctl(Ctl::Share) => self.toggle_share(),
             Hit::Ctl(Ctl::NoiseCancel) => self.toggle_noise_cancel(now),
+            Hit::Ctl(Ctl::Hand) => self.toggle_hand(now),
             Hit::Ctl(Ctl::Leave) => {
                 // leaving = tell the server we are in no zone, drop the call, and do not rejoin until we walk out and back
                 self.call.ignore_room = self.call.want.clone().or_else(|| self.call.joined.clone());
@@ -550,6 +598,11 @@ impl State {
                     self.media_out.push(MediaCmd::AskToMute(id));
                     self.say(format!("Asked {name} to mute"), now);
                 }
+            }
+            Hit::TileBtn(id, TileBtn::LowerHand) => {
+                let name = self.name_of(&id, None);
+                self.media_out.push(MediaCmd::LowerHand(id));
+                self.say(format!("Lowered {name}'s hand"), now);
             }
             Hit::TileBtn(_, TileBtn::CameraOff) => self.say("SoWork has no way to switch off someone else's camera (it can only ask them to turn it on)", now),
             _ => {}
@@ -717,6 +770,9 @@ impl State {
                 self.call.tiles.clear();
                 self.call.speakers.clear();
                 self.call.peer_muted.clear();
+                self.call.hand = None;
+                self.call.hands.clear();
+                self.call.talking_since = None;
                 self.call.peers = None;
                 self.dock.pinned = None;
                 self.dock.tile_full = false;
@@ -748,6 +804,21 @@ impl State {
                 }
             }
             MediaEvent::Peers(p) => self.call.peers = Some(p),
+            MediaEvent::HandSetBy { from, raised } => {
+                // like SoWork's client: the message says what our hand should be, and we set it ourselves
+                if raised != self.call.hand.is_some() {
+                    self.toggle_hand(now);
+                    let who = self.name_of(&from, None);
+                    self.say(format!("{who} {} your hand", if raised { "raised" } else { "lowered" }), now);
+                }
+            }
+            MediaEvent::Hands(ids) => {
+                // a chime for each hand that just went up, as SoWork's client does
+                if ids.iter().any(|id| !self.call.hands.contains(id)) {
+                    self.sounds.push(crate::sound::Sound::RaiseHand);
+                }
+                self.call.hands = ids.into_iter().collect();
+            }
             MediaEvent::PeerMuted(id, m) => {
                 if m { self.call.peer_muted.insert(id); } else { self.call.peer_muted.remove(&id); }
             }
@@ -761,6 +832,7 @@ impl State {
                 if is != was {
                     self.outbox.push(Cmd::Speech(is)); // tells gaia, which draws our ring for everyone else
                 }
+                self.call.talking_since = if is { self.call.talking_since.or(Some(now)) } else { None };
             }
             MediaEvent::Video { key, name, w, h, rgba } => {
                 if rgba.len() != (w * h * 4) as usize {
@@ -820,6 +892,7 @@ impl State {
         self.moving
             || self.path.is_some()
             || self.profile.as_ref().is_some_and(|p| p.meter.is_some()) // the level meter moves
+            || (self.call.hand.is_some() && self.call.talking_since.is_some()) // the hand may go down in a moment
             || k.up || k.down || k.left || k.right
             || self.users.values().any(|u| u.id != self.me_id && (u.tx - u.x).hypot(u.ty - u.y) > 0.5)
     }
@@ -829,6 +902,12 @@ impl State {
         if self.world.rebuild_if_dirty() {
             self.check_spawn();
             self.dirty = true;
+        }
+        if self.call.hand.is_some() && self.call.talking_since.is_some_and(|t| now - t >= 1.0) {
+            // we got the word: after a second of speaking the hand goes down by itself
+            self.call.hand = None;
+            self.media_out.push(MediaCmd::Hand(None));
+            self.say("Hand lowered", now);
         }
         if self.toast.as_ref().is_some_and(|(_, until)| now > *until) {
             self.toast = None;
@@ -911,5 +990,69 @@ impl State {
         self.scene |= redraw;
         self.dirty = false;
         redraw
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::desks::Desk;
+
+    #[test]
+    fn ctrl_d_finds_our_desk_in_this_room() {
+        let mut st = State::new("me", true);
+        st.apply(Net::Desks { definition: "R1".into(), desks: vec![("d1".into(), 100.0, 200.0), ("d2".into(), 300.0, 400.0)] }, 0.0);
+        st.go_to_desk(0.0);
+        assert!(st.toast.as_ref().is_some_and(|(m, _)| m.contains("looking up")));
+        let desk = |room: &str, desk: &str, owner: &str| Desk { room: room.into(), desk: desk.into(), owner: owner.into() };
+        st.apply(Net::DeskOwners(vec![desk("R1", "d1", "ana"), desk("R2", "d2", "me")]), 0.0);
+        st.go_to_desk(0.0);
+        assert_eq!(st.toast.as_ref().unwrap().0, "You have no desk in this room", "our desk is in another room");
+        st.apply(Net::DeskOwners(vec![desk("R1", "d2", "me")]), 0.0);
+        st.go_to_desk(0.0);
+        assert_eq!(st.toast.as_ref().unwrap().0, "Walking to your desk");
+    }
+
+    #[test]
+    fn the_hand_goes_up_and_down_only_in_a_call() {
+        let mut st = State::new("me", true);
+        st.media_out.clear();
+        st.toggle_hand(0.0);
+        assert!(st.call.hand.is_none() && st.media_out.is_empty());
+        st.apply_media(MediaEvent::Joined("RM".into()), 0.0);
+        st.toggle_hand(0.0);
+        assert!(st.call.hand.is_some_and(|t| t > 1_700_000_000_000));
+        assert!(matches!(st.media_out.last(), Some(MediaCmd::Hand(Some(_)))));
+        st.toggle_hand(0.0);
+        assert!(matches!(st.media_out.last(), Some(MediaCmd::Hand(None))));
+        st.toggle_hand(0.0);
+        assert_eq!(st.sounds.iter().filter(|s| **s == crate::sound::Sound::RaiseHand).count(), 2, "a chime per raise, none for lowering");
+        st.sounds.clear();
+        st.apply_media(MediaEvent::Hands(vec!["ana".into()]), 0.0);
+        assert!(crate::meeting::tiles(&st).iter().all(|t| t.hand == t.is_self));
+        assert_eq!(st.sounds, [crate::sound::Sound::RaiseHand], "ana raised hers");
+        st.apply_media(MediaEvent::Hands(vec!["ana".into()]), 0.0);
+        st.apply_media(MediaEvent::Hands(vec![]), 0.0);
+        assert_eq!(st.sounds.len(), 1, "no chime when nothing new went up");
+        st.apply_media(MediaEvent::Speakers(vec!["ana".into()]), 0.0);
+        assert!(st.call.hand.is_some(), "someone else talking keeps our hand up");
+        st.apply_media(MediaEvent::Speakers(vec!["me".into()]), 10.0);
+        st.update(0.0, 10.5);
+        assert!(st.call.hand.is_some(), "half a second is not enough");
+        st.apply_media(MediaEvent::Speakers(vec![]), 10.6);
+        st.apply_media(MediaEvent::Speakers(vec!["me".into()]), 10.8);
+        st.update(0.0, 11.5);
+        assert!(st.call.hand.is_some(), "a pause starts the second again");
+        assert!(st.is_active(), "keeps ticking so the second is noticed");
+        st.update(0.0, 11.9);
+        assert!(st.call.hand.is_none() && matches!(st.media_out.last(), Some(MediaCmd::Hand(None))), "a second of speaking lowers it");
+        st.toggle_hand(0.0);
+        st.apply_media(MediaEvent::HandSetBy { from: "ana".into(), raised: false }, 0.0);
+        assert!(st.call.hand.is_none() && matches!(st.media_out.last(), Some(MediaCmd::Hand(None))), "ana lowered it for us");
+        st.dock_press(Hit::TileBtn("ana".into(), TileBtn::LowerHand), 0.0);
+        assert!(matches!(st.media_out.last(), Some(MediaCmd::LowerHand(id)) if id == "ana"));
+        st.toggle_hand(0.0);
+        st.apply_media(MediaEvent::Left, 0.0);
+        assert!(st.call.hand.is_none() && st.call.hands.is_empty(), "leaving the call lowers the hand");
     }
 }

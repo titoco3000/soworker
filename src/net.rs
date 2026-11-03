@@ -85,6 +85,7 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
             link.roster_at = Some(Instant::now());
             if let Ok(token) = auth.id_token() {
                 crate::roster::fetch_async(token.clone(), link.group_id.clone(), link.roster_tx.clone());
+                crate::desks::fetch_async(token.clone(), link.group_id.clone(), link.roster_tx.clone());
                 crate::waves::pending_async(token, auth.uid.clone(), link.roster_tx.clone());
             }
         }

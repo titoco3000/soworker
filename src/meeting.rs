@@ -62,6 +62,7 @@ pub enum Ctl {
     NoiseCancel,
     Cam,
     Mic,
+    Hand,
     Share,
     Chat,
     FullToggle,
@@ -71,6 +72,7 @@ pub enum Ctl {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TileBtn {
     Mute,
+    LowerHand,
     CameraOff,
     Pin,
     Fullscreen,
@@ -95,6 +97,7 @@ pub struct TileSpec {
     pub content: bool,
     pub speaking: bool,
     pub muted: bool,
+    pub hand: bool,
 }
 
 pub fn visible(st: &State) -> bool {
@@ -129,6 +132,7 @@ pub fn tiles(st: &State) -> Vec<TileSpec> {
         content: false,
         speaking: st.call.speakers.contains(&st.me_id),
         muted: !st.call.mic,
+        hand: st.call.hand.is_some(),
     }];
     for id in others(st) {
         let name = st.users.get(&id).map(|u| u.name.clone()).or_else(|| st.call.peers.as_ref().and_then(|p| p.iter().find(|(i, n)| *i == id && !n.is_empty()).map(|(_, n)| n.clone()))).or_else(|| st.cluster.as_ref().and_then(|c| c.users.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| id.clone());
@@ -142,6 +146,7 @@ pub fn tiles(st: &State) -> Vec<TileSpec> {
             content: false,
             speaking: st.call.speakers.contains(&id),
             muted: st.call.peer_muted.contains(&id),
+            hand: st.call.hands.contains(&id),
         });
     }
     for t in st.call.tiles.iter().filter(|t| t.key.ends_with(":screen")) {
@@ -155,6 +160,7 @@ pub fn tiles(st: &State) -> Vec<TileSpec> {
             content: true,
             speaking: false,
             muted: false,
+            hand: false,
         });
     }
     v

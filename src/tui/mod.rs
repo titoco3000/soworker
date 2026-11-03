@@ -382,6 +382,13 @@ impl Tui {
             self.quit = true;
             return;
         }
+        if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('d') && self.modal == Modal::None && self.st.login.is_none() {
+            // not the D of WASD
+            if down {
+                self.st.go_to_desk(now);
+            }
+            return;
+        }
         if self.modal != Modal::None {
             if !down {
                 return;
@@ -543,6 +550,7 @@ impl Tui {
                 'q' => self.quit = true,
                 'm' => st.toggle_mic(),
                 'N' => st.toggle_noise_cancel(now),
+                'h' | 'H' => st.toggle_hand(now),
                 ' ' => st.talk(crate::talk::TalkAct::Toggle, now),
                 'c' => st.toggle_cam(),
                 'v' => st.toggle_share(),
@@ -950,6 +958,14 @@ mod tests {
         assert_eq!(t.modal, Modal::Logout);
         assert!(t.st.profile.is_none(), "the profile closed (and its meter with it)");
         assert!(!t.st.logout_requested, "still asks first");
+    }
+
+    #[test]
+    fn ctrl_d_goes_to_the_desk_instead_of_walking() {
+        let mut t = Tui::for_test();
+        t.key(KeyEvent { modifiers: KeyModifiers::CONTROL, ..press(KeyCode::Char('d')) });
+        assert!(!t.st.keys.right);
+        assert!(t.st.toast.as_ref().is_some_and(|(m, _)| m.contains("desks")), "no owners known yet");
     }
 
     #[test]

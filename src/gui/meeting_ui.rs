@@ -155,17 +155,16 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
         }
     }
 
-    // controls row: Leave, noise cancellation, camera, mic, share on the left; chat toggle on the right
+    // controls row: noise cancellation, camera, mic, hand, share on the left; chat toggle on the right
     let bh = 34.0 * u;
     let by = bar.y + 12.0 * u + 1.0 * u;
     let (fs, icon_sz, gp) = (14.0 * u, 14.0 * u, 6.0 * u);
     let mut x = dx + 12.0 * u;
     let mut controls = Vec::new();
     let icon_w = 12.0 * u + icon_sz + 12.0 * u + 2.0;
-    let leave_w = 12.0 * u + icon_sz + gp + text_w(text, "Leave", fs) + 12.0 * u + 2.0;
     let share_label = if st.call.share { "Stop sharing screen" } else { "Share screen" };
     let share_w = 12.0 * u + icon_sz + gp + text_w(text, share_label, fs) + 12.0 * u + 2.0;
-    for (c, wd) in [(Ctl::Leave, leave_w), (Ctl::NoiseCancel, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Share, share_w)] {
+    for (c, wd) in [(Ctl::NoiseCancel, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Hand, icon_w), (Ctl::Share, share_w)] {
         controls.push((c, R { x, y: by, w: wd, h: bh }));
         x += wd + 8.0 * u; // gap-2
     }
@@ -206,7 +205,7 @@ fn tile_buttons(spec: &TileSpec, pinned: bool, tile_full: bool) -> Vec<TileBtn> 
     if tile_full {
         return vec![TileBtn::Fullscreen];
     }
-    let mut v = if spec.is_self || spec.content { vec![] } else { vec![TileBtn::Mute, TileBtn::CameraOff] };
+    let mut v = if spec.is_self || spec.content { vec![] } else if spec.hand { vec![TileBtn::Mute, TileBtn::LowerHand, TileBtn::CameraOff] } else { vec![TileBtn::Mute, TileBtn::CameraOff] };
     if pinned {
         v.push(TileBtn::Fullscreen);
     }
@@ -431,10 +430,10 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
     for (c, r) in &l.controls {
         let isz = 14.0 * u;
         let (shapes, label, rgb, dim): (&[Shape], Option<&str>, Rgb, bool) = match c {
-            Ctl::Leave => (icons::PHONE_OFF, Some("Leave"), theme::DANGER, false),
             Ctl::NoiseCancel => (if st.noise_cancel { icons::NOISE_CANCEL } else { icons::NOISE_CANCEL_OFF }, None, if st.noise_cancel { theme::INK } else { theme::INK_MUTED }, false),
             Ctl::Cam => (if st.call.cam { icons::VIDEO } else { icons::VIDEO_OFF }, None, if st.call.cam { theme::INK } else { theme::INK_MUTED }, !joined),
             Ctl::Mic => (if st.call.mic { icons::MIC } else { icons::MIC_OFF }, None, if st.call.mic { theme::INK } else { theme::INK_MUTED }, !joined),
+            Ctl::Hand => (icons::HAND, None, if st.call.hand.is_some() { theme::BRAND } else { theme::INK_MUTED }, !joined),
             Ctl::Share => (
                 if st.call.share { icons::STOP_CIRCLE } else { icons::MONITOR },
                 Some(if st.call.share { "Stop sharing screen" } else { "Share screen" }),
@@ -484,6 +483,13 @@ fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpe
         }
         icon::draw(pm, icons::MIC_OFF, c.x + 4.0 * u, c.y + 4.0 * u, 12.0 * u, [255, 255, 255]);
     }
+    // raised hand (top-left)
+    if spec.hand {
+        if let Some(p) = PathBuilder::from_circle(r.x + 16.0 * u, r.y + 16.0 * u, 12.0 * u) {
+            pm.fill_path(&p, &paint(theme::BRAND, 255), FillRule::Winding, Transform::identity(), None);
+        }
+        icon::draw(pm, icons::HAND, r.x + 9.0 * u, r.y + 9.0 * u, 14.0 * u, [255, 255, 255]);
+    }
     // hover overlay: bg-black/40 with the tile's buttons
     if hover {
         fill_rr(pm, r, radius, [0, 0, 0], 102);
@@ -492,12 +498,13 @@ fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpe
             let disabled = match b {
                 TileBtn::Mute => spec.muted,
                 TileBtn::CameraOff => spec.video_key.is_none(),
-                TileBtn::Pin | TileBtn::Fullscreen => false,
+                TileBtn::Pin | TileBtn::Fullscreen | TileBtn::LowerHand => false,
             };
             let a = if disabled { 115 } else { 230 };
             fill_rr(pm, br, radius, theme::SURFACE, a);
             let (shapes, col) = match b {
                 TileBtn::Mute => (icons::MIC_OFF, theme::INK),
+                TileBtn::LowerHand => (icons::HAND, theme::BRAND),
                 TileBtn::CameraOff => (icons::VIDEO_OFF, theme::INK),
                 TileBtn::Fullscreen => (if tile_full { icons::MINIMIZE } else { icons::MAXIMIZE }, theme::INK),
                 TileBtn::Pin => (if pinned { icons::MINIMIZE } else { icons::MAXIMIZE }, if pinned { theme::BRAND } else { theme::INK }),

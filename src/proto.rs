@@ -42,6 +42,10 @@ pub enum Net {
     Disconnected,
     Error(String),
     Room { name: String, spawn: Option<(f32, f32)>, users: Vec<User> },
+    /// The room's desks (id -> position) and its `roomDefinitionId`, which desk ownership is keyed by.
+    Desks { definition: String, desks: Vec<(String, f32, f32)> },
+    /// Who owns which desk, from Firestore.
+    DeskOwners(Vec<crate::desks::Desk>),
     Object(SetObj),
     Move(String, f32, f32),
     State(String, String),
@@ -168,7 +172,11 @@ pub fn events(name: &str, p: &Value) -> Vec<Net> {
                 .and_then(Value::as_map)
                 .map(|m| m.iter().map(|(_, u)| user(u)).collect())
                 .unwrap_or_default();
-            vec![Net::Room { name: text(get(p, "name")), spawn, users }]
+            let desks = present(get(p, "desks"))
+                .and_then(Value::as_map)
+                .map(|m| m.iter().filter_map(|(id, d)| Some((id.as_str()?.to_string(), num(get(d, "x")), num(get(d, "y"))))).collect())
+                .unwrap_or_default();
+            vec![Net::Room { name: text(get(p, "name")), spawn, users }, Net::Desks { definition: text(get(p, "roomDefinitionId")), desks }]
         }
         "s" => p
             .as_array()

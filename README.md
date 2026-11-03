@@ -56,10 +56,10 @@ runtime libwebrtc needs). From Linux: `make build-windows`.
 
 ## Using it
 
-- **Walk:** WASD or the arrows, or click the map (Shift+click teleports). `+`/`-` or the wheel zoom, `r` respawns, `b` available/away.
+- **Walk:** WASD or the arrows, or click the map (Shift+click teleports). `+`/`-` or the wheel zoom, `r` respawns, `Ctrl+D` walks to your desk, `b` available/away.
 - **People:** `Tab` focuses the list, arrows select, Enter opens Join / Wave / Message under a person or a meeting.
   `p` hides it. A wave shows up there too: Enter walks to the person, `x` dismisses.
-- **Calls:** `m` mic, `c` camera, `v` share screen, `l` leave, `Space` talk (hold it where the terminal reports key
+- **Calls:** `m` mic, `c` camera, `v` share screen, `h` raise or lower your hand, `l` leave, `Space` talk (hold it where the terminal reports key
   releases, otherwise it toggles). `t` opens the chat and starts typing, `Esc` leaves the input, `T` closes it.
 - **Noise cancellation:** on by default: the microphone goes through [DeepFilterNet 3](https://github.com/Rikorose/DeepFilterNet)
   (built in) after WebRTC's echo cancellation. `N` in the terminal, or the waveform button left of the camera in the

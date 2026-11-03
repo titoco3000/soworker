@@ -2,7 +2,7 @@
 //! audio through the SDK's platform audio (playout, and mic capture + echo cancellation unless noise cancellation is on:
 //! then the mic goes through our own path in `mic.rs`),
 //! remote video decoded by libwebrtc and delivered as small RGBA frames.
-use crate::calls::{ask_to_mute_payload, ask_to_mute_target, MediaCmd, MediaEvent, ASK_TO_MUTE};
+use crate::calls::{ask_to_mute_payload, ask_to_mute_target, hand_raised, participant_meta, raise_hand_payload, raise_hand_signal, MediaCmd, MediaEvent, ASK_TO_MUTE, RAISE_HAND};
 use crate::mic;
 use futures_util::StreamExt;
 use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
@@ -65,6 +65,9 @@ struct Session {
     keep_capture: bool,
     /// The speaker, microphone and camera the call uses now (see `apply_devices`).
     devices: crate::devices::Choice,
+    /// What our participant metadata says besides the share: when the hand went up, and our character portrait.
+    raised: Option<i64>,
+    portrait: Option<String>,
 }
 
 pub fn spawn(emit: impl Fn(MediaEvent) + Send + Sync + 'static) -> UnboundedSender<MediaCmd> {
@@ -88,10 +91,10 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
             cmd = rx.recv() => {
                 let Some(cmd) = cmd else { break };
                 match cmd {
-                    MediaCmd::Join { url, token, room_id } => {
+                    MediaCmd::Join { url, token, room_id, portrait } => {
                         if session.as_ref().is_some_and(|s| s.room_id == room_id) { continue; }
                         if let Some(s) = session.take() { close(s, &emit).await; }
-                        match join(&url, &token, room_id, nc, &emit).await {
+                        match join(&url, &token, room_id, portrait, nc, &emit).await {
                             Ok(s) => session = Some(s),
                             Err(e) => { emit(MediaEvent::Error(format!("call failed: {e}"))); emit(MediaEvent::Left); }
                         }
@@ -106,6 +109,16 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                         if let Some(s) = session.as_mut() { set_noise_cancel(s, on, &emit).await; }
                     }
                     MediaCmd::Devices => if let Some(s) = session.as_mut() { apply_devices(s, &emit).await; },
+                    MediaCmd::LowerHand(target) => if let Some(s) = session.as_ref() {
+                        let packet = DataPacket { payload: raise_hand_payload(&target, false), topic: Some(RAISE_HAND.into()), reliable: true, ..Default::default() };
+                        if let Err(e) = s.room.local_participant().publish_data(packet).await {
+                            emit(MediaEvent::Error(format!("could not lower the hand: {e}")));
+                        }
+                    },
+                    MediaCmd::Hand(at) => if let Some(s) = session.as_mut() {
+                        s.raised = at;
+                        publish_meta(s).await;
+                    },
                 }
             }
             ev = async { match session.as_mut() { Some(s) => s.events.recv().await, None => std::future::pending().await } } => {
@@ -122,7 +135,7 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
     }
 }
 
-async fn join(url: &str, token: &str, room_id: String, nc: bool, emit: &Emit) -> Result<Session, String> {
+async fn join(url: &str, token: &str, room_id: String, portrait: Option<String>, nc: bool, emit: &Emit) -> Result<Session, String> {
     let mut opts = RoomOptions::default();
     opts.auto_subscribe = true;
     opts.adaptive_stream = true;
@@ -156,6 +169,8 @@ async fn join(url: &str, token: &str, room_id: String, nc: bool, emit: &Emit) ->
         room_id: room_id.clone(),
         keep_capture,
         devices: Default::default(),
+        raised: None,
+        portrait,
     };
     apply_devices(&mut s, emit).await;
     // creating the platform audio switched libwebrtc's own mic capture on; with noise cancellation we capture instead
@@ -163,6 +178,7 @@ async fn join(url: &str, token: &str, room_id: String, nc: bool, emit: &Emit) ->
     keep_mic_open(&mut s, false, emit);
     emit(MediaEvent::Joined(room_id));
     emit_peers(&s.room, emit);
+    publish_meta(&s).await; // the official client announces its portrait (and a lowered hand) right after joining
     Ok(s)
 }
 
@@ -295,6 +311,16 @@ async fn apply_devices(s: &mut Session, emit: &Emit) {
 fn emit_peers(room: &Room, emit: &Emit) {
     let peers = room.remote_participants().values().map(|p| (p.identity().to_string(), p.name())).collect();
     emit(MediaEvent::Peers(peers));
+    let hands = room.remote_participants().values().filter(|p| hand_raised(&p.metadata())).map(|p| p.identity().to_string()).collect();
+    emit(MediaEvent::Hands(hands));
+}
+
+/// Sends our whole participant metadata: the hand, the portrait and whether we share the screen.
+async fn publish_meta(s: &Session) {
+    let meta = participant_meta(s.raised, s.portrait.as_deref(), s.share.is_some());
+    if let Err(e) = s.room.local_participant().set_metadata(meta).await {
+        eprintln!("livekit: set_metadata failed: {e}");
+    }
 }
 
 async fn close(mut s: Session, emit: &Emit) {
@@ -384,6 +410,11 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
                 emit(MediaEvent::AskedToMute { from: from.identity().to_string() });
             }
         }
+        RoomEvent::DataReceived { payload, topic: Some(topic), participant: Some(from), .. } if topic == RAISE_HAND => {
+            if let Some((_, raised)) = raise_hand_signal(&payload).filter(|(t, _)| *t == s.room.local_participant().identity().to_string()) {
+                emit(MediaEvent::HandSetBy { from: from.identity().to_string(), raised });
+            }
+        }
         RoomEvent::ActiveSpeakersChanged { speakers } => {
             emit(MediaEvent::Speakers(speakers.iter().map(|p| p.identity().to_string()).collect()));
         }
@@ -461,6 +492,7 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
             emit(MediaEvent::VideoGone(key));
         }
         RoomEvent::ParticipantConnected(_) => emit_peers(&s.room, emit),
+        RoomEvent::ParticipantMetadataChanged { participant: Participant::Remote(_), .. } => emit_peers(&s.room, emit),
         RoomEvent::ParticipantDisconnected(p) => {
             emit_peers(&s.room, emit);
             let prefix = format!("{}:", p.identity());
@@ -703,23 +735,10 @@ async fn set_camera(s: &mut Session, on: bool, emit: &Emit) {
 
 // ---- screen share: libwebrtc desktop capturer (X11, the Wayland portal picker, or the first screen on Windows) -> screencast source
 
-#[derive(serde::Serialize)]
-struct Meta {
-    #[serde(rename = "raisedHandAt")]
-    raised: Option<()>,
-    #[serde(rename = "audioOnly")]
-    audio_only: bool,
-    #[serde(rename = "allowsScreenDrawing")]
-    drawing: bool,
-    desktop: bool,
-    screenshare: Option<serde_json::Value>,
-}
-
 /// SoWork's own clients expect this on a share: participant metadata plus a reliable `screenshare` message.
 async fn announce_share(s: &Session, start: bool, sid: Option<&TrackSid>) {
+    publish_meta(s).await;
     let lp = s.room.local_participant();
-    let meta = Meta { raised: None, audio_only: false, drawing: false, desktop: false, screenshare: start.then(|| serde_json::json!({"type": "screen"})) };
-    let _ = lp.set_metadata(serde_json::to_string(&meta).unwrap_or_default()).await;
     let mut pairs = vec![("userId".into(), lp.identity().to_string().into()), ("start".into(), start.into())];
     if let Some(sid) = sid {
         pairs.push(("trackSid".into(), sid.to_string().into()));

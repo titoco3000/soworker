@@ -100,10 +100,10 @@ const HELP: &[&str] = &[
     "Walk        WASD / arrows, or click the map (Shift+click: teleport)",
     "Zoom        + / -  (or the mouse wheel over the map)",
     "People      Tab to focus, up/down, Enter opens Join / Wave / Message",
-    "Call        m mic   c camera   v share screen   l leave   Space talk   N noise cancellation",
+    "Call        m mic   c camera   v share screen   h raise hand   l leave   Space talk   N noise cancellation",
     "Video       n next picture   V open the video window",
     "Chat        t open and type, T close, Tab switches between chats, Esc leaves the input",
-    "Other       b available/away   r respawn   p people   O log out   q quit",
+    "Other       b available/away   r respawn   Ctrl+D go to your desk   p people   O log out   q quit",
     "Profile     u  (log out; speaker, microphone and camera)",
     "Window      G switch to the window client (also the button top right)",
     "",
@@ -128,6 +128,9 @@ fn header(f: &mut Frame, t: &Tui, r: Rect) {
         l.push(flag(st.noise_cancel, "nc", false));
         l.push(flag(st.call.cam, "cam", false));
         l.push(flag(st.call.share, "share", false));
+        if st.call.hand.is_some() {
+            l.push(Span::styled(" HAND UP ", Style::new().fg(BRAND).add_modifier(Modifier::BOLD)));
+        }
     }
     if !st.available {
         l.push(Span::styled(" away ", Style::new().fg(WARN)));
@@ -479,12 +482,12 @@ fn call(f: &mut Frame, t: &Tui, r: Rect, inline: bool) {
     for tile in meeting::tiles(st) {
         let shown = tile.video_key.is_some() && tile.video_key == picked;
         let mark = if shown { "▶" } else if tile.video_key.is_some() { "▣" } else { " " };
-        let (icon, col) = if tile.speaking { ("♪", OK) } else if tile.muted && !tile.content { ("×", DIM) } else { (" ", MUTED) };
+        let (icon, col) = if tile.hand { ("✋", BRAND) } else if tile.speaking { ("♪ ", OK) } else if tile.muted && !tile.content { ("× ", DIM) } else { ("  ", MUTED) };
         let name = if tile.is_self { "You".to_string() } else { tile.name.clone() };
         let name = fit(&name, (list_w as usize).saturating_sub(6));
         lines.push(Line::from(vec![
             Span::styled(format!("{mark} "), Style::new().fg(BRAND)),
-            Span::styled(format!("{icon} "), Style::new().fg(col)),
+            Span::styled(icon, Style::new().fg(col)),
             Span::styled(name, Style::new().fg(if tile.content { WARN } else { Color::White })),
         ]));
     }

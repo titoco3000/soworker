@@ -183,7 +183,7 @@ Unit events for self: the server **echoes the sender's own events back** to the 
 
 ### 2.4 Object shapes
 
-`room` event keys: `id, name, serverId, roomDefinitionId, roomDefinitionName, roomDefinitionAlias, roomType:"room", roomObjects:{}, mapDefinitionId, mapId (skybox name e.g. "skyboxSunset01"), mapBounds (undefined here), spawns:[{x,y,objectId}], spawnAreas:{<zoneObjectId>:{x,y,tags}}, customizable, customizableStructures, projection:"isometric", ownerKey:"group_<groupId>", users:{<userId>:User}, npcs:{}, games:{}, guestAreas:{}, channels (undefined)`.
+`room` event keys: `id, name, serverId, roomDefinitionId, roomDefinitionName, roomDefinitionAlias, roomType:"room", roomObjects:{}, mapDefinitionId, mapId (skybox name e.g. "skyboxSunset01"), mapBounds (undefined here), spawns:[{x,y,objectId}], spawnAreas:{<zoneObjectId>:{x,y,tags}}, customizable, customizableStructures, projection:"isometric", ownerKey:"group_<groupId>", users:{<userId>:User}, npcs:{}, games:{}, guestAreas:{}, channels (undefined)`. A later recording also has `desks:{<deskId>:{type:"asset",x,y,assetId,orientation}}` (see docs/hand-desk-photo.md for who owns which desk).
 Size about 6 KB with 8 users. `spawnAreas` has one entry per meeting/spawn zone (20 in this office): the center-ish point used to place an avatar when "spawning at a zone".
 
 User object (`room.users[id]`, and `s/3.user`):

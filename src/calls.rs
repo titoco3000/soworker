@@ -3,8 +3,13 @@
 
 #[derive(Debug, Clone)]
 pub enum MediaCmd {
-    Join { url: String, token: String, room_id: String },
+    /// `portrait` is our compact character string, for the participant metadata other clients read.
+    Join { url: String, token: String, room_id: String, portrait: Option<String> },
     Leave,
+    /// Raise our hand (`Some(unix ms)` = when) or lower it (`None`): the `raisedHandAt` participant metadata.
+    Hand(Option<i64>),
+    /// Lower another participant's hand (by user id): a `raise-hand` data message they act on.
+    LowerHand(String),
     Mic(bool),
     Camera(bool),
     Share(bool),
@@ -35,6 +40,10 @@ pub enum MediaEvent {
     PeerMuted(String, bool),
     /// Someone asked us to mute (the request targeted our user id). The UI decides whether our mic is on.
     AskedToMute { from: String },
+    /// Everyone else in the room whose hand is raised (identities), sent whenever it may have changed.
+    Hands(Vec<String>),
+    /// Someone raised (`true`) or lowered our hand for us with a `raise-hand` message.
+    HandSetBy { from: String, raised: bool },
 }
 
 /// Which video tiles the frontend wants to see; frames of any other tile are not converted at all (they are dropped
@@ -131,9 +140,70 @@ pub fn ask_to_mute_target(payload: &[u8]) -> Option<String> {
     v.as_map()?.iter().find(|(k, _)| k.as_str() == Some("targetUserId"))?.1.as_str().map(String::from)
 }
 
+/// LiveKit data-message topic SoWork uses to raise or lower someone else's hand (`signaler.send("raise-hand", ...)`).
+pub const RAISE_HAND: &str = "raise-hand";
+
+/// The message body: msgpack `{raised, userId}`, encoded like `ask-to-mute` (SoWork's signaler sends msgpack maps).
+pub fn raise_hand_payload(target: &str, raised: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    let v = rmpv::Value::Map(vec![("raised".into(), raised.into()), ("userId".into(), target.into())]);
+    let _ = rmpv::encode::write_value(&mut out, &v);
+    out
+}
+
+/// Who a `raise-hand` message is for, and whether it raises or lowers their hand.
+pub fn raise_hand_signal(payload: &[u8]) -> Option<(String, bool)> {
+    let v = rmpv::decode::read_value(&mut &payload[..]).ok()?;
+    let field = |k: &str| v.as_map()?.iter().find(|(kk, _)| kk.as_str() == Some(k)).map(|(_, v)| v.clone());
+    Some((field("userId")?.as_str()?.to_string(), field("raised")?.as_bool()?))
+}
+
+/// Our LiveKit participant metadata, as SoWork's client sends it (docs/hand-desk-photo.md). It is always sent whole,
+/// so the hand and the screen share must both be in it.
+pub fn participant_meta(raised_at: Option<i64>, portrait: Option<&str>, share: bool) -> String {
+    let mut v = serde_json::json!({
+        "raisedHandAt": raised_at,
+        "audioOnly": false,
+        "allowsScreenDrawing": false,
+        "desktop": false,
+        "screenshare": if share { serde_json::json!({"type": "screen"}) } else { serde_json::Value::Null },
+    });
+    if let Some(p) = portrait {
+        v["portrait"] = serde_json::json!({"url": format!("https://app.sowork.com/portrait/v1/meeting!idle/{p}"), "kind": "character"});
+    }
+    v.to_string()
+}
+
+/// Whether a participant's metadata says their hand is up.
+pub fn hand_raised(meta: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(meta).is_ok_and(|v| v["raisedHandAt"].as_i64().is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raise_hand_messages_round_trip() {
+        assert_eq!(raise_hand_signal(&raise_hand_payload("ana", false)), Some(("ana".into(), false)));
+        assert_eq!(raise_hand_signal(&raise_hand_payload("bo", true)), Some(("bo".into(), true)));
+        assert_eq!(raise_hand_signal(b"\x90"), None);
+    }
+
+    #[test]
+    fn the_metadata_carries_the_hand_and_the_share() {
+        let up = participant_meta(Some(1793734498692), Some("characterA!body:~v1+typeB"), false);
+        assert!(hand_raised(&up));
+        let v: serde_json::Value = serde_json::from_str(&up).unwrap();
+        assert_eq!(v["portrait"]["url"], "https://app.sowork.com/portrait/v1/meeting!idle/characterA!body:~v1+typeB");
+        assert!(v["screenshare"].is_null());
+        let down = participant_meta(None, None, true);
+        assert!(!hand_raised(&down));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&down).unwrap()["screenshare"]["type"], "screen");
+        // as recorded from the official client
+        assert!(hand_raised(r#"{"raisedHandAt":1793734498692,"audioOnly":false,"screenshare":null}"#));
+        assert!(!hand_raised(r#"{"raisedHandAt":null}"#) && !hand_raised("") && !hand_raised("not json"));
+    }
 
 
     #[test]

@@ -3,6 +3,7 @@ mod backend;
 mod calls;
 mod chat;
 mod chatstate;
+mod desks;
 mod desktop;
 mod devices;
 mod directory;

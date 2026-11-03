@@ -317,6 +317,15 @@ impl ApplicationHandler<UserEvent> for App {
                         self.st.profile_act(if list_open { crate::profile::Act::Panel } else { crate::profile::Act::Close });
                     }
                     Key::Character(c) => match (c.to_lowercase().as_str(), down, event.repeat) {
+                        ("d", true, false) if self.mods.control_key() => {
+                            let now = self.now();
+                            self.st.go_to_desk(now);
+                        }
+                        ("d", ..) if self.mods.control_key() => {}
+                        ("h", true, false) => {
+                            let now = self.now();
+                            self.st.toggle_hand(now);
+                        }
                         ("w", ..) => k.up = down,
                         ("s", ..) => k.down = down,
                         ("a", ..) => k.left = down,

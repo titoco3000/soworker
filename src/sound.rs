@@ -1,6 +1,7 @@
 //! Short UI sounds, played through whatever the desktop offers (`pw-play`, `paplay`, `aplay`; `PlaySound` on Windows):
 //! no audio library is linked, so the binary stays small. The wave sounds are SoWork's own (`sendWave-*.mp3`, `receiveWave-*.mp3` from
 //! app.sowork.com/static/media, played at volume 0.2 by its client; we play the receive sound louder), converted to 32 kHz mono WAV.
+//! So is the raised-hand chime (`raiseHand-*.mp3`).
 #[cfg(not(windows))]
 use std::process::{Command, Stdio};
 
@@ -8,10 +9,13 @@ use std::process::{Command, Stdio};
 pub enum Sound {
     SendWave,
     ReceiveWave,
+    /// Someone in the call (us included) raised their hand.
+    RaiseHand,
 }
 
 const SEND_WAVE: &[u8] = include_bytes!("../assets/sounds/sendWave.wav");
 const RECEIVE_WAVE: &[u8] = include_bytes!("../assets/sounds/receiveWave.wav");
+const RAISE_HAND: &[u8] = include_bytes!("../assets/sounds/raiseHand.wav");
 
 impl Sound {
     #[cfg(not(windows))]
@@ -19,6 +23,7 @@ impl Sound {
         match self {
             Sound::SendWave => "sendWave",
             Sound::ReceiveWave => "receiveWave",
+            Sound::RaiseHand => "raiseHand",
         }
     }
 
@@ -28,6 +33,7 @@ impl Sound {
         match self {
             Sound::SendWave => 0.2,
             Sound::ReceiveWave => 3.0,
+            Sound::RaiseHand => 0.3,
         }
     }
 
@@ -35,6 +41,7 @@ impl Sound {
         match self {
             Sound::SendWave => SEND_WAVE,
             Sound::ReceiveWave => RECEIVE_WAVE,
+            Sound::RaiseHand => RAISE_HAND,
         }
     }
 }
@@ -205,7 +212,7 @@ mod tests {
 
     #[test]
     fn the_embedded_sounds_are_wav_files() {
-        for s in [Sound::SendWave, Sound::ReceiveWave] {
+        for s in [Sound::SendWave, Sound::ReceiveWave, Sound::RaiseHand] {
             assert!(s.bytes().starts_with(b"RIFF") && s.bytes().len() > 10_000, "{s:?}");
         }
     }

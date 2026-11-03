@@ -25,6 +25,14 @@ pub const MIC_OFF: &[Shape] = &[
     Shape::Line(8.0, 23.0, 16.0, 23.0),
 ];
 
+/// Lucide's `hand` (ISC, a Feather fork): Feather has no hand.
+pub const HAND: &[Shape] = &[
+    Shape::Path("M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"),
+    Shape::Path("M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"),
+    Shape::Path("M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"),
+    Shape::Path("M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"),
+];
+
 pub const VIDEO: &[Shape] = &[
     Shape::Poly("23 7 16 12 23 17 23 7 z"),
     Shape::Rect { x: 1.0, y: 5.0, w: 15.0, h: 14.0, rx: 2.0 },
