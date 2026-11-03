@@ -92,7 +92,14 @@ pub fn draw(f: &mut Frame, t: &Tui) {
         Modal::Logout => dialog(f, " Log out? ", &["This forgets your saved sign-in on this computer.", "", "y: log out    n: cancel"]),
         Modal::Help => dialog(f, " Keys ", HELP),
         Modal::Profile => profile(f, t, a.profile.unwrap_or_else(|| centred(f.area(), PROFILE_W, PROFILE_H))),
-        Modal::None => {}
+        Modal::None => {
+            // a transcript that could not be made says why (how to install whisper.cpp) until a key is pressed
+            if let Some((crate::transcribe::Status::Failed(e), _)) = &t.st.transcript {
+                let mut lines: Vec<&str> = e.lines().collect();
+                lines.extend(["", "any key closes this"]);
+                dialog(f, " No transcript ", &lines);
+            }
+        }
     }
 }
 
@@ -101,6 +108,7 @@ const HELP: &[&str] = &[
     "Zoom        + / -  (or the mouse wheel over the map)",
     "People      Tab to focus, up/down, Enter opens Join / Wave / Message",
     "Call        m mic   c camera   v share screen   h raise hand   l leave   Space talk   N noise cancellation",
+    "Record      R start / stop recording the call (video, sound and transcript, in ~/Videos/SoWorker)",
     "Video       n next picture   V open the video window",
     "Chat        t open and type, T close, Tab switches between chats, Esc leaves the input",
     "Other       b available/away   r respawn   Ctrl+D go to your desk   p people   O log out   q quit",
@@ -131,6 +139,19 @@ fn header(f: &mut Frame, t: &Tui, r: Rect) {
         if st.call.hand.is_some() {
             l.push(Span::styled(" HAND UP ", Style::new().fg(BRAND).add_modifier(Modifier::BOLD)));
         }
+        if let Some(clock) = st.rec_clock() {
+            l.push(Span::styled(format!(" ● REC {clock} "), Style::new().fg(DANGER).add_modifier(Modifier::BOLD)));
+        }
+    }
+    if let Some((s, _)) = &st.transcript {
+        use crate::transcribe::Status;
+        let (label, col) = match s {
+            Status::Download { pct, .. } => (format!(" downloading for transcript{} ", pct.map_or_else(String::new, |p| format!(" {p}%"))), WARN),
+            Status::Running { pct } => (format!(" transcribing{} ", pct.map_or_else(String::new, |p| format!(" {p}%"))), WARN),
+            Status::Done(_) => (" transcript saved ".to_string(), OK),
+            Status::Failed(_) => (" no transcript ".to_string(), DANGER),
+        };
+        l.push(Span::styled(label, Style::new().fg(col).add_modifier(Modifier::BOLD)));
     }
     if !st.available {
         l.push(Span::styled(" away ", Style::new().fg(WARN)));

@@ -164,7 +164,7 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
     let icon_w = 12.0 * u + icon_sz + 12.0 * u + 2.0;
     let share_label = if st.call.share { "Stop sharing screen" } else { "Share screen" };
     let share_w = 12.0 * u + icon_sz + gp + text_w(text, share_label, fs) + 12.0 * u + 2.0;
-    for (c, wd) in [(Ctl::NoiseCancel, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Hand, icon_w), (Ctl::Share, share_w)] {
+    for (c, wd) in [(Ctl::NoiseCancel, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Hand, icon_w), (Ctl::Record, icon_w), (Ctl::Share, share_w)] {
         controls.push((c, R { x, y: by, w: wd, h: bh }));
         x += wd + 8.0 * u; // gap-2
     }
@@ -379,6 +379,13 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
     fill_rr(pm, R { x: l.dock.x, y: l.header.y + l.header.h - 1.0, w: l.dock.w, h: 1.0 }, 0.0, theme::LINE, 255);
     fill_rr(pm, R { x: l.dock.x, y: l.header.y + l.header.h, w: l.dock.w, h: l.dock.h - l.header.h - l.bar.h }, 0.0, theme::SURFACE, 255);
     faux_bold(pm, text, "Meeting", l.header.x + 12.0 * u, l.header.y + 24.0 * u, 14.0 * u, theme::INK, 0.0);
+    if let Some(clock) = st.rec_clock() {
+        // recording: a red dot and the time, after the title
+        let x = l.header.x + 12.0 * u + text_w(text, "Meeting", 14.0 * u) + 14.0 * u;
+        let d = 8.0 * u;
+        fill_rr(pm, R { x, y: l.header.y + (l.header.h - d) / 2.0, w: d, h: d }, d / 2.0, theme::DANGER, 255);
+        text.draw(pm, &format!("REC {clock}"), x + d + 6.0 * u, l.header.y + 23.0 * u, 12.0 * u, theme::DANGER, 0.0);
+    }
     stroke_rr(pm, l.full_btn, radius, theme::LINE, 1.0);
     button_icon(pm, if full { icons::MINIMIZE } else { icons::MAXIMIZE }, l.full_btn, 12.0 * u, theme::INK_MUTED, false);
 
@@ -434,6 +441,7 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
             Ctl::Cam => (if st.call.cam { icons::VIDEO } else { icons::VIDEO_OFF }, None, if st.call.cam { theme::INK } else { theme::INK_MUTED }, !joined),
             Ctl::Mic => (if st.call.mic { icons::MIC } else { icons::MIC_OFF }, None, if st.call.mic { theme::INK } else { theme::INK_MUTED }, !joined),
             Ctl::Hand => (icons::HAND, None, if st.call.hand.is_some() { theme::BRAND } else { theme::INK_MUTED }, !joined),
+            Ctl::Record => (icons::RECORD, None, if st.call.recording.is_some() { theme::DANGER } else { theme::INK_MUTED }, !joined),
             Ctl::Share => (
                 if st.call.share { icons::STOP_CIRCLE } else { icons::MONITOR },
                 Some(if st.call.share { "Stop sharing screen" } else { "Share screen" }),
@@ -453,6 +461,10 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
             None => {
                 let sz = if *c == Ctl::Chat { 18.0 * u } else { isz };
                 icon::draw(pm, shapes, r.x + (r.w - sz) / 2.0, r.y + (r.h - sz) / 2.0, sz, col);
+                if *c == Ctl::Record && st.call.recording.is_some() {
+                    let d = sz * 0.4; // the dot filled in while recording
+                    fill_rr(pm, R { x: r.x + (r.w - d) / 2.0, y: r.y + (r.h - d) / 2.0, w: d, h: d }, d / 2.0, theme::DANGER, 255);
+                }
             }
         }
     }

@@ -16,6 +16,18 @@ pub fn talk_hint(_key: &str) {}
 #[cfg(windows)]
 pub fn status(_text: &str) {}
 
+#[cfg(windows)]
+pub fn message(_text: &str) {}
+
+/// A notification that stays like any other (a transcript finished, or could not be made).
+#[cfg(not(windows))]
+pub fn message(text: &str) {
+    let text = text.to_string();
+    std::thread::spawn(move || {
+        let _ = Command::new("notify-send").args(["--app-name=SoWorker", "--icon=soworker", "SoWorker"]).arg(text).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    });
+}
+
 /// "Press F1 to talk", gone after a few seconds. A new one replaces the previous instead of stacking.
 #[cfg(not(windows))]
 pub fn talk_hint(key: &str) {

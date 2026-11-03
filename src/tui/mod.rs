@@ -389,6 +389,10 @@ impl Tui {
             }
             return;
         }
+        if self.modal == Modal::None && down && matches!(self.st.transcript, Some((crate::transcribe::Status::Failed(_), _))) {
+            self.st.dismiss_transcript(); // the key closes the "no transcript" dialog, nothing else
+            return;
+        }
         if self.modal != Modal::None {
             if !down {
                 return;
@@ -551,6 +555,7 @@ impl Tui {
                 'm' => st.toggle_mic(),
                 'N' => st.toggle_noise_cancel(now),
                 'h' | 'H' => st.toggle_hand(now),
+                'R' => st.toggle_record(now),
                 ' ' => st.talk(crate::talk::TalkAct::Toggle, now),
                 'c' => st.toggle_cam(),
                 'v' => st.toggle_share(),

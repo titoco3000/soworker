@@ -63,6 +63,7 @@ pub enum Ctl {
     Cam,
     Mic,
     Hand,
+    Record,
     Share,
     Chat,
     FullToggle,

@@ -61,6 +61,19 @@ runtime libwebrtc needs). From Linux: `make build-windows`.
   `p` hides it. A wave shows up there too: Enter walks to the person, `x` dismisses.
 - **Calls:** `m` mic, `c` camera, `v` share screen, `h` raise or lower your hand, `l` leave, `Space` talk (hold it where the terminal reports key
   releases, otherwise it toggles). `t` opens the chat and starts typing, `Esc` leaves the input, `T` closes it.
+- **Recording:** `R` in the terminal, or the record button (the ring next to the hand) in the window, starts and stops
+  recording the call; the meeting's chat says so to everyone ("<you> started recording this meeting"), and a red
+  `REC 12:34` shows while it runs. The picture is always 1280x800 (16:10) in its own layout (everyone in a grid, or
+  a screen share with a column of people), whatever your window or terminal shows. It needs `ffmpeg`; without it
+  only the sound is recorded (a WAV). Files go to `~/Videos/SoWorker` (`recordingsDir` in `settings.json` to change)
+  as `<date> <time> <meeting area>.mp4`. A recording still running when the call ends or the app quits is written out.
+- **Transcripts:** when a recording stops, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) transcribes it on
+  this machine into `.srt` subtitles next to it, and adds them to the video as its subtitle track. Its model (`whisperModel`, `base` by default; `small` or
+  `medium` are better and slower) is downloaded the first time to `~/.local/share/soworker/models`. On Windows
+  whisper.cpp itself is downloaded too; elsewhere install `whisper-cli`: it is found on the PATH or in a whisper.cpp build
+  (`~/src/whisper.cpp/build/bin`, and the like); `soworker --transcribe` says how, and what is set up. The progress
+  shows on screen until the transcript is saved; if it cannot be made, why (and how to fix it) stays until dismissed. `whisperLanguage` (default `auto`) fixes the language; `whisperCli` points at the program.
+  `soworker --transcribe <file>` transcribes any recording again.
 - **Noise cancellation:** on by default: the microphone goes through [DeepFilterNet 3](https://github.com/Rikorose/DeepFilterNet)
   (built in) after WebRTC's echo cancellation. `N` in the terminal, or the waveform button left of the camera in the
   window, switches it (also during a call); the choice is kept as `noiseCancellation` in `settings.json`. While it is
@@ -77,7 +90,7 @@ runtime libwebrtc needs). From Linux: `make build-windows`.
   even converted.
 - **Keys:** `?` lists them. Mouse clicks work on the map, the list and the chat.
 - **Push to talk:** `Space` in the terminal, or with the terminal hidden the global shortcut (`Super+'` where the desktop has a shortcut portal) or `soworker --talk` bound to a key (see COSMIC setup below and `docs/push-to-talk.md`).
-- **Useful flags:** `--roster` prints the member list, `--talk` controls a running instance, `--gui` starts the window client.
+- **Useful flags:** `--transcribe [file]` transcribes a recording (or says what transcripts need), `--roster` prints the member list, `--talk` controls a running instance, `--gui` starts the window client.
 
 ## Push to talk on COSMIC
 
@@ -109,5 +122,5 @@ so the in-app hint matches. Test with `soworker --talk` in a terminal while the 
 - `docs/`: reverse-engineered protocol and behaviour notes (start with `docs/FINDINGS.md`).
 - `src/`: the core has no drawing in it: `session` (sign-in), `net` (socket), `proto` (events), `world` (collision,
   pathfinding), `app` (state), `directory` / `meeting` / `chatstate` (what the people list, the call and the chat show),
-  `media` (calls), `mic` (the noise-cancelled microphone), `backend` (the threads behind a session). `tui/` is the terminal client (`view` draws, `kitty` is
+  `media` (calls), `mic` (the noise-cancelled microphone), `record` / `transcribe` (recordings and their transcripts), `backend` (the threads behind a session). `tui/` is the terminal client (`view` draws, `kitty` is
   the inline video), `videowin` the bare video window, `gui/` the window client.

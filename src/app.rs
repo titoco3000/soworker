@@ -75,6 +75,9 @@ pub struct CallUi {
     pub hands: HashMap<String, i64>,
     /// Since when LiveKit has listed us as speaking without a break: a second of it lowers our hand.
     pub talking_since: Option<f64>,
+    /// Since when we record the call, while we do; and the elapsed seconds last drawn (the clock repaints once a second).
+    pub recording: Option<std::time::Instant>,
+    pub rec_shown: u64,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -160,6 +163,9 @@ pub struct State {
     pub dry: bool,
     pub status: String,
     pub toast: Option<(String, f64)>,
+    /// The latest recording's transcript and when that news came: on screen while it is made, a little while once
+    /// saved, and a failure until dismissed.
+    pub transcript: Option<(crate::transcribe::Status, f64)>,
     pub outbox: Vec<Cmd>,
     pub media_out: Vec<MediaCmd>,
     /// Noise cancellation on the microphone (the `noiseCancellation` setting); the media thread is told at start.
@@ -228,6 +234,7 @@ impl State {
             dry,
             status: "connecting…".into(),
             toast: None,
+            transcript: None,
             outbox: vec![],
             media_out: vec![MediaCmd::NoiseCancel(noise_cancel)],
             noise_cancel,
@@ -488,6 +495,37 @@ impl State {
         }
     }
 
+    /// Start or stop recording the call (R, or the record button). The files are named after the meeting area.
+    pub fn toggle_record(&mut self, now: f64) {
+        if self.call.joined.is_none() {
+            return self.say("Not in a meeting", now);
+        }
+        if self.call.recording.is_some() {
+            self.media_out.push(MediaCmd::Record(None));
+        } else {
+            let zone = self.cur_zone_id.as_ref().and_then(|id| self.world.zones.iter().find(|z| &z.id == id)).and_then(|z| z.name.clone());
+            self.media_out.push(MediaCmd::Record(Some(zone.unwrap_or_else(|| "Meeting".into()))));
+            self.say("Starting the recording…", now);
+        }
+    }
+
+    /// Closes the transcript notice, unless a transcript is still being made.
+    pub fn dismiss_transcript(&mut self) {
+        use crate::transcribe::Status;
+        if self.transcript.as_ref().is_some_and(|(s, _)| matches!(s, Status::Done(_) | Status::Failed(_))) {
+            self.transcript = None;
+            self.dirty = true;
+        }
+    }
+
+    /// The recording's elapsed time as "12:34", while one runs.
+    pub fn rec_clock(&self) -> Option<String> {
+        self.call.recording.map(|t| {
+            let s = t.elapsed().as_secs();
+            if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+        })
+    }
+
     /// Raise or lower our hand in the meeting (H, or the hand button).
     pub fn toggle_hand(&mut self, now: f64) {
         if self.call.joined.is_none() {
@@ -586,6 +624,7 @@ impl State {
             Hit::Ctl(Ctl::Share) => self.toggle_share(),
             Hit::Ctl(Ctl::NoiseCancel) => self.toggle_noise_cancel(now),
             Hit::Ctl(Ctl::Hand) => self.toggle_hand(now),
+            Hit::Ctl(Ctl::Record) => self.toggle_record(now),
             Hit::Ctl(Ctl::Leave) => {
                 // leaving = tell the server we are in no zone, drop the call, and do not rejoin until we walk out and back
                 self.call.ignore_room = self.call.want.clone().or_else(|| self.call.joined.clone());
@@ -788,6 +827,7 @@ impl State {
                 self.call.hand = None;
                 self.call.hands.clear();
                 self.call.talking_since = None;
+                self.call.recording = None;
                 self.call.peers = None;
                 self.dock.pinned = None;
                 self.dock.tile_full = false;
@@ -810,6 +850,30 @@ impl State {
                 self.call.cam = on;
             }
             MediaEvent::ShareState(on) => self.call.share = on,
+            MediaEvent::Recording(on) => {
+                if on != self.call.recording.is_some() {
+                    // the others cannot see that we record: say so in the meeting's chat
+                    let me = self.me().map_or_else(|| "Someone".to_string(), |m| m.name.clone());
+                    if let Some(conversation) = self.conversation() {
+                        let text = format!("{me} {} recording this meeting", if on { "started" } else { "stopped" });
+                        self.chat_out.push(crate::chat::ChatCmd::SendArea { conversation, text });
+                    }
+                    self.say(if on { "Recording" } else { "Recording stopped" }, now);
+                }
+                self.call.recording = on.then(std::time::Instant::now);
+            }
+            MediaEvent::Transcript(status) => {
+                use crate::transcribe::Status;
+                if matches!(status, Status::Done(_) | Status::Failed(_)) {
+                    eprintln!("[{now:6.1}] {}", status.line());
+                    crate::notify::message(&status.line()); // it may well finish after the call, with the window hidden
+                }
+                self.transcript = Some((status, now));
+            }
+            MediaEvent::Info(msg) => {
+                eprintln!("[{now:6.1}] {msg}");
+                self.say(msg, now);
+            }
             MediaEvent::AskedToMute { from } => {
                 // like the official client: only act if our mic is actually on
                 if self.call.mic {
@@ -928,6 +992,17 @@ impl State {
         if self.toast.as_ref().is_some_and(|(_, until)| now > *until) {
             self.toast = None;
             self.dirty = true;
+        }
+        if self.transcript.as_ref().is_some_and(|(s, at)| matches!(s, crate::transcribe::Status::Done(_)) && now - at > 15.0) {
+            self.transcript = None;
+            self.dirty = true;
+        }
+        if let Some(t) = self.call.recording {
+            let secs = t.elapsed().as_secs();
+            if secs != self.call.rec_shown {
+                self.call.rec_shown = secs; // the recording clock ticks
+                self.dirty = true;
+            }
         }
         let mut active = self.moving || self.path.is_some() || self.profile.as_ref().is_some_and(|p| p.meter.is_some());
         let k = self.keys;

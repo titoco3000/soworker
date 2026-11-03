@@ -262,6 +262,8 @@ impl ApplicationHandler<UserEvent> for App {
                         // a click outside the profile panel closes it (and does nothing else)
                         let act = profile_ui::hit(&self.st, c.0, c.1, sh).unwrap_or(crate::profile::Act::Close);
                         self.st.profile_act(act);
+                    } else if render::notice_rect(&self.st, &mut self.text).is_some_and(|r| r.contains(c.0, c.1)) {
+                        self.st.dismiss_transcript();
                     } else if let Some(h) = chatui::hit(&self.st, c.0, c.1, sw, sh) {
                         chatui::press(&mut self.st, h);
                     } else if let Some(h) = sidebar::hit(&self.st, c.0, c.1, sh) {

@@ -20,6 +20,7 @@ mod roster;
 mod session;
 mod sound;
 mod talk;
+mod transcribe;
 mod waves;
 mod world;
 #[cfg(feature = "gui")]
@@ -32,6 +33,8 @@ mod photo;
 mod media;
 #[cfg(feature = "calls")]
 mod mic;
+#[cfg(feature = "calls")]
+mod record;
 #[cfg(feature = "tui")]
 mod tui;
 #[cfg(feature = "tui")]
@@ -97,6 +100,14 @@ fn main() {
         }
         return;
     }
+    if let Some(i) = args.iter().position(|a| a == "--transcribe") {
+        // transcribe a recording with whisper.cpp, or with no file say what is set up
+        if let Err(e) = transcribe::cli(args.get(i + 1).map(String::as_str)) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|a| a == "--roster") {
         // print the member list the sidebar would show (uses the saved sign-in)
         let path = args.iter().position(|a| a == "--session").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(session::default_path);
@@ -115,7 +126,10 @@ fn main() {
         icon_sheet(args.get(i + 1).map_or("icons.png", |s| s));
         return;
     }
-    if let Err(e) = frontend(&args) {
+    let res = frontend(&args);
+    #[cfg(feature = "calls")]
+    record::shutdown(); // a recording still running is written out before we go
+    if let Err(e) = res {
         eprintln!("error: {e}");
         std::process::exit(1);
     }

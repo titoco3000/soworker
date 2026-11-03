@@ -81,6 +81,9 @@ pub const NOISE_CANCEL_OFF: &[Shape] = &[
     Shape::Line(1.0, 1.0, 23.0, 23.0),
 ];
 
+/// A ring with a dot: Feather has no record button.
+pub const RECORD: &[Shape] = &[Shape::Circle(12.0, 12.0, 10.0), Shape::Circle(12.0, 12.0, 3.0)];
+
 pub const MAXIMIZE: &[Shape] = &[
     Shape::Path("M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"),
 ];

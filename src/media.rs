@@ -4,6 +4,7 @@
 //! remote video decoded by libwebrtc and delivered as small RGBA frames.
 use crate::calls::{ask_to_mute_payload, ask_to_mute_target, hand_raised, participant_meta, raise_hand_payload, raise_hand_signal, MediaCmd, MediaEvent, ASK_TO_MUTE, RAISE_HAND};
 use crate::mic;
+use crate::record::{Recorder, Tap};
 use futures_util::StreamExt;
 use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
 use livekit::prelude::*;
@@ -68,6 +69,13 @@ struct Session {
     /// What our participant metadata says besides the share: when the hand went up, and our character portrait.
     raised: Option<i64>,
     portrait: Option<String>,
+    /// What a recording takes from the call (fed all the time, ignored while none runs), the running recording, and
+    /// the task reading our own microphone track into it.
+    tap: Arc<Tap>,
+    rec: Option<Recorder>,
+    mic_tap: Option<tokio::task::JoinHandle<()>>,
+    /// Our second capture of the microphone, for the recording only, while recording with noise cancellation off.
+    rec_mic: Option<mic::Mic>,
 }
 
 pub fn spawn(emit: impl Fn(MediaEvent) + Send + Sync + 'static) -> UnboundedSender<MediaCmd> {
@@ -119,6 +127,7 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                         s.raised = at;
                         publish_meta(s).await;
                     },
+                    MediaCmd::Record(title) => if let Some(s) = session.as_mut() { set_record(s, title, &emit); },
                 }
             }
             ev = async { match session.as_mut() { Some(s) => s.events.recv().await, None => std::future::pending().await } } => {
@@ -171,13 +180,17 @@ async fn join(url: &str, token: &str, room_id: String, portrait: Option<String>,
         devices: Default::default(),
         raised: None,
         portrait,
+        tap: Arc::new(Tap::default()),
+        rec: None,
+        mic_tap: None,
+        rec_mic: None,
     };
     apply_devices(&mut s, emit).await;
     // creating the platform audio switched libwebrtc's own mic capture on; with noise cancellation we capture instead
     set_adm_recording(!nc);
     keep_mic_open(&mut s, false, emit);
     emit(MediaEvent::Joined(room_id));
-    emit_peers(&s.room, emit);
+    emit_peers(&s.room, &s.tap, emit);
     publish_meta(&s).await; // the official client announces its portrait (and a lowered hand) right after joining
     Ok(s)
 }
@@ -193,7 +206,7 @@ fn keep_mic_open(s: &mut Session, mic_on: bool, emit: &Emit) {
     if s.nc {
         let src = s.mic_src.get_or_insert_with(|| NativeAudioSource::new(AudioSourceOptions::default(), mic::RATE, 1, 0)).clone();
         let (far, emit) = (s.far.clone(), emit.clone());
-        s.mic_run.get_or_insert_with(|| mic::Mic::start(src, far, emit)).capture(mic_on || s.keep_capture);
+        s.mic_run.get_or_insert_with(|| mic::Mic::start(mic::Sink::Source(src), far, emit)).capture(mic_on || s.keep_capture);
     } else if let Some(audio) = s.audio.as_ref().filter(|_| s.keep_capture) {
         // a muted track makes libwebrtc stop capturing; start it again so the device stays open
         match audio.start_recording() {
@@ -308,8 +321,11 @@ async fn apply_devices(s: &mut Session, emit: &Emit) {
     }
 }
 
-fn emit_peers(room: &Room, emit: &Emit) {
-    let peers = room.remote_participants().values().map(|p| (p.identity().to_string(), p.name())).collect();
+fn emit_peers(room: &Room, tap: &Tap, emit: &Emit) {
+    let peers: Vec<(String, String)> = room.remote_participants().values().map(|p| (p.identity().to_string(), p.name())).collect();
+    let mut people = vec![("me".to_string(), room.local_participant().name())];
+    people.extend(peers.iter().cloned());
+    tap.set_people(people);
     emit(MediaEvent::Peers(peers));
     let hands = room.remote_participants().values().filter(|p| hand_raised(&p.metadata())).map(|p| p.identity().to_string()).collect();
     emit(MediaEvent::Hands(hands));
@@ -323,7 +339,68 @@ async fn publish_meta(s: &Session) {
     }
 }
 
+/// Starts (`Some(title)`) or stops the recording.
+fn set_record(s: &mut Session, title: Option<String>, emit: &Emit) {
+    match (title, s.rec.is_some()) {
+        (Some(title), false) => match Recorder::start(s.tap.clone(), &title, emit.clone()) {
+            Ok(r) => {
+                s.rec = Some(r);
+                sync_rec_mic(s, emit);
+                emit(MediaEvent::Recording(true));
+            }
+            Err(e) => {
+                emit(MediaEvent::Error(format!("cannot record: {e}")));
+                emit(MediaEvent::Recording(false));
+            }
+        },
+        (None, true) => {
+            if let Some(r) = s.rec.take() {
+                r.stop();
+            }
+            sync_rec_mic(s, emit);
+            emit(MediaEvent::Recording(false));
+        }
+        _ => {}
+    }
+}
+
+/// With noise cancellation off, our own capture feeds the recording while we record and the mic is on (see
+/// `mic::Sink::Record`); otherwise there is none.
+fn sync_rec_mic(s: &mut Session, emit: &Emit) {
+    if s.rec.is_none() || s.nc {
+        s.rec_mic = None;
+        return;
+    }
+    let on = s.mic.as_ref().is_some_and(|(t, _)| !t.is_muted());
+    let (tap, far, emit) = (s.tap.clone(), s.far.clone(), emit.clone());
+    s.rec_mic.get_or_insert_with(|| mic::Mic::start(mic::Sink::Record(tap), far, emit)).capture(on);
+}
+
+/// Reads our published microphone track into the recording's tap. That only works for the noise-cancelled track,
+/// which we feed ourselves: libwebrtc's own capture hands its sinks nothing (see `sync_rec_mic` for that case).
+fn tap_mic(s: &mut Session) {
+    if let Some(old) = s.mic_tap.take() {
+        old.abort();
+    }
+    let Some((track, _)) = s.mic.as_ref().filter(|_| s.nc) else { return };
+    let (rtc, tap) = (track.rtc_track(), s.tap.clone());
+    s.mic_tap = Some(tokio::spawn(async move {
+        let mut stream = NativeAudioStream::new(rtc, mic::RATE as i32, 1);
+        while let Some(frame) = stream.next().await {
+            tap.push_audio("me", &frame.data);
+        }
+    }));
+}
+
 async fn close(mut s: Session, emit: &Emit) {
+    if let Some(r) = s.rec.take() {
+        r.stop();
+        emit(MediaEvent::Recording(false));
+    }
+    if let Some(t) = s.mic_tap.take() {
+        t.abort();
+    }
+    drop(s.rec_mic.take());
     if let Some((stop, _)) = s.cam.take().and_then(|c| c.run) {
         stop.store(true, Ordering::Relaxed);
     }
@@ -361,13 +438,17 @@ async fn set_mic(s: &mut Session, on: bool, emit: &Emit) {
         let mut opts = TrackPublishOptions::default();
         opts.source = TrackSource::Microphone;
         match s.room.local_participant().publish_track(LocalTrack::Audio(track.clone()), opts).await {
-            Ok(p) => s.mic = Some((track, p.sid())),
+            Ok(p) => {
+                s.mic = Some((track, p.sid()));
+                tap_mic(s);
+            }
             Err(e) => return emit(MediaEvent::Error(format!("microphone: {e}"))),
         }
     } else if let Some((t, _)) = &s.mic {
         if on { t.unmute() } else { t.mute() }
     }
     keep_mic_open(s, on && s.mic.is_some(), emit);
+    sync_rec_mic(s, emit);
     emit(MediaEvent::MicState(on && s.mic.is_some()));
 }
 
@@ -382,6 +463,9 @@ async fn set_noise_cancel(s: &mut Session, on: bool, emit: &Emit) {
     if let Some((_, sid)) = s.mic.take() {
         let _ = s.room.local_participant().unpublish_track(&sid).await;
     }
+    if let Some(t) = s.mic_tap.take() {
+        t.abort();
+    }
     s.mic_run = None;
     s.mic_src = None;
     s.nc = on;
@@ -391,6 +475,7 @@ async fn set_noise_cancel(s: &mut Session, on: bool, emit: &Emit) {
     } else {
         keep_mic_open(s, false, emit);
     }
+    sync_rec_mic(s, emit);
 }
 
 /// Mute someone else: a reliable data message on SoWork's `ask-to-mute` topic. The receiving client decides
@@ -416,17 +501,21 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
             }
         }
         RoomEvent::ActiveSpeakersChanged { speakers } => {
-            emit(MediaEvent::Speakers(speakers.iter().map(|p| p.identity().to_string()).collect()));
+            let ids: Vec<String> = speakers.iter().map(|p| p.identity().to_string()).collect();
+            let me = s.room.local_participant().identity().to_string();
+            s.tap.set_speaking(ids.iter().map(|i| if *i == me { "me".to_string() } else { i.clone() }).collect());
+            emit(MediaEvent::Speakers(ids));
         }
         RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(a), publication, participant } => {
             emit(MediaEvent::PeerMuted(participant.identity().to_string(), publication.is_muted()));
             // read what this track plays, as the echo reference for our own capture (ignored while that is off)
             let key = format!("{}:{}", participant.identity(), publication.sid());
-            let (far, k) = (s.far.clone(), key.clone());
+            let (far, tap, k) = (s.far.clone(), s.tap.clone(), key.clone());
             let task = tokio::spawn(async move {
                 let mut stream = NativeAudioStream::new(a.rtc_track(), mic::RATE as i32, 1);
                 while let Some(frame) = stream.next().await {
                     far.push(&k, &frame.data);
+                    tap.push_audio(&k, &frame.data);
                 }
             });
             if let Some(old) = s.audio_tasks.insert(key, task) {
@@ -439,6 +528,7 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
                 t.abort();
             }
             s.far.remove(&key);
+            s.tap.forget_audio(&key);
         }
         RoomEvent::TrackMuted { participant: Participant::Remote(p), publication } if publication.source() == TrackSource::Microphone => {
             emit(MediaEvent::PeerMuted(p.identity().to_string(), true));
@@ -450,13 +540,16 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
             let screen = publication.source() == TrackSource::Screenshare;
             let key = format!("{}{}", participant.identity(), if screen { ":screen" } else { "" });
             let name = participant.name();
-            let emit2 = emit.clone();
+            let (emit2, tap) = (emit.clone(), s.tap.clone());
             let k = key.clone();
             let task = tokio::spawn(async move {
                 let mut stream = NativeVideoStream::new(v.rtc_track());
                 let mut last = Instant::now() - Duration::from_secs(1);
                 let mut avail = Instant::now() - Duration::from_secs(2);
                 while let Some(frame) = stream.next().await {
+                    if tap.wants_pic(&k) {
+                        tap.pic(&k, &mut frame.buffer.to_i420(), screen); // the recording's own copy, whatever the UI shows
+                    }
                     if last.elapsed() < Duration::from_millis(25) {
                         continue; // ~30 fps; skip the conversion work for the rest
                     }
@@ -489,23 +582,26 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
             if let Some(t) = s.video_tasks.remove(&key) {
                 t.abort();
             }
+            s.tap.forget_pic(&key);
             emit(MediaEvent::VideoGone(key));
         }
-        RoomEvent::ParticipantConnected(_) => emit_peers(&s.room, emit),
-        RoomEvent::ParticipantMetadataChanged { participant: Participant::Remote(_), .. } => emit_peers(&s.room, emit),
+        RoomEvent::ParticipantConnected(_) => emit_peers(&s.room, &s.tap, emit),
+        RoomEvent::ParticipantMetadataChanged { participant: Participant::Remote(_), .. } => emit_peers(&s.room, &s.tap, emit),
         RoomEvent::ParticipantDisconnected(p) => {
-            emit_peers(&s.room, emit);
+            emit_peers(&s.room, &s.tap, emit);
             let prefix = format!("{}:", p.identity());
             for key in s.audio_tasks.keys().filter(|k| k.starts_with(&prefix)).cloned().collect::<Vec<_>>() {
                 if let Some(t) = s.audio_tasks.remove(&key) {
                     t.abort();
                 }
                 s.far.remove(&key);
+                s.tap.forget_audio(&key);
             }
             for key in [p.identity().to_string(), format!("{}:screen", p.identity())] {
                 if let Some(t) = s.video_tasks.remove(&key) {
                     t.abort();
                 }
+                s.tap.forget_pic(&key);
                 emit(MediaEvent::VideoGone(key));
             }
         }
@@ -558,7 +654,7 @@ fn thumbnail(buf: &mut I420Buffer, max_w: u32) -> (u32, u32, Vec<u8>) {
 }
 
 #[cfg(target_os = "linux")]
-fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
+fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, tap: Arc<Tap>, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
     use v4l::io::traits::CaptureStream;
     use v4l::prelude::*;
     use v4l::video::Capture;
@@ -597,12 +693,15 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
             let (pw, ph, rgba) = if crate::calls::wants_video("me") { thumbnail(&mut i420, 480) } else { (0, 0, vec![]) };
             emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
         }
+        if tap.wants_pic("me") {
+            tap.pic("me", &mut i420, false);
+        }
         source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });
     }
 }
 
 #[cfg(windows)]
-fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
+fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, tap: Arc<Tap>, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
     use nokhwa::pixel_format::RgbFormat;
     use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution};
     // 640x480 in a format we can turn into I420 ourselves, else whatever the camera does fastest
@@ -642,6 +741,9 @@ fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
             last_preview = Instant::now();
             let (pw, ph, rgba) = if crate::calls::wants_video("me") { thumbnail(&mut i420, 480) } else { (0, 0, vec![]) };
             emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
+        }
+        if tap.wants_pic("me") {
+            tap.pic("me", &mut i420, false);
         }
         source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });
     }
@@ -687,8 +789,8 @@ async fn set_camera(s: &mut Session, on: bool, emit: &Emit) {
             let _ = old.join(); // the previous capture thread has been told to stop; wait until it let go of the device
         }
         let (stop, (tx, rx)) = (Arc::new(AtomicBool::new(false)), tokio::sync::oneshot::channel());
-        let (src2, stop2, emit2) = (source.clone(), stop.clone(), emit.clone());
-        let handle = std::thread::spawn(move || camera_thread(src2, stop2, emit2, tx));
+        let (src2, stop2, emit2, tap) = (source.clone(), stop.clone(), emit.clone(), s.tap.clone());
+        let handle = std::thread::spawn(move || camera_thread(src2, stop2, emit2, tap, tx));
         match rx.await {
             Ok(Ok(())) => {}
             other => {
@@ -726,6 +828,7 @@ async fn set_camera(s: &mut Session, on: bool, emit: &Emit) {
                 stop.store(true, Ordering::Relaxed); // the thread ends after its next frame; the handle is joined on the next start
             }
             c.track.mute();
+            s.tap.forget_pic("me");
             emit(MediaEvent::VideoGone("me".into()));
         }
     }
@@ -748,7 +851,7 @@ async fn announce_share(s: &Session, start: bool, sid: Option<&TrackSid>) {
     let _ = lp.publish_data(DataPacket { payload, topic: Some("screenshare".into()), reliable: true, ..Default::default() }).await;
 }
 
-fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
+fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, tap: Arc<Tap>, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
     // Linux: the portal (or X11) lets the user pick. Windows has no picker: share the screen chosen in the profile, else the first.
     #[cfg(not(windows))]
     let kind = DesktopCaptureSourceType::Generic;
@@ -786,6 +889,9 @@ fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, r
                 let (pw, ph, rgba) = if crate::calls::wants_video("me:screen") { thumbnail(&mut i420, 960) } else { (0, 0, vec![]) };
                 emit(MediaEvent::Video { key: "me:screen".into(), name: "you".into(), w: pw, h: ph, rgba });
             }
+            if !stop2.load(Ordering::Relaxed) && tap.wants_pic("me:screen") {
+                tap.pic("me:screen", &mut i420, true);
+            }
             source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });
         }
         Err(livekit::webrtc::desktop_capturer::CaptureError::Permanent) => {
@@ -812,8 +918,8 @@ async fn set_share(s: &mut Session, on: bool, emit: &Emit) {
     if on && s.share.is_none() {
         let source = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
         let (stop, (tx, rx)) = (Arc::new(AtomicBool::new(false)), tokio::sync::oneshot::channel());
-        let (src2, stop2, emit2) = (source.clone(), stop.clone(), emit.clone());
-        std::thread::spawn(move || screen_thread(src2, stop2, emit2, tx));
+        let (src2, stop2, emit2, tap) = (source.clone(), stop.clone(), emit.clone(), s.tap.clone());
+        std::thread::spawn(move || screen_thread(src2, stop2, emit2, tap, tx));
         // on Wayland this waits for the user to choose a screen or window in the portal dialog
         let first = tokio::time::timeout(Duration::from_secs(90), rx).await;
         match first {
@@ -851,6 +957,7 @@ async fn set_share(s: &mut Session, on: bool, emit: &Emit) {
             c.stop.store(true, Ordering::Relaxed);
             let _ = s.room.local_participant().unpublish_track(&c.sid).await;
             announce_share(s, false, Some(&c.sid)).await;
+            s.tap.forget_pic("me:screen");
             emit(MediaEvent::VideoGone("me:screen".into()));
         }
     }

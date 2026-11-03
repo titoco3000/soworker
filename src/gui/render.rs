@@ -100,6 +100,52 @@ impl Text {
     }
 }
 
+/// The transcript notice's lines: one while it is made or once saved, the whole message (how to install whisper.cpp)
+/// when it failed, then how to close it.
+fn notice_lines(st: &State) -> Vec<String> {
+    use crate::transcribe::Status;
+    let Some((s, _)) = &st.transcript else { return vec![] };
+    match s {
+        Status::Failed(e) => {
+            let mut v: Vec<String> = e.lines().map(String::from).collect();
+            v[0] = format!("No transcript: {}", v[0]);
+            v.push(String::new());
+            v.push("click to close".into());
+            v
+        }
+        Status::Done(_) => vec![s.line(), "click to close".into()],
+        _ => vec![s.line()],
+    }
+}
+
+/// Where the transcript notice sits (top left of the map, under the toast), if there is one.
+pub fn notice_rect(st: &State, text: &mut Text) -> Option<crate::gui::meeting_ui::R> {
+    let ui = st.ui;
+    let lines = notice_lines(st);
+    if lines.is_empty() {
+        return None;
+    }
+    let w = lines.iter().map(|l| text.width(l, 13.0 * ui)).fold(0.0, f32::max) + 24.0 * ui;
+    Some(crate::gui::meeting_ui::R { x: crate::gui::sidebar::width(st) + 10.0 * ui, y: 32.0 * ui, w, h: lines.len() as f32 * 18.0 * ui + 16.0 * ui })
+}
+
+fn draw_notice(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, r: crate::gui::meeting_ui::R) {
+    use crate::gui::theme;
+    let ui = st.ui;
+    let failed = matches!(st.transcript, Some((crate::transcribe::Status::Failed(_), _)));
+    if let Some(p) = crate::gui::icon::rounded_rect(r.x, r.y, r.w, r.h, 8.0 * ui) {
+        pm.fill_path(&p, &paint(theme::SURFACE[0], theme::SURFACE[1], theme::SURFACE[2], 245), FillRule::Winding, Transform::identity(), None);
+        let edge = if failed { theme::DANGER } else { theme::LINE };
+        pm.stroke_path(&p, &paint(edge[0], edge[1], edge[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, Transform::identity(), None);
+    }
+    let lines = notice_lines(st);
+    let n = lines.len();
+    for (i, l) in lines.iter().enumerate() {
+        let col = if i == 0 { theme::INK } else if i + 1 == n && n > 1 { theme::INK_FAINT } else { theme::INK_MUTED };
+        text.draw(pm, l, r.x + 12.0 * ui, r.y + 8.0 * ui + (i as f32 + 1.0) * 18.0 * ui - 4.0 * ui, 13.0 * ui, col, 0.0);
+    }
+}
+
 pub fn paint(r: u8, g: u8, b: u8, a: u8) -> Paint<'static> {
     let mut p = Paint::default();
     p.set_color_rgba8(r, g, b, a);
@@ -415,6 +461,9 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, cache: &mut Map
     // transient messages (e.g. "Walking to ...")
     if let Some((t, _)) = &st.toast {
         text.shadowed(pm, t, crate::gui::sidebar::width(st) + 10.0 * ui, 20.0 * ui, 13.0 * ui, [240, 200, 120], 0.0);
+    }
+    if let Some(r) = notice_rect(st, text) {
+        draw_notice(st, pm, text, r);
     }
     crate::gui::sidebar::draw(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
     crate::gui::meeting_ui::draw(st, pm, text, w, h);

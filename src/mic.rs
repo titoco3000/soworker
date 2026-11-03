@@ -85,6 +85,14 @@ fn load_model() -> Result<DfTract, String> {
     Ok(m)
 }
 
+/// Where a capture's audio goes: published (noise cancelled, into the track's source), or only into the recording
+/// (noise cancellation off: libwebrtc captures what is sent itself and gives no copy, so we capture a second time,
+/// with WebRTC's own noise suppression instead of DeepFilterNet).
+pub enum Sink {
+    Source(NativeAudioSource),
+    Record(Arc<crate::record::Tap>),
+}
+
 /// The noise-cancelled microphone of one call: a thread that holds the model (loaded once, it takes a moment) and
 /// opens the device while `capture` is on. Dropping it stops the thread and closes the device.
 pub struct Mic {
@@ -93,16 +101,19 @@ pub struct Mic {
 }
 
 impl Mic {
-    /// Starts the thread (the device stays closed until `capture(true)`); cleaned audio goes into `source`.
-    pub fn start(source: NativeAudioSource, far: Arc<Far>, emit: Emit) -> Mic {
+    /// Starts the thread (the device stays closed until `capture(true)`); cleaned audio goes into `sink`.
+    pub fn start(sink: Sink, far: Arc<Far>, emit: Emit) -> Mic {
         let (stop, want) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let (stop2, want2) = (stop.clone(), want.clone());
         std::thread::Builder::new()
             .name("mic".into())
             .spawn(move || {
-                if let Err(e) = run(&source, &far, &stop2, &want2) {
+                if let Err(e) = run(&sink, &far, &stop2, &want2) {
                     eprintln!("mic: {e}");
-                    emit(MediaEvent::Error(format!("noise cancellation: {e} (turn it off to use the plain microphone)")));
+                    emit(MediaEvent::Error(match sink {
+                        Sink::Source(_) => format!("noise cancellation: {e} (turn it off to use the plain microphone)"),
+                        Sink::Record(_) => format!("your microphone is not in the recording: {e}"),
+                    }));
                 }
                 far.set_on(false);
             })
@@ -122,12 +133,15 @@ impl Drop for Mic {
     }
 }
 
-fn run(source: &NativeAudioSource, far: &Far, stop: &AtomicBool, want: &AtomicBool) -> Result<(), String> {
-    let mut model = load_model()?;
+fn run(sink: &Sink, far: &Far, stop: &AtomicBool, want: &AtomicBool) -> Result<(), String> {
+    let mut model = match sink {
+        Sink::Source(_) => Some(load_model()?),
+        Sink::Record(_) => None,
+    };
     let mut cap: Option<Capture> = None;
     // the microphone chosen in the profile panel; a new choice reopens the capture
     let mut device = devices::chosen().input;
-    let mut apm = AudioProcessingModule::new(true, true, true, false);
+    let mut apm = AudioProcessingModule::new(true, true, true, model.is_none());
     let (mut near, mut rev) = ([0i16; FRAME], [0i16; FRAME]);
     let (mut noisy, mut clean) = (Array2::<f32>::zeros((1, FRAME)), Array2::<f32>::zeros((1, FRAME)));
     while !stop.load(Ordering::Relaxed) {
@@ -157,10 +171,17 @@ fn run(source: &NativeAudioSource, far: &Far, stop: &AtomicBool, want: &AtomicBo
         far.take(&mut rev);
         let _ = apm.process_reverse_stream(&mut rev, RATE as i32, 1);
         let _ = apm.process_stream(&mut near, RATE as i32, 1);
+        let source = match sink {
+            Sink::Source(source) => source,
+            Sink::Record(tap) => {
+                tap.push_audio("me", &near);
+                continue;
+            }
+        };
         for (n, s) in noisy.iter_mut().zip(near) {
             *n = s as f32 / 32768.0;
         }
-        if model.process(noisy.view(), clean.view_mut()).is_ok() {
+        if model.as_mut().is_some_and(|m| m.process(noisy.view(), clean.view_mut()).is_ok()) {
             for (s, c) in near.iter_mut().zip(clean.iter()) {
                 *s = (c * 32767.0).clamp(-32768.0, 32767.0) as i16;
             }

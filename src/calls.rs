@@ -19,6 +19,8 @@ pub enum MediaCmd {
     NoiseCancel(bool),
     /// The chosen speaker, microphone or camera changed (see `devices::chosen`): switch the call over to them.
     Devices,
+    /// Start recording the call (`Some(title)`, which names the files) or stop (`None`). See `record.rs`.
+    Record(Option<String>),
 }
 
 #[derive(Debug)]
@@ -44,6 +46,12 @@ pub enum MediaEvent {
     Hands(Vec<String>),
     /// Someone raised (`true`) or lowered our hand for us with a `raise-hand` message.
     HandSetBy { from: String, raised: bool },
+    /// A recording started or stopped (also when the call ends).
+    Recording(bool),
+    /// Something to tell the user that is not an error (a recording saved).
+    Info(String),
+    /// How the transcript of a recording is coming along.
+    Transcript(crate::transcribe::Status),
 }
 
 /// Which video tiles the frontend wants to see; frames of any other tile are not converted at all (they are dropped
