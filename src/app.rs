@@ -69,9 +69,10 @@ pub struct CallUi {
     pub ignore_room: Option<String>,
     pub tiles: Vec<Tile>,
     pub speakers: std::collections::HashSet<String>,
-    /// When we raised our hand (Unix ms), while it is up; and who else in the call has theirs up.
+    /// When we raised our hand (Unix ms), while it is up; and who else in the call has theirs up, with when we first
+    /// saw each one go up (Unix ms, our own clock, so the order is the order we noticed them in).
     pub hand: Option<i64>,
-    pub hands: std::collections::HashSet<String>,
+    pub hands: HashMap<String, i64>,
     /// Since when LiveKit has listed us as speaking without a break: a second of it lowers our hand.
     pub talking_since: Option<f64>,
 }
@@ -485,7 +486,7 @@ impl State {
         }
         self.call.hand = match self.call.hand {
             Some(_) => None,
-            None => Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)),
+            None => Some(unix_ms()),
         };
         self.media_out.push(MediaCmd::Hand(self.call.hand));
         if self.call.hand.is_some() {
@@ -814,10 +815,11 @@ impl State {
             }
             MediaEvent::Hands(ids) => {
                 // a chime for each hand that just went up, as SoWork's client does
-                if ids.iter().any(|id| !self.call.hands.contains(id)) {
+                if ids.iter().any(|id| !self.call.hands.contains_key(id)) {
                     self.sounds.push(crate::sound::Sound::RaiseHand);
                 }
-                self.call.hands = ids.into_iter().collect();
+                let at = unix_ms();
+                self.call.hands = ids.into_iter().map(|id| { let t = self.call.hands.get(&id).copied().unwrap_or(at); (id, t) }).collect();
             }
             MediaEvent::PeerMuted(id, m) => {
                 if m { self.call.peer_muted.insert(id); } else { self.call.peer_muted.remove(&id); }
@@ -993,6 +995,10 @@ impl State {
     }
 }
 
+fn unix_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1029,11 +1035,22 @@ mod tests {
         assert_eq!(st.sounds.iter().filter(|s| **s == crate::sound::Sound::RaiseHand).count(), 2, "a chime per raise, none for lowering");
         st.sounds.clear();
         st.apply_media(MediaEvent::Hands(vec!["ana".into()]), 0.0);
-        assert!(crate::meeting::tiles(&st).iter().all(|t| t.hand == t.is_self));
         assert_eq!(st.sounds, [crate::sound::Sound::RaiseHand], "ana raised hers");
+        let order = |st: &State| crate::meeting::tiles(st).iter().map(|t| (t.id.clone(), t.hand)).collect::<Vec<_>>();
+        st.call.peers = Some(vec![("ana".into(), "Ana".into()), ("bo".into(), "Bo".into()), ("cy".into(), "Cy".into())]);
+        let mine = st.call.hand.unwrap();
+        assert!(st.call.hands["ana"] >= mine, "ana's hand was noticed after ours went up");
+        st.call.hands.insert("ana".into(), mine + 5);
+        st.apply_media(MediaEvent::Hands(vec!["ana".into(), "bo".into()]), 0.0);
+        assert_eq!(st.call.hands["ana"], mine + 5, "a hand already up keeps its time");
+        st.call.hands.insert("bo".into(), mine - 5);
+        assert_eq!(order(&st), [("self".into(), Some(2)), ("ana".into(), Some(3)), ("bo".into(), Some(1)), ("cy".into(), None)]);
         st.apply_media(MediaEvent::Hands(vec!["ana".into()]), 0.0);
+        assert_eq!(order(&st)[1..3], [("ana".into(), Some(2)), ("bo".into(), None)], "bo lowered: ana moves up");
+        st.call.peers = None;
+        st.sounds.clear();
         st.apply_media(MediaEvent::Hands(vec![]), 0.0);
-        assert_eq!(st.sounds.len(), 1, "no chime when nothing new went up");
+        assert!(st.sounds.is_empty(), "no chime when a hand goes down");
         st.apply_media(MediaEvent::Speakers(vec!["ana".into()]), 0.0);
         assert!(st.call.hand.is_some(), "someone else talking keeps our hand up");
         st.apply_media(MediaEvent::Speakers(vec!["me".into()]), 10.0);

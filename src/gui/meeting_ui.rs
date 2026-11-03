@@ -205,7 +205,7 @@ fn tile_buttons(spec: &TileSpec, pinned: bool, tile_full: bool) -> Vec<TileBtn> 
     if tile_full {
         return vec![TileBtn::Fullscreen];
     }
-    let mut v = if spec.is_self || spec.content { vec![] } else if spec.hand { vec![TileBtn::Mute, TileBtn::LowerHand, TileBtn::CameraOff] } else { vec![TileBtn::Mute, TileBtn::CameraOff] };
+    let mut v = if spec.is_self || spec.content { vec![] } else if spec.hand.is_some() { vec![TileBtn::Mute, TileBtn::LowerHand, TileBtn::CameraOff] } else { vec![TileBtn::Mute, TileBtn::CameraOff] };
     if pinned {
         v.push(TileBtn::Fullscreen);
     }
@@ -483,12 +483,13 @@ fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpe
         }
         icon::draw(pm, icons::MIC_OFF, c.x + 4.0 * u, c.y + 4.0 * u, 12.0 * u, [255, 255, 255]);
     }
-    // raised hand (top-left)
-    if spec.hand {
-        if let Some(p) = PathBuilder::from_circle(r.x + 16.0 * u, r.y + 16.0 * u, 12.0 * u) {
-            pm.fill_path(&p, &paint(theme::BRAND, 255), FillRule::Winding, Transform::identity(), None);
-        }
-        icon::draw(pm, icons::HAND, r.x + 9.0 * u, r.y + 9.0 * u, 14.0 * u, [255, 255, 255]);
+    // raised hand (top-left): a pill with the hand and its place in the queue
+    if let Some(n) = spec.hand {
+        let (label, h, isz, fs) = (n.to_string(), 48.0 * u, 28.0 * u, 24.0 * u);
+        let pill = R { x: r.x + 6.0 * u, y: r.y + 6.0 * u, w: 10.0 * u + isz + 6.0 * u + text.width(&label, fs) + 14.0 * u, h };
+        fill_rr(pm, pill, h / 2.0, theme::BRAND, 255);
+        icon::draw(pm, icons::HAND, pill.x + 10.0 * u, pill.y + (h - isz) / 2.0, isz, [255, 255, 255]);
+        text.draw(pm, &label, pill.x + 10.0 * u + isz + 6.0 * u, pill.y + h / 2.0 + 8.5 * u, fs, [255, 255, 255], 0.0);
     }
     // hover overlay: bg-black/40 with the tile's buttons
     if hover {

@@ -89,7 +89,8 @@ A later `POST /api/v1/user/update` with only `workingHours` (229.7 s) shows that
 ## Status in this client
 
 - Raising the hand: implemented (`H`, or the hand button in the meeting dock). Other people's raised hands are shown in
-  the call. Each hand that goes up (ours too) plays SoWork's `raiseHand` chime, as its client does
+  the call, numbered in the order they went up (1 = first). The order is by when this client first saw each hand go
+  up, on its own clock, not by the other clients' `raisedHandAt`. Each hand that goes up (ours too) plays SoWork's `raiseHand` chime, as its client does
   (`handleMetadataChanged`: plays when `raisedHandAt` becomes set). Speaking lowers our hand by itself, after LiveKit
   has listed us as an active speaker for a second without a break; SoWork's client has no such rule.
 - Lowering someone else's hand: implemented (the hand button on their tile, beside mute, while their hand is up).

@@ -97,7 +97,8 @@ pub struct TileSpec {
     pub content: bool,
     pub speaking: bool,
     pub muted: bool,
-    pub hand: bool,
+    /// The hand's place in the queue (1 = raised first), while it is up.
+    pub hand: Option<usize>,
 }
 
 pub fn visible(st: &State) -> bool {
@@ -120,7 +121,19 @@ fn others(st: &State) -> Vec<String> {
     st.cluster.as_ref().map(|c| c.users.iter().filter(|(i, _)| *i != st.me_id).map(|(i, _)| i.clone()).collect()).unwrap_or_default()
 }
 
+/// Raised hands (user ids, ours included) in the order they went up.
+pub fn hand_queue(st: &State) -> Vec<String> {
+    let mut q: Vec<(i64, &String)> = st.call.hands.iter().map(|(id, t)| (*t, id)).collect();
+    if let Some(t) = st.call.hand {
+        q.push((t, &st.me_id));
+    }
+    q.sort();
+    q.into_iter().map(|(_, id)| id.clone()).collect()
+}
+
 pub fn tiles(st: &State) -> Vec<TileSpec> {
+    let queue = hand_queue(st);
+    let place = |id: &str| queue.iter().position(|q| q == id).map(|i| i + 1);
     let me_name = st.me().map(|m| m.name.clone()).unwrap_or_default();
     let mut v = vec![TileSpec {
         id: "self".into(),
@@ -132,7 +145,7 @@ pub fn tiles(st: &State) -> Vec<TileSpec> {
         content: false,
         speaking: st.call.speakers.contains(&st.me_id),
         muted: !st.call.mic,
-        hand: st.call.hand.is_some(),
+        hand: place(&st.me_id),
     }];
     for id in others(st) {
         let name = st.users.get(&id).map(|u| u.name.clone()).or_else(|| st.call.peers.as_ref().and_then(|p| p.iter().find(|(i, n)| *i == id && !n.is_empty()).map(|(_, n)| n.clone()))).or_else(|| st.cluster.as_ref().and_then(|c| c.users.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| id.clone());
@@ -146,7 +159,7 @@ pub fn tiles(st: &State) -> Vec<TileSpec> {
             content: false,
             speaking: st.call.speakers.contains(&id),
             muted: st.call.peer_muted.contains(&id),
-            hand: st.call.hands.contains(&id),
+            hand: place(&id),
         });
     }
     for t in st.call.tiles.iter().filter(|t| t.key.ends_with(":screen")) {
@@ -160,7 +173,7 @@ pub fn tiles(st: &State) -> Vec<TileSpec> {
             content: true,
             speaking: false,
             muted: false,
-            hand: false,
+            hand: None,
         });
     }
     v

@@ -482,7 +482,12 @@ fn call(f: &mut Frame, t: &Tui, r: Rect, inline: bool) {
     for tile in meeting::tiles(st) {
         let shown = tile.video_key.is_some() && tile.video_key == picked;
         let mark = if shown { "▶" } else if tile.video_key.is_some() { "▣" } else { " " };
-        let (icon, col) = if tile.hand { ("✋", BRAND) } else if tile.speaking { ("♪ ", OK) } else if tile.muted && !tile.content { ("× ", DIM) } else { ("  ", MUTED) };
+        let (icon, col) = match tile.hand {
+            Some(n) => (format!("✋{n} "), BRAND),
+            None if tile.speaking => ("♪ ".into(), OK),
+            None if tile.muted && !tile.content => ("× ".into(), DIM),
+            None => ("  ".into(), MUTED),
+        };
         let name = if tile.is_self { "You".to_string() } else { tile.name.clone() };
         let name = fit(&name, (list_w as usize).saturating_sub(6));
         lines.push(Line::from(vec![
