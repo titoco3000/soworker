@@ -145,8 +145,8 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
         }
         None => {
             let n = specs.len().max(1);
-            let cols = (n as f32).sqrt().ceil() as usize;
-            let rows = n.div_ceil(cols);
+            let aspects: Vec<f32> = specs.iter().filter_map(|t| t.video_key.as_ref()).filter_map(|k| st.call.tiles.iter().find(|t| &t.key == k)).filter(|t| t.img.h > 0).map(|t| t.img.w as f32 / t.img.h as f32).collect();
+            let (cols, rows) = grid(n, &aspects, area, gap);
             let (cw, ch) = ((area.w - gap * (cols as f32 - 1.0)) / cols as f32, (area.h - gap * (rows as f32 - 1.0)) / rows as f32);
             for (i, s) in specs.into_iter().enumerate() {
                 let (c, r) = (i % cols, i / cols);
@@ -180,6 +180,24 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
         input = Some(R { x: c.x + 8.0 * u, y, w: c.w - 16.0 * u - send_w - 4.0 * u, h: fh });
     }
     Some(Layout { dock, header, full_btn, tiles: out, status: (dx + pad, body_top + body_h - 10.0 * u), controls, chat_col, send_btn, input, bar, area, side, max_scroll, tile_full: false })
+}
+
+/// Columns and rows of the gallery for `n` tiles in `area`. Up to three tiles sit in one row or one column, whichever
+/// gives cells closest to the shape of the videos (`aspects`, width / height; 16:9 when nobody has one); more tiles make
+/// a square-ish grid.
+fn grid(n: usize, aspects: &[f32], area: R, gap: f32) -> (usize, usize) {
+    if n > 3 {
+        let cols = (n as f32).sqrt().ceil() as usize;
+        return (cols, n.div_ceil(cols));
+    }
+    let default = [16.0 / 9.0];
+    let aspects = if aspects.is_empty() { &default[..] } else { aspects };
+    let gaps = gap * (n as f32 - 1.0);
+    // how far the cells are from the videos' shapes: the sum of |log(cell / video)|, so 2x too wide = 2x too tall
+    let off = |cw: f32, ch: f32| aspects.iter().map(|a| ((cw / ch.max(1.0)) / a).ln().abs()).sum::<f32>();
+    let row = off((area.w - gaps) / n as f32, area.h);
+    let column = off(area.w, (area.h - gaps) / n as f32);
+    if column < row { (1, n) } else { (n, 1) }
 }
 
 fn tile_buttons(spec: &TileSpec, pinned: bool, tile_full: bool) -> Vec<TileBtn> {
@@ -547,4 +565,21 @@ pub fn wheel(st: &mut State, text: &mut Text, px: f32, py: f32, w: f32, h: f32, 
         st.dirty = true;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn up_to_three_tiles_go_side_by_side_or_stacked() {
+        let wide = R { x: 0.0, y: 0.0, w: 1600.0, h: 500.0 };
+        let tall = R { x: 0.0, y: 0.0, w: 600.0, h: 1000.0 };
+        assert_eq!(grid(2, &[16.0 / 9.0], wide, 8.0), (2, 1), "two landscape cameras in a wide area: side by side");
+        assert_eq!(grid(2, &[16.0 / 9.0, 4.0 / 3.0], tall, 8.0), (1, 2), "in a tall area: stacked");
+        assert_eq!(grid(3, &[], tall, 8.0), (1, 3), "no video yet: assume 16:9");
+        assert_eq!(grid(3, &[9.0 / 16.0; 3], tall, 8.0), (3, 1), "portrait phone cameras side by side");
+        assert_eq!(grid(1, &[], tall, 8.0), (1, 1));
+        assert_eq!(grid(5, &[], wide, 8.0), (3, 2), "more tiles make a grid");
+    }
 }

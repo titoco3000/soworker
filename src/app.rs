@@ -196,7 +196,7 @@ impl State {
             spawn: None,
             users: HashMap::new(),
             roster: vec![],
-            sidebar: Default::default(),
+            sidebar: crate::directory::Ui { collapsed: crate::calls::setting("sidebarCollapsed").as_bool().unwrap_or(false), ..Default::default() },
             waves: vec![],
             chat: Default::default(),
             chat_out: vec![],
@@ -619,6 +619,14 @@ impl State {
         }
     }
 
+    /// Collapses the sidebar to its avatars, or expands it again, and remembers the choice.
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar.collapsed = !self.sidebar.collapsed;
+        self.sidebar.open = None;
+        crate::calls::save_setting("sidebarCollapsed", self.sidebar.collapsed.into());
+        self.dirty = true;
+    }
+
     /// An on-screen button was pressed.
     pub fn sidebar_press(&mut self, hit: crate::directory::Hit, now: f64) {
         use crate::directory::{join_target, Hit};
@@ -627,8 +635,14 @@ impl State {
                 let a = !self.available;
                 self.set_available(a);
             }
+            Hit::Collapse => self.toggle_sidebar(),
             Hit::Profile => self.toggle_profile(),
             Hit::Terminal => self.switch = Some(crate::mode::UiMode::Tui),
+            // a row of the narrow sidebar has no room for its menu: widen the sidebar first
+            Hit::Row(key) if self.sidebar.collapsed => {
+                self.toggle_sidebar();
+                self.sidebar.open = Some(key);
+            }
             Hit::Row(key) => self.sidebar.open = if self.sidebar.open.as_deref() == Some(key.as_str()) { None } else { Some(key) },
             Hit::Join(key) => {
                 self.sidebar.open = None;

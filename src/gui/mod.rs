@@ -207,11 +207,17 @@ impl ApplicationHandler<UserEvent> for App {
                     } else {
                         meeting_ui::update_hover(&mut self.st, &mut self.text, c.0, c.1, w, h);
                     }
-                    let hand = sidebar::hit(&self.st, c.0, c.1, h) == Some(crate::directory::Hit::Profile);
+                    sidebar::update_hover(&mut self.st, c.0, c.1, h);
+                    let hand = sidebar::hit(&self.st, c.0, c.1, h) == Some(crate::directory::Hit::Profile) || sidebar::hovered(&self.st, h).is_some();
                     if hand != self.hand {
                         self.hand = hand;
                         win.set_cursor(if hand { winit::window::CursorIcon::Pointer } else { winit::window::CursorIcon::Default });
                     }
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if self.st.sidebar.hover.take().is_some() {
+                    self.st.dirty = true;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {

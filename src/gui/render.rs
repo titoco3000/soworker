@@ -418,6 +418,7 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, cache: &mut Map
     }
     crate::gui::sidebar::draw(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
     crate::gui::meeting_ui::draw(st, pm, text, w, h);
+    crate::gui::sidebar::draw_hover_card(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
     crate::gui::chatui::draw(st, pm, text);
     crate::gui::profile_ui::draw(st, pm, text);
     if st.confirm_logout {

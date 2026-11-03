@@ -9,6 +9,10 @@ pub struct Ui {
     /// The row whose menu is open: a user id, or `zone:<zone id>` for a meeting.
     pub open: Option<String>,
     pub scroll: f32,
+    /// Narrow sidebar: only the avatars, no names.
+    pub collapsed: bool,
+    /// Where the mouse is over the collapsed sidebar: the row under it gets a card with its details.
+    pub hover: Option<(f32, f32)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +48,8 @@ pub enum Row {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
     Away,
+    /// The collapse / expand button.
+    Collapse,
     /// The user icon: opens the profile panel.
     Profile,
     /// Move to the terminal client.

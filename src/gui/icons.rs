@@ -90,6 +90,10 @@ pub const USER: &[Shape] = &[
 
 pub const CHEVRON_DOWN: &[Shape] = &[Shape::Path("M6 9l6 6 6-6")];
 
+pub const CHEVRON_LEFT: &[Shape] = &[Shape::Path("M15 18l-6-6 6-6")];
+
+pub const CHEVRON_RIGHT: &[Shape] = &[Shape::Path("M9 18l6-6-6-6")];
+
 pub const VOLUME: &[Shape] = &[
     Shape::Poly("11 5 6 9 2 9 2 15 6 15 11 19 11 5 z"),
     Shape::Path("M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"),
