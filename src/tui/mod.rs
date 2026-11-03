@@ -950,7 +950,7 @@ mod tests {
     #[test]
     fn the_profile_dialog_leads_to_the_logout_question() {
         let mut t = Tui::for_test();
-        t.st.profile = Some(crate::profile::Profile { devices: Default::default(), chosen: Default::default(), open: None, meter: None, sel: 1 });
+        t.st.profile = Some(crate::profile::Profile { devices: Default::default(), chosen: Default::default(), open: None, meter: None, sel: 1, photo_hover: false });
         t.modal = Modal::Profile;
         t.key(press(KeyCode::Up));
         assert_eq!(t.st.profile.as_ref().unwrap().sel, 0, "the first line is Log out");

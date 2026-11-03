@@ -804,7 +804,7 @@ mod tests {
         use crate::devices::{Device, Devices};
         let mut t = tui();
         let devices = Devices { outputs: vec![Device { id: "sink.a".into(), name: "Speakers".into() }], ..Default::default() };
-        t.st.profile = Some(crate::profile::Profile { devices, chosen: Default::default(), open: None, meter: None, sel: 1 });
+        t.st.profile = Some(crate::profile::Profile { devices, chosen: Default::default(), open: None, meter: None, sel: 1, photo_hover: false });
         t.modal = Modal::Profile;
         let s = render(&t, 100, 30);
         for want in ["Profile", "Me", "Log out", "Settings", "Speaker", "System default", "Microphone", "Camera", "play sound", "no meter"] {

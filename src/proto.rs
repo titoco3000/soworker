@@ -70,6 +70,10 @@ pub enum Net {
     LoggedOut,
     /// Profile update for a user (name, photo, avatar config).
     UserInfo { id: String, name: Option<String>, photo: Option<Option<String>>, portrait: Option<String> },
+    /// Our new profile photo is uploaded and saved; the socket thread tells gaia (`info_update`) before passing it on.
+    PhotoChanged { url: String, name: String, role: String, affiliation: String },
+    /// The user closed the file picker without choosing a picture.
+    PhotoCancelled,
     /// A decoded, circle-masked, premultiplied RGBA avatar picture.
     Avatar { id: String, size: u32, rgba: Vec<u8> },
 }
@@ -89,6 +93,8 @@ pub enum Cmd {
     Wave(String),
     /// We answered a wave from this person: dismiss its notification.
     WaveDone(String),
+    /// Pick a picture and make it our profile photo (file picker, upload, then `info_update`).
+    ChangePhoto,
     /// Close the socket cleanly and stop reconnecting.
     Logout,
 }
@@ -293,8 +299,13 @@ pub fn cmd_packet(c: &Cmd) -> Vec<u8> {
         ),
         Cmd::Camera(on) => event_packet("camera_on", Some(map(vec![("cameraOn", (*on).into())])), None),
         Cmd::Speech(on) => event_packet("speech", Some(map(vec![("isSpeaking", (*on).into())])), None),
-        Cmd::Presence { .. } | Cmd::Logout | Cmd::Wave(_) | Cmd::WaveDone(_) => Vec::new(), // handled by the socket thread, never sent as a packet
+        Cmd::Presence { .. } | Cmd::Logout | Cmd::Wave(_) | Cmd::WaveDone(_) | Cmd::ChangePhoto => Vec::new(), // handled by the socket thread, never sent as a packet
     }
+}
+
+/// `info_update {role, affiliation, name}`: after a profile change, so the server pushes `update_info` to everyone.
+pub fn info_update_packet(name: &str, role: &str, affiliation: &str) -> Vec<u8> {
+    event_packet("info_update", Some(map(vec![("role", role.into()), ("affiliation", affiliation.into()), ("name", name.into())])), None)
 }
 
 /// The gaia half of a wave: `emote {emoteId, recipientUserId, senderUserId, extras: undefined}` (as recorded).

@@ -26,6 +26,8 @@ mod world;
 mod avatars;
 #[cfg(feature = "gui")]
 mod gui;
+#[cfg(feature = "gui")]
+mod photo;
 #[cfg(feature = "calls")]
 mod media;
 #[cfg(feature = "calls")]

@@ -1,5 +1,5 @@
 //! The gaia socket on its own thread: Engine.IO/Socket.IO over a TLS WebSocket, msgpack packets.
-use crate::proto::{cmd_packet, connect_packet, emote_packet, event_packet, events, init_packets, parse_packet, Cmd, Net};
+use crate::proto::{cmd_packet, connect_packet, emote_packet, event_packet, events, info_update_packet, init_packets, parse_packet, Cmd, Net};
 use crate::session::{Auth, CLIENT_VERSION};
 use std::io::ErrorKind;
 use std::net::TcpStream;
@@ -79,6 +79,9 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
 
     loop {
         while let Ok(e) = link.roster_rx.try_recv() {
+            if let Net::PhotoChanged { name, role, affiliation, .. } = &e {
+                ws.send(Message::Binary(info_update_packet(name, role, affiliation))).map_err(|e| e.to_string())?;
+            }
             emit(e);
         }
         if !link.group_id.is_empty() && link.roster_at.map_or(true, |t| t.elapsed() >= ROSTER_EVERY) {
@@ -175,6 +178,14 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
                     }
                     continue;
                 }
+                Cmd::ChangePhoto => {
+                    if !dry {
+                        if let Ok(token) = auth.id_token() {
+                            change_photo(token, auth.uid.clone(), link.group_id.clone(), link.roster_tx.clone());
+                        }
+                    }
+                    continue;
+                }
                 Cmd::WaveDone(from) => {
                     if !dry {
                         if let Ok(token) = auth.id_token() {
@@ -206,6 +217,29 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
             }
         }
     }
+}
+
+/// Ask for a picture and upload it, on its own thread (the file picker blocks until the user is done).
+#[cfg(feature = "gui")]
+fn change_photo(token: String, uid: String, group_id: String, tx: Sender<Net>) {
+    std::thread::spawn(move || {
+        let res = (|| {
+            let Some(path) = crate::photo::pick()? else { return Ok(None) };
+            let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let webp = crate::photo::prepare(&bytes)?;
+            crate::photo::upload(&token, &uid, &group_id, &webp).map(Some)
+        })();
+        let _ = match res {
+            Ok(Some(c)) => tx.send(Net::PhotoChanged { url: c.url, name: c.name, role: c.role, affiliation: c.affiliation }),
+            Ok(None) => tx.send(Net::PhotoCancelled),
+            Err(e) => tx.send(Net::Error(format!("Could not change the photo: {e}"))),
+        };
+    });
+}
+
+#[cfg(not(feature = "gui"))]
+fn change_photo(_token: String, _uid: String, _group_id: String, tx: Sender<Net>) {
+    let _ = tx.send(Net::Error("this build cannot change the photo (it has no image support)".into()));
 }
 
 /// `POST /api/v1/conversation/token {conversationId}`: the fallback the official client uses when the `cluster` event

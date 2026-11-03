@@ -98,4 +98,7 @@ A later `POST /api/v1/user/update` with only `workingHours` (229.7 s) shows that
   `ask-to-mute`); the participant named in `userId` then raises or lowers its own hand. We send and obey it the same
   way. The message format comes from the client code (`raiseHandStore`), not from a recording.
 - Going to the desk: implemented (`Ctrl+D`).
-- Changing the photo: not implemented; this client only shows photos.
+- Changing the photo: implemented in the window client. In the profile card, hovering the picture shows a pencil;
+  a click opens the desktop's file picker (the xdg-desktop-portal FileChooser, else zenity or kdialog; the system
+  dialog on Windows). The picture is cropped to a centred square, shrunk to at most 256 x 256 and encoded as lossless
+  WebP (`src/photo.rs`), then sent through the same three calls and `info_update` as above.

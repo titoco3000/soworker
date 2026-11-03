@@ -12,6 +12,8 @@ pub enum Act {
     /// Use this device (`None` = the system default).
     Pick(Kind, Option<String>),
     TestSound,
+    /// Pick a new profile photo.
+    ChangePhoto,
     Close,
     /// A click on the panel itself: nothing to do.
     Panel,
@@ -27,6 +29,9 @@ pub struct Profile {
     /// The selected line (terminal client): see `LINES`.
     #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     pub sel: usize,
+    /// The pointer is over our picture (window client): it shows a pencil.
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+    pub photo_hover: bool,
 }
 
 /// The terminal client's lines, top to bottom.
@@ -57,7 +62,7 @@ fn default_label(k: Kind) -> &'static str {
 impl Profile {
     pub fn new() -> Self {
         let chosen = devices::chosen();
-        Profile { devices: devices::list(), meter: Meter::start(chosen.input.clone()), chosen, open: None, sel: 1 }
+        Profile { devices: devices::list(), meter: Meter::start(chosen.input.clone()), chosen, open: None, sel: 1, photo_hover: false }
     }
 
     /// The choices of a list: the system default, then every device that is there.

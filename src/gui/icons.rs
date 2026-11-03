@@ -25,6 +25,8 @@ pub const MIC_OFF: &[Shape] = &[
     Shape::Line(8.0, 23.0, 16.0, 23.0),
 ];
 
+pub const PENCIL: &[Shape] = &[Shape::Path("M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z")];
+
 /// Lucide's `hand` (ISC, a Feather fork): Feather has no hand.
 pub const HAND: &[Shape] = &[
     Shape::Path("M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"),

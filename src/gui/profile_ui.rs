@@ -78,10 +78,19 @@ pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Act> {
     if l.logout.contains(px, py) {
         return Some(Act::Logout);
     }
+    if over_photo(&l, px, py) {
+        return Some(Act::ChangePhoto);
+    }
     if l.test.contains(px, py) {
         return Some(Act::TestSound);
     }
     Some(l.lists.iter().find(|(_, r)| r.contains(px, py)).map_or(Act::Panel, |(k, _)| Act::Toggle(*k)))
+}
+
+/// The pointer is on our round picture.
+pub fn over_photo(l: &Layout, px: f32, py: f32) -> bool {
+    let r = l.avatar.w / 2.0;
+    (px - l.avatar.x - r).hypot(py - l.avatar.y - r) <= r
 }
 
 fn centred(text: &mut Text, pm: &mut PixmapMut<'_>, s: &str, r: &R, px: f32, col: Rgb) {
@@ -112,6 +121,14 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
             let s = r * 1.15;
             crate::gui::icon::draw(pm, icons::USER, cx - s / 2.0, cy - s / 2.0 - u, s, INK_MUTED);
         }
+    }
+    if p.photo_hover {
+        // darken the picture and offer to change it
+        if let Some(c) = PathBuilder::from_circle(cx, cy, r) {
+            pm.fill_path(&c, &paint(0, 0, 0, 110), FillRule::Winding, id, None);
+        }
+        let s = r * 0.8;
+        crate::gui::icon::draw(pm, icons::PENCIL, cx - s / 2.0, cy - s / 2.0, s, [255, 255, 255]);
     }
     let tx = l.avatar.x + l.avatar.w + 14.0 * u;
     let name_w = l.card.x + l.card.w - PAD * u - tx;
@@ -200,7 +217,7 @@ mod tests {
             cameras: vec![],
             screens: vec![],
         };
-        st.profile = Some(Profile { devices, chosen: Choice::default(), open: None, meter: None, sel: 0 });
+        st.profile = Some(Profile { devices, chosen: Choice::default(), open: None, meter: None, sel: 0, photo_hover: false });
         st
     }
 
@@ -211,6 +228,9 @@ mod tests {
         assert!(l.card.y + l.card.h <= 700.0 - FOOTER, "the card sits above the footer");
         assert_eq!(hit(&st, l.logout.x + 2.0, l.logout.y + 2.0, 700.0), Some(Act::Logout));
         assert_eq!(hit(&st, l.test.x + 2.0, l.test.y + 2.0, 700.0), Some(Act::TestSound));
+        let a = l.avatar;
+        assert_eq!(hit(&st, a.x + a.w / 2.0, a.y + a.h / 2.0, 700.0), Some(Act::ChangePhoto));
+        assert_eq!(hit(&st, a.x + 1.0, a.y + 1.0, 700.0), Some(Act::Panel), "the corner of the square is outside the circle");
         let (_, out) = l.lists[0];
         assert_eq!(hit(&st, out.x + 2.0, out.y + 2.0, 700.0), Some(Act::Toggle(Kind::Output)));
         assert_eq!(hit(&st, 900.0, 100.0, 700.0), None, "outside closes");

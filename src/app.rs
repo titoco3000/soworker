@@ -341,6 +341,15 @@ impl State {
                 }
                 self.want_avatar(&id);
             }
+            Net::PhotoCancelled => self.toast = None,
+            Net::PhotoChanged { url, .. } => {
+                if let Some(me) = self.users.get_mut(&self.me_id) {
+                    me.photo = Some(url);
+                }
+                let me = self.me_id.clone();
+                self.want_avatar(&me);
+                self.say("Profile photo updated", now);
+            }
             Net::Avatar { id, size, rgba } => {
                 if rgba.len() == (size * size * 4) as usize {
                     self.pics.insert(id, Frame { w: size, h: size, rgba });
@@ -645,6 +654,11 @@ impl State {
                 }
             }
             Act::TestSound => self.sounds.push(crate::sound::Sound::ReceiveWave),
+            Act::ChangePhoto => {
+                p.photo_hover = false;
+                self.outbox.push(Cmd::ChangePhoto);
+                self.toast = Some(("Choose a picture for your profile…".into(), f64::MAX)); // until the upload answers
+            }
             Act::Close => self.profile = None,
             Act::Panel => p.open = None,
         }

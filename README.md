@@ -67,7 +67,7 @@ runtime libwebrtc needs). From Linux: `make build-windows`.
   on, the mic is captured with `parec` (or `pw-record`) on Linux and WASAPI on Windows; off, libwebrtc captures it
   itself and uses its own noise suppression.
 - **Profile and devices:** `u` in the terminal (or the `u profile` button top right), the user icon next to the memory
-  use in the window. It shows who is signed in, Log out, and the settings: the speaker (with a test sound), the
+  use in the window. It shows who is signed in (in the window, click your picture to change it), Log out, and the settings: the speaker (with a test sound), the
   microphone (with a level meter) and the camera, each the system default or a device picked from what is plugged in
   (`pactl` and `/dev/video*` on Linux, WASAPI and Media Foundation on Windows). A change applies to a running call too;
   the choices are kept as `audioOutput`, `audioInput` and `camera` in `settings.json`.

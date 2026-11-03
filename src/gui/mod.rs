@@ -208,7 +208,12 @@ impl ApplicationHandler<UserEvent> for App {
                         meeting_ui::update_hover(&mut self.st, &mut self.text, c.0, c.1, w, h);
                     }
                     sidebar::update_hover(&mut self.st, c.0, c.1, h);
-                    let hand = sidebar::hit(&self.st, c.0, c.1, h) == Some(crate::directory::Hit::Profile) || sidebar::hovered(&self.st, h).is_some();
+                    let over_photo = self.st.profile.as_ref().is_some_and(|p| profile_ui::over_photo(&profile_ui::layout(&self.st, p, h), c.0, c.1));
+                    if let Some(p) = self.st.profile.as_mut().filter(|p| p.photo_hover != over_photo) {
+                        p.photo_hover = over_photo;
+                        self.st.dirty = true;
+                    }
+                    let hand = over_photo || sidebar::hit(&self.st, c.0, c.1, h) == Some(crate::directory::Hit::Profile) || sidebar::hovered(&self.st, h).is_some();
                     if hand != self.hand {
                         self.hand = hand;
                         win.set_cursor(if hand { winit::window::CursorIcon::Pointer } else { winit::window::CursorIcon::Default });
