@@ -483,13 +483,19 @@ fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpe
         }
         icon::draw(pm, icons::MIC_OFF, c.x + 4.0 * u, c.y + 4.0 * u, 12.0 * u, [255, 255, 255]);
     }
-    // raised hand (top-left): a pill with the hand and its place in the queue
+    // raised hand (top-left): a pill with the hand and, when several are up, its place in the queue; about a sixth of
+    // the tile's short side
     if let Some(n) = spec.hand {
-        let (label, h, isz, fs) = (n.to_string(), 48.0 * u, 28.0 * u, 24.0 * u);
-        let pill = R { x: r.x + 6.0 * u, y: r.y + 6.0 * u, w: 10.0 * u + isz + 6.0 * u + text.width(&label, fs) + 14.0 * u, h };
+        let h = (r.w.min(r.h) * 0.18).clamp(20.0 * u, 48.0 * u);
+        let k = h / 48.0; // everything below is laid out for a 48 px pill
+        let label = if crate::meeting::hand_queue(st).len() > 1 { n.to_string() } else { String::new() };
+        let (isz, fs) = (28.0 * k, 24.0 * k);
+        let w = if label.is_empty() { h } else { (10.0 + 28.0 + 6.0 + 14.0) * k + text.width(&label, fs) };
+        let pill = R { x: r.x + 6.0 * u, y: r.y + 6.0 * u, w, h };
         fill_rr(pm, pill, h / 2.0, theme::BRAND, 255);
-        icon::draw(pm, icons::HAND, pill.x + 10.0 * u, pill.y + (h - isz) / 2.0, isz, [255, 255, 255]);
-        text.draw(pm, &label, pill.x + 10.0 * u + isz + 6.0 * u, pill.y + h / 2.0 + 8.5 * u, fs, [255, 255, 255], 0.0);
+        let ix = if label.is_empty() { pill.x + (h - isz) / 2.0 } else { pill.x + 10.0 * k };
+        icon::draw(pm, icons::HAND, ix, pill.y + (h - isz) / 2.0, isz, [255, 255, 255]);
+        text.draw(pm, &label, pill.x + (10.0 + 28.0 + 6.0) * k, pill.y + h / 2.0 + 8.5 * k, fs, [255, 255, 255], 0.0);
     }
     // hover overlay: bg-black/40 with the tile's buttons
     if hover {

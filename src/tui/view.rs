@@ -479,11 +479,13 @@ fn call(f: &mut Frame, t: &Tui, r: Rect, inline: bool) {
     let list_w = if inline { inner.width * 2 / 5 } else { inner.width };
     let picked = t.picked_key();
     let mut lines = Vec::new();
+    let numbered = meeting::hand_queue(st).len() > 1;
     for tile in meeting::tiles(st) {
         let shown = tile.video_key.is_some() && tile.video_key == picked;
         let mark = if shown { "▶" } else if tile.video_key.is_some() { "▣" } else { " " };
         let (icon, col) = match tile.hand {
-            Some(n) => (format!("✋{n} "), BRAND),
+            Some(n) if numbered => (format!("✋{n} "), BRAND),
+            Some(_) => ("✋".into(), BRAND),
             None if tile.speaking => ("♪ ".into(), OK),
             None if tile.muted && !tile.content => ("× ".into(), DIM),
             None => ("  ".into(), MUTED),
