@@ -80,6 +80,10 @@ pub struct CallUi {
     pub rec_shown: u64,
 }
 
+/// A walk out of the meeting area waiting for the user's yes: the click target and whether it was a teleport.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LeaveAsk(pub Option<(f32, f32, bool)>);
+
 #[derive(Default, Clone, Copy)]
 pub struct Keys {
     pub up: bool,
@@ -186,6 +190,8 @@ pub struct State {
     pub profile: Option<crate::profile::Profile>,
     /// Logout flow: the confirmation dialog, then the request the window acts on.
     pub confirm_logout: bool,
+    /// Asked to confirm walking out of the meeting area while in a call; holds where a click was heading (None = arrow keys).
+    pub confirm_leave: Option<LeaveAsk>,
     pub logout_requested: bool,
     /// Some = show the sign-in screen instead of the world; `login_act` is what the user just asked for.
     pub login: Option<LoginPhase>,
@@ -254,6 +260,7 @@ impl State {
             switch: None,
             profile: None,
             confirm_logout: false,
+            confirm_leave: None,
             logout_requested: false,
             login: None,
             login_act: None,
@@ -471,6 +478,12 @@ impl State {
 
     /// Left and right edge of the map: between the sidebar and the chat panel.
     pub fn click(&mut self, wx: f32, wy: f32, shift: bool, now: f64) {
+        if self.confirm_leave.is_some() {
+            return;
+        }
+        if self.leaves_zone(wx, wy) && self.world.floors.contains(&(tile(wx), tile(wy))) {
+            return self.ask_leave(Some((wx, wy, shift)));
+        }
         if shift {
             return self.teleport(wx, wy);
         }
@@ -693,16 +706,7 @@ impl State {
             Hit::Ctl(Ctl::NoiseCancel) => self.toggle_noise_cancel(now),
             Hit::Ctl(Ctl::Hand) => self.toggle_hand(now),
             Hit::Ctl(Ctl::Record) => self.toggle_record(now),
-            Hit::Ctl(Ctl::Leave) => {
-                // leaving = tell the server we are in no zone, drop the call, and do not rejoin until we walk out and back
-                self.call.ignore_room = self.call.want.clone().or_else(|| self.call.joined.clone());
-                self.call.want = None;
-                self.media_out.push(MediaCmd::Leave);
-                if self.cur_zone_id.is_some() {
-                    self.left_zone = self.cur_zone_id.clone();
-                    self.outbox.push(Cmd::Zone(None));
-                }
-            }
+            Hit::Ctl(Ctl::Leave) => self.leave_meeting(),
             Hit::TileBtn(_, TileBtn::Fullscreen) => self.dock.tile_full = !self.dock.tile_full,
             Hit::TileBtn(id, TileBtn::Pin) => {
                 self.dock.tile_full = false;
@@ -721,7 +725,6 @@ impl State {
                 self.media_out.push(MediaCmd::LowerHand(id));
                 self.say(format!("Lowered {name}'s hand"), now);
             }
-            Hit::TileBtn(_, TileBtn::CameraOff) => self.say("SoWork has no way to switch off someone else's camera (it can only ask them to turn it on)", now),
             _ => {}
         }
     }
@@ -768,6 +771,46 @@ impl State {
             }
             Act::Close => self.profile = None,
             Act::Panel => p.open = None,
+        }
+        self.dirty = true;
+    }
+
+    /// Leaving = tell the server we are in no zone, drop the call, and do not rejoin until we walk out and back.
+    fn leave_meeting(&mut self) {
+        self.call.ignore_room = self.call.want.clone().or_else(|| self.call.joined.clone());
+        self.call.want = None;
+        self.media_out.push(MediaCmd::Leave);
+        if self.cur_zone_id.is_some() {
+            self.left_zone = self.cur_zone_id.clone();
+            self.outbox.push(Cmd::Zone(None));
+        }
+    }
+
+    /// In a call, and still in the area it belongs to.
+    fn in_meeting(&self) -> bool {
+        self.call.joined.is_some() && self.cur_zone_id.is_some() && self.left_zone.is_none()
+    }
+
+    /// Would standing at this point take us out of the meeting area?
+    fn leaves_zone(&self, x: f32, y: f32) -> bool {
+        self.in_meeting() && self.world.zone_at(x, y).map(|z| &z.id) != self.cur_zone_id.as_ref()
+    }
+
+    fn ask_leave(&mut self, dest: Option<(f32, f32, bool)>) {
+        self.confirm_leave = Some(LeaveAsk(dest));
+        self.keys = Keys::default();
+        self.dirty = true;
+    }
+
+    /// The leave dialog's buttons. Yes leaves the call and carries on to where the user was heading.
+    pub fn leave_choice(&mut self, confirm: bool, now: f64) {
+        let Some(LeaveAsk(dest)) = self.confirm_leave.take() else { return };
+        self.keys = Keys::default(); // a key still held would ask again at once
+        if confirm {
+            self.leave_meeting();
+            if let Some((x, y, shift)) = dest {
+                self.click(x, y, shift, now);
+            }
         }
         self.dirty = true;
     }
@@ -1076,6 +1119,10 @@ impl State {
         let mut active = self.moving || self.path.is_some() || self.profile.as_ref().is_some_and(|p| p.meter.is_some());
         let k = self.keys;
         let (mut dx, mut dy) = ((k.right as i32 - k.left as i32) as f32, (k.down as i32 - k.up as i32) as f32);
+        if self.confirm_leave.is_some() {
+            (dx, dy) = (0.0, 0.0); // frozen until answered
+            self.path = None;
+        }
         if (dx != 0.0 || dy != 0.0) && self.path.take().is_some() {
             self.dirty = true;
         }
@@ -1093,7 +1140,7 @@ impl State {
                     }
                 }
             }
-            let want = dx != 0.0 || dy != 0.0;
+            let mut want = dx != 0.0 || dy != 0.0;
             if want {
                 let l = dx.hypot(dy);
                 // on a path, never step past the waypoint: a long frame overshot it by more than the 12 units that
@@ -1101,6 +1148,12 @@ impl State {
                 let len = if self.path.is_some() { (SPEED * dt).min(l) } else { SPEED * dt };
                 let before = p;
                 p = self.world.step(p, dx / l * len, dy / l * len);
+                if self.leaves_zone(p.0, p.1) {
+                    // the step would take us out of the meeting area: stay, and ask
+                    (p, want) = (before, false);
+                    self.path = None;
+                    self.ask_leave(None);
+                }
                 if self.path.is_some() {
                     self.stuck = if (p.0 - before.0).hypot(p.1 - before.1) < len * 0.2 { self.stuck + dt } else { 0.0 };
                     if self.stuck > 0.4 {

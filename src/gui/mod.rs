@@ -258,6 +258,10 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(choice) = render::modal_hit(&self.st, c.0, c.1, sw, sh) {
                             self.st.logout_choice(choice);
                         }
+                    } else if self.st.confirm_leave.is_some() {
+                        if let Some(choice) = render::modal_hit(&self.st, c.0, c.1, sw, sh) {
+                            self.st.leave_choice(choice, now);
+                        }
                     } else if self.st.profile.is_some() {
                         // a click outside the profile panel closes it (and does nothing else)
                         let act = profile_ui::hit(&self.st, c.0, c.1, sh).unwrap_or(crate::profile::Act::Close);
@@ -319,6 +323,14 @@ impl ApplicationHandler<UserEvent> for App {
                         self.st.dirty = true;
                     }
                     Key::Named(NamedKey::Escape) if down && self.st.confirm_logout => self.st.logout_choice(false),
+                    Key::Named(NamedKey::Escape) if down && self.st.confirm_leave.is_some() => {
+                        let now = self.now();
+                        self.st.leave_choice(false, now);
+                    }
+                    Key::Named(NamedKey::Enter) if down && self.st.confirm_leave.is_some() => {
+                        let now = self.now();
+                        self.st.leave_choice(true, now);
+                    }
                     Key::Named(NamedKey::Escape) if down && self.st.profile.is_some() => {
                         let list_open = self.st.profile.as_ref().is_some_and(|p| p.open.is_some());
                         self.st.profile_act(if list_open { crate::profile::Act::Panel } else { crate::profile::Act::Close });

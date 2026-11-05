@@ -200,12 +200,12 @@ fn grid(n: usize, aspects: &[f32], area: R, gap: f32) -> (usize, usize) {
 }
 
 fn tile_buttons(spec: &TileSpec, pinned: bool, tile_full: bool) -> Vec<TileBtn> {
-    // omoffice: self and content tiles only get pin; other attendees also get mute and camera off.
+    // omoffice: self and content tiles only get pin; other attendees also get mute (SoWork has no way to switch off someone else's camera).
     // The pinned (focused) tile also gets fullscreen, which is all there is while it fills the area.
     if tile_full {
         return vec![TileBtn::Fullscreen];
     }
-    let mut v = if spec.is_self || spec.content { vec![] } else if spec.hand.is_some() { vec![TileBtn::Mute, TileBtn::LowerHand, TileBtn::CameraOff] } else { vec![TileBtn::Mute, TileBtn::CameraOff] };
+    let mut v = if spec.is_self || spec.content { vec![] } else if spec.hand.is_some() { vec![TileBtn::Mute, TileBtn::LowerHand] } else { vec![TileBtn::Mute] };
     if pinned {
         v.push(TileBtn::Fullscreen);
     }
@@ -516,7 +516,6 @@ fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpe
         for (b, br) in btns.iter().zip(tile_button_rects(r, btns.len(), u)) {
             let disabled = match b {
                 TileBtn::Mute => spec.muted,
-                TileBtn::CameraOff => spec.video_key.is_none(),
                 TileBtn::Pin | TileBtn::Fullscreen | TileBtn::LowerHand => false,
             };
             let a = if disabled { 115 } else { 230 };
@@ -524,7 +523,6 @@ fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpe
             let (shapes, col) = match b {
                 TileBtn::Mute => (icons::MIC_OFF, theme::INK),
                 TileBtn::LowerHand => (icons::HAND, theme::BRAND),
-                TileBtn::CameraOff => (icons::VIDEO_OFF, theme::INK),
                 TileBtn::Fullscreen => (if tile_full { icons::MINIMIZE } else { icons::MAXIMIZE }, theme::INK),
                 TileBtn::Pin => (if pinned { icons::MINIMIZE } else { icons::MAXIMIZE }, if pinned { theme::BRAND } else { theme::INK }),
             };

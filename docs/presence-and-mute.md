@@ -63,7 +63,7 @@ The client applies the status locally first, then sends the REST body, which is 
   We do **not** check the sender's role (we do not have the group's permission table), so anyone in the call can mute you.
 - **available / away** button (or **B**): sends gaia `cluster_mode` and the REST sequence above. Away users (anyone with
   `none-away` or status `busy`) are drawn dimmed with an amber dot on the map.
-- Camera-off for others stays a stub (SoWork has no such message).
+- No camera-off button for others: SoWork has no such message.
 
 ## 4. Open questions
 

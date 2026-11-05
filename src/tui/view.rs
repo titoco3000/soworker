@@ -90,6 +90,7 @@ pub fn draw(f: &mut Frame, t: &Tui) {
     footer(f, t, a.footer);
     match t.modal {
         Modal::Logout => dialog(f, " Log out? ", &["This forgets your saved sign-in on this computer.", "", "y: log out    n: cancel"]),
+        Modal::Leave => dialog(f, " Leave the meeting? ", &["Walking out of this area leaves the call.", "", "y: leave    n: stay"]),
         Modal::Help => dialog(f, " Keys ", HELP),
         Modal::Profile => profile(f, t, a.profile.unwrap_or_else(|| centred(f.area(), PROFILE_W, PROFILE_H))),
         Modal::None => {

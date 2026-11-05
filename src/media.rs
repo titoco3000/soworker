@@ -536,17 +536,29 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
         RoomEvent::TrackUnmuted { participant: Participant::Remote(p), publication } if publication.source() == TrackSource::Microphone => {
             emit(MediaEvent::PeerMuted(p.identity().to_string(), false));
         }
+        // camera off is a mute, not an unpublish: no unsubscribe comes, so drop the tile or its last frame stays frozen.
+        // Frames resume (and re-create the tile) on unmute.
+        RoomEvent::TrackMuted { participant: Participant::Remote(p), publication } if matches!(publication.source(), TrackSource::Camera | TrackSource::Screenshare) => {
+            let screen = publication.source() == TrackSource::Screenshare;
+            let key = format!("{}{}", p.identity(), if screen { ":screen" } else { "" });
+            s.tap.forget_pic(&key);
+            emit(MediaEvent::VideoGone(key));
+        }
         RoomEvent::TrackSubscribed { track: RemoteTrack::Video(v), publication, participant } => {
             let screen = publication.source() == TrackSource::Screenshare;
             let key = format!("{}{}", participant.identity(), if screen { ":screen" } else { "" });
             let name = participant.name();
             let (emit2, tap) = (emit.clone(), s.tap.clone());
             let k = key.clone();
+            let publication = publication.clone();
             let task = tokio::spawn(async move {
                 let mut stream = NativeVideoStream::new(v.rtc_track());
                 let mut last = Instant::now() - Duration::from_secs(1);
                 let mut avail = Instant::now() - Duration::from_secs(2);
                 while let Some(frame) = stream.next().await {
+                    if publication.is_muted() {
+                        continue; // camera off: a frame still in flight must not bring the tile back
+                    }
                     if tap.wants_pic(&k) {
                         tap.pic(&k, &mut frame.buffer.to_i420(), screen); // the recording's own copy, whatever the UI shows
                     }

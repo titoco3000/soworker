@@ -74,7 +74,6 @@ pub enum Ctl {
 pub enum TileBtn {
     Mute,
     LowerHand,
-    CameraOff,
     Pin,
     Fullscreen,
 }

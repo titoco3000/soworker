@@ -38,6 +38,8 @@ pub enum Focus {
 pub enum Modal {
     None,
     Logout,
+    /// Confirm walking out of the meeting area (`State::confirm_leave`).
+    Leave,
     Help,
     /// Who is signed in, log out, and the speaker / microphone / camera settings (`State::profile`).
     Profile,
@@ -393,6 +395,9 @@ impl Tui {
             self.st.dismiss_transcript(); // the key closes the "no transcript" dialog, nothing else
             return;
         }
+        if self.modal == Modal::None && self.st.confirm_leave.is_some() {
+            self.modal = Modal::Leave;
+        }
         if self.modal != Modal::None {
             if !down {
                 return;
@@ -404,6 +409,9 @@ impl Tui {
                 (Modal::Logout, KeyCode::Char('y') | KeyCode::Enter) => self.st.logout_choice(true),
                 (Modal::Logout, KeyCode::Char('n') | KeyCode::Esc) => self.st.logout_choice(false),
                 (Modal::Logout, _) => return,
+                (Modal::Leave, KeyCode::Char('y') | KeyCode::Enter) => self.st.leave_choice(true, now),
+                (Modal::Leave, KeyCode::Char('n') | KeyCode::Esc) => self.st.leave_choice(false, now),
+                (Modal::Leave, _) => return,
                 _ => {}
             }
             self.modal = Modal::None;
@@ -881,6 +889,10 @@ fn event_loop(t: &mut Tui, terminal: &mut ratatui::DefaultTerminal, rx: Receiver
             t.mem = (mb, Instant::now());
         }
         pending |= t.st.update(dt, now);
+        if t.modal == Modal::None && t.st.confirm_leave.is_some() {
+            t.modal = Modal::Leave;
+            pending = true;
+        }
         let start = t.start;
         t.be.flush(&mut t.st, start);
         t.sync_focus();
