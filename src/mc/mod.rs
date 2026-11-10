@@ -72,6 +72,8 @@ struct Bridge {
     /// The screen share shown full screen in Minecraft (a snowball hit its wall), and when its last frame went out.
     watching: Option<String>,
     watch_at: f64,
+    /// `/sw exit`: close the bridge and start the client used last again.
+    exit: bool,
 }
 
 /// Seconds between two snowball waves at the same user.
@@ -440,6 +442,10 @@ impl Bridge {
             }
             "watch" => self.say("That screen share has ended"),
             "unwatch" => self.unwatch(),
+            "exit" => {
+                self.say("Back to SoWorker: closing Minecraft mode");
+                self.exit = true;
+            }
             // an ender pearl landed at block (x, z): SoWork's teleport (Shift+click) there, then put the player where
             // the avatar ended up (back where they were when the spot is off the floor)
             "pearl" => {
@@ -653,6 +659,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         waved_at: HashMap::new(),
         watching: None,
         watch_at: 0.0,
+        exit: false,
     };
     b.st.talk_key = crate::talk::key_label();
     let e = emit.clone();
@@ -691,6 +698,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if b.exit {
+            // the goodbye line has a moment to reach Minecraft, then the client used last opens again
+            std::thread::sleep(Duration::from_millis(300));
+            return crate::mode::relaunch(crate::mode::back(args), args);
         }
         if exit_after.is_some_and(|x| b.now() > x) {
             break;

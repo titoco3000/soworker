@@ -7,6 +7,9 @@ use std::process::{Command, Stdio};
 pub enum UiMode {
     Tui,
     Gui,
+    /// The office inside Minecraft (`--mc`): no window of its own. Never chosen by `choose` nor remembered as the
+    /// last client; only reached on purpose (the hidden `/minecraft` chat command), and left with `/sw exit`.
+    Mc,
 }
 
 impl UiMode {
@@ -14,6 +17,7 @@ impl UiMode {
         match self {
             UiMode::Tui => cfg!(feature = "tui"),
             UiMode::Gui => cfg!(feature = "gui"),
+            UiMode::Mc => cfg!(feature = "mc"),
         }
     }
 
@@ -21,13 +25,14 @@ impl UiMode {
         match self {
             UiMode::Tui => "--tui",
             UiMode::Gui => "--gui",
+            UiMode::Mc => "--mc",
         }
     }
 
     fn other(self) -> UiMode {
         match self {
             UiMode::Tui => UiMode::Gui,
-            UiMode::Gui => UiMode::Tui,
+            UiMode::Gui | UiMode::Mc => UiMode::Tui,
         }
     }
 }
@@ -45,7 +50,13 @@ pub fn last() -> Option<UiMode> {
     }
 }
 
+/// The client running in this process (set as it starts): the one the Minecraft bridge goes back to.
+static CURRENT: std::sync::Mutex<Option<UiMode>> = std::sync::Mutex::new(None);
+
 pub fn remember(m: UiMode) {
+    if let Ok(mut c) = CURRENT.lock() {
+        *c = Some(m);
+    }
     let f = file();
     if let Some(d) = f.parent() {
         let _ = std::fs::create_dir_all(d);
@@ -171,6 +182,50 @@ pub fn choose(args: &[String], terminal: bool, last: Option<UiMode>) -> UiMode {
     if want.built() { want } else { want.other() }
 }
 
+/// The arguments worth handing to the next client: not the old client's own flag, nor the Minecraft bridge's options.
+/// The client to start when the Minecraft bridge closes: the one it was started from (`--back tui|gui`), else the
+/// one used last.
+pub fn back(args: &[String]) -> UiMode {
+    let from = args.iter().position(|a| a == "--back").and_then(|i| args.get(i + 1)).and_then(|m| match m.as_str() {
+        "tui" => Some(UiMode::Tui),
+        "gui" => Some(UiMode::Gui),
+        _ => None,
+    });
+    choose(&[], false, from.or_else(last))
+}
+
+/// The arguments for starting `mode`: its flag, what is worth keeping from ours, and for the bridge the client to
+/// go back to.
+fn next_args(mode: UiMode, forward: &[String]) -> Vec<String> {
+    let mut args = client_args(forward);
+    args.insert(0, mode.flag().into());
+    let current = CURRENT.lock().ok().and_then(|c| *c);
+    if let (UiMode::Mc, Some(from)) = (mode, current) {
+        args.extend(["--back".into(), if from == UiMode::Tui { "tui" } else { "gui" }.into()]);
+    }
+    args
+}
+
+fn client_args(forward: &[String]) -> Vec<String> {
+    let mut out = vec![];
+    let mut it = forward.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--gui" | "--tui" | "--mc" | "--mc-demo" => {}
+            "--mc-port" | "--back" => drop(it.next()),
+            _ => out.push(a.clone()),
+        }
+    }
+    out
+}
+
+/// The bridge shows nothing of its own: say what to do next, as the client it replaces has just closed.
+fn started(mode: UiMode) {
+    if mode == UiMode::Mc {
+        crate::notify::message("Minecraft mode: start Minecraft and open your office world (/sw enable the first time). /sw exit comes back.");
+    }
+}
+
 fn exe() -> Option<String> {
     std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned())
 }
@@ -180,10 +235,10 @@ fn exe() -> Option<String> {
 #[cfg(unix)]
 pub fn relaunch(mode: UiMode, forward: &[String]) -> Result<(), String> {
     let exe = exe().ok_or("cannot find my own binary")?;
-    let mut args: Vec<String> = forward.iter().filter(|a| !matches!(a.as_str(), "--gui" | "--tui")).cloned().collect();
-    args.insert(0, mode.flag().into());
+    let args = next_args(mode, forward);
     let mut cmd = match mode {
-        UiMode::Gui => {
+        // the bridge has no window either: started the same way, detached, quietly
+        UiMode::Gui | UiMode::Mc => {
             let mut c = Command::new("sh");
             c.args(["-c", "sleep 0.5; exec \"$@\""]).arg("soworker").arg(&exe).args(&args);
             c
@@ -191,7 +246,28 @@ pub fn relaunch(mode: UiMode, forward: &[String]) -> Result<(), String> {
         UiMode::Tui => terminal_command(&exe, &args).ok_or("no usable terminal emulator: set `terminal` in ~/.config/soworker/settings.json (the command, with {} where the soworker command goes)")?,
     };
     use std::os::unix::process::CommandExt;
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map(drop).map_err(|e| format!("cannot start {}: {e}", mode.flag()))
+    // Nothing of ours may live on in the next client: the camera (v4l opens it without O_CLOEXEC) would stay busy
+    // in it, unused, and its own camera would fail with EBUSY.
+    // SAFETY: runs in the child between fork and exec, and only makes async-signal-safe system calls.
+    unsafe { cmd.pre_exec(close_inherited) };
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map(|_| started(mode)).map_err(|e| format!("cannot start {}: {e}", mode.flag()))
+}
+
+/// In a forked child: close every descriptor but standard input, output and error.
+#[cfg(unix)]
+fn close_inherited() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    // SAFETY: close_range only closes descriptors.
+    if unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) } == 0 {
+        return Ok(());
+    }
+    // older kernels (before 5.9), other systems: one by one
+    // SAFETY: sysconf and close are async-signal-safe; closing a descriptor that is not open is harmless.
+    let max = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) }.clamp(256, 65536) as i32;
+    for fd in 3..max {
+        unsafe { libc::close(fd) };
+    }
+    Ok(())
 }
 
 /// Windows: the terminal client gets a console of its own (shown in the default terminal app), the window client none.
@@ -201,8 +277,7 @@ pub fn relaunch(mode: UiMode, forward: &[String]) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::{CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
     let exe = exe().ok_or("cannot find my own binary")?;
-    let mut args: Vec<String> = forward.iter().filter(|a| !matches!(a.as_str(), "--gui" | "--tui")).cloned().collect();
-    args.insert(0, mode.flag().into());
+    let args = next_args(mode, forward);
     let setting = terminal_setting().filter(|_| mode == UiMode::Tui);
     let mut cmd = match setting {
         Some(t) => {
@@ -219,10 +294,10 @@ pub fn relaunch(mode: UiMode, forward: &[String]) -> Result<(), String> {
             c
         }
     };
-    if mode == UiMode::Gui {
+    if mode != UiMode::Tui {
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     }
-    cmd.spawn().map(drop).map_err(|e| format!("cannot start {}: {e}", mode.flag()))
+    cmd.spawn().map(|_| started(mode)).map_err(|e| format!("cannot start {}: {e}", mode.flag()))
 }
 
 /// The `terminal` setting of settings.json: the command that runs another inside a terminal, `{}` standing for it.
@@ -290,6 +365,45 @@ mod tests {
         assert_eq!(choose(&a(&[]), false, Some(UiMode::Tui)), UiMode::Tui, "from an icon: as last time");
         assert_eq!(choose(&a(&[]), false, Some(UiMode::Gui)), UiMode::Gui);
         assert_eq!(choose(&a(&[]), false, None), UiMode::Gui);
+    }
+
+    #[test]
+    fn the_next_client_gets_neither_the_old_flag_nor_the_bridge_options() {
+        assert_eq!(client_args(&a(&["--mc", "--mc-port", "25600", "--session", "s.json", "--mc-demo"])), a(&["--session", "s.json"]));
+        assert_eq!(client_args(&a(&["--gui", "--dry-run"])), a(&["--dry-run"]));
+        assert_eq!(client_args(&a(&["--mc", "--back", "tui", "--dry-run"])), a(&["--dry-run"]));
+    }
+
+    #[test]
+    fn the_bridge_goes_back_to_the_client_it_came_from() {
+        if !cfg!(all(feature = "tui", feature = "gui")) {
+            return;
+        }
+        assert_eq!(back(&a(&["--mc", "--back", "tui"])), UiMode::Tui);
+        assert_eq!(back(&a(&["--mc", "--back", "gui"])), UiMode::Gui);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_next_client_inherits_no_descriptor_of_ours() {
+        use std::os::unix::process::CommandExt;
+        // like the camera: opened without O_CLOEXEC, so a plain spawn would hand it down
+        // (high up, so it cannot be the one `ls` opens for the listing)
+        let low = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
+        let fd = unsafe { libc::fcntl(low, libc::F_DUPFD, 900) };
+        unsafe { libc::close(low) };
+        assert!(fd >= 900);
+        let listed = |close: bool| {
+            let mut c = Command::new("ls");
+            c.arg("/proc/self/fd");
+            if close {
+                unsafe { c.pre_exec(close_inherited) };
+            }
+            String::from_utf8(c.output().unwrap().stdout).unwrap().split_whitespace().any(|f| f == fd.to_string())
+        };
+        assert!(listed(false), "the test needs a descriptor that is inherited");
+        assert!(!listed(true));
+        unsafe { libc::close(fd) };
     }
 
     #[test]

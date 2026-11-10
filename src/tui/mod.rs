@@ -839,9 +839,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Err(e) => t.st.login = Some(LoginPhase::after_load_error(std::path::Path::new(&path).exists(), e)),
     }
     let res = event_loop(&mut t, &mut terminal, rx, exit_after);
-    if t.to_gui && res.is_ok() {
+    let to = if t.to_gui { Some(crate::mode::UiMode::Gui) } else { t.st.switch.take() };
+    if let (Some(to), true) = (to, res.is_ok()) {
         drop(_restore); // the terminal back to normal first
-        return crate::mode::relaunch(crate::mode::UiMode::Gui, args);
+        return crate::mode::relaunch(to, args);
     }
     res
 }
@@ -869,7 +870,7 @@ fn event_loop(t: &mut Tui, terminal: &mut ratatui::DefaultTerminal, rx: Receiver
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        if t.quit || exit_after.is_some_and(|x| t.now() > x) {
+        if t.quit || t.st.switch.is_some() || exit_after.is_some_and(|x| t.now() > x) {
             break;
         }
         let (now, dt) = (t.now(), last_tick.elapsed().as_secs_f32().min(0.05));

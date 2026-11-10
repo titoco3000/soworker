@@ -14,6 +14,8 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.MoverType;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Pose;
@@ -285,14 +287,17 @@ public final class Villagers {
             u.still = 0;
             return;
         }
-        // The last stretch, inside the target's own tile (its blocks, no fence between them): step straight there.
-        // A user standing still is at a tile centre, which is a block corner, and the pathfinder only ends paths at
-        // block centres, 0.7 away: left to it, the villager re-paths every tick and shuffles round the corner forever.
+        // The last stretch, inside the target's own tile: step straight there. A user standing still is at a tile
+        // centre, which is a block corner, and the pathfinder only ends paths at block centres, 0.7 away: left to it,
+        // the villager re-paths every tick and shuffles round the corner forever. The step collides (move, not
+        // setPos): a wall on the tile's east or south edge is a fence in its own blocks, touching that corner, and a
+        // villager put into the fence is pushed out and stepped back in, running in circles round the spot. Moving,
+        // it slides along the fence and stops beside it.
         if (d < 1.0) {
             if (!v.getNavigation().isDone()) v.getNavigation().stop();
             double step = Math.min(d, SPEED * 0.2);
             v.setDeltaMovement(0, v.getDeltaMovement().y, 0);
-            v.setPos(v.getX() + dx / d * step, v.getY(), v.getZ() + dz / d * step);
+            v.move(MoverType.SELF, new Vec3(dx / d * step, 0, dz / d * step));
             u.still = 0;
             return;
         }

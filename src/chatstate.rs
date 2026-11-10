@@ -118,6 +118,16 @@ impl State {
         if text.is_empty() {
             return;
         }
+        if text.eq_ignore_ascii_case("/minecraft") {
+            // hidden on purpose (a joke more than a feature): hand over to the Minecraft bridge, `/sw exit` comes back
+            self.chat.input.clear();
+            self.dirty = true;
+            if !crate::mode::UiMode::Mc.built() {
+                return self.say("Minecraft mode is not in this build", now);
+            }
+            self.switch = Some(crate::mode::UiMode::Mc);
+            return;
+        }
         match self.chat.tab.clone() {
             Tab::Area => match self.conversation() {
                 Some(conversation) => self.chat_out.push(ChatCmd::SendArea { conversation, text }),
@@ -208,6 +218,15 @@ impl State {
 mod tests {
     use super::*;
     use crate::chat::{ChatCmd, ChatEvent, Kind};
+
+    #[test]
+    fn minecraft_in_the_chat_box_switches_to_minecraft_mode_and_sends_nothing() {
+        let mut st = State::new("me", true);
+        st.chat.input = " /Minecraft ".into();
+        st.send_chat(0.0);
+        assert!(st.chat_out.is_empty() && st.chat.input.is_empty());
+        assert_eq!(st.switch, if cfg!(feature = "mc") { Some(crate::mode::UiMode::Mc) } else { None });
+    }
 
     fn msg(id: &str, ch: &str, user: &str, text: &str, at: i64) -> ChatMsg {
         ChatMsg { id: id.into(), channel: ch.into(), user: user.into(), name: Some(user.into()), text: text.into(), at }

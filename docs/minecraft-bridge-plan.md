@@ -376,3 +376,8 @@ the ordered dithering off.
   SoWork's Shift+click teleport there (leaving a meeting without asking, joining one by landing in it) and sends
   `teleport` to put the player where the avatar is. A spot off the floor: "You cannot teleport there" and the player
   goes back. With the office off, pearls are vanilla.
+- **Getting in and out from the clients.** Hidden on purpose: typing `/minecraft` in the chat box of either client
+  (any tab, never sent) sets `State::switch` to `UiMode::Mc`, and the client hands over like the TUI/GUI hop does
+  (`mode::relaunch`, detached, with a desktop notification saying what to do next, since nothing else is on screen).
+  `/sw exit` in Minecraft sends `cmd exit`; soworker says goodbye in the chat and starts the client it came from
+  (the client passes `--back tui|gui`; else `mode::last`, the window when there is none). Minecraft mode is never remembered as the last client.

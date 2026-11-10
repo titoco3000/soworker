@@ -150,6 +150,8 @@ public final class SoworkerMod implements ModInitializer {
             if (office.bridge.connected()) office.cmd("status", null);
             return 1;
         }));
+        // close Minecraft mode: soworker opens its usual client again (Minecraft itself stays)
+        sw.then(Commands.literal("exit").executes(ctx -> run(ctx.getSource(), "exit", null)));
         sw.then(Commands.literal("enable").executes(ctx -> {
             if (office == null) return 0;
             office.enable();
