@@ -58,7 +58,7 @@ pub enum MediaEvent {
 /// before the YUV to RGBA work). `None` = all of them (the window client), `Some(empty)` = none (no video shown).
 static WANTED: std::sync::RwLock<Option<std::collections::HashSet<String>>> = std::sync::RwLock::new(None);
 
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "mc"))]
 pub fn want_video(keys: Option<std::collections::HashSet<String>>) {
     if let Ok(mut w) = WANTED.write() {
         *w = keys;
@@ -73,7 +73,7 @@ static CAM_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(4
 static SCREEN_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(960);
 
 /// Widest picture (pixels) handed to the frontend for a camera / a screen share. Bigger = sharper and more work.
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "mc"))]
 pub fn set_video_width(cam: u32, screen: u32) {
     CAM_W.store(cam, std::sync::atomic::Ordering::Relaxed);
     SCREEN_W.store(screen, std::sync::atomic::Ordering::Relaxed);

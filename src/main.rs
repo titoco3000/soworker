@@ -35,13 +35,15 @@ mod media;
 mod mic;
 #[cfg(feature = "calls")]
 mod record;
+#[cfg(feature = "mc")]
+mod mc;
 #[cfg(feature = "tui")]
 mod tui;
 #[cfg(feature = "tui")]
 mod videowin;
 
-#[cfg(not(any(feature = "tui", feature = "gui")))]
-compile_error!("enable a frontend: feature `tui` and/or `gui`");
+#[cfg(not(any(feature = "tui", feature = "gui", feature = "mc")))]
+compile_error!("enable a frontend: feature `tui`, `gui` and/or `mc`");
 
 #[cfg(feature = "gui")]
 fn icon_sheet(out: &str) {
@@ -126,6 +128,9 @@ fn main() {
         icon_sheet(args.get(i + 1).map_or("icons.png", |s| s));
         return;
     }
+    #[cfg(feature = "mc")]
+    let res = if args.iter().any(|a| a == "--mc") { mc::run(&args) } else { frontend(&args) };
+    #[cfg(not(feature = "mc"))]
     let res = frontend(&args);
     #[cfg(feature = "calls")]
     record::shutdown(); // a recording still running is written out before we go

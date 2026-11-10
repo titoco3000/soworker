@@ -12,7 +12,7 @@ endif
 # release bumps this part of the version: patch (default), minor or major
 BUMP ?= patch
 
-.PHONY: dev build build-tui build-windows install test release
+.PHONY: dev build build-tui build-windows install test release mc
 
 # Rebuild and restart the app whenever a source file changes (needs cargo-watch).
 dev:
@@ -43,6 +43,10 @@ install:
 
 test:
 	cargo test
+
+# The Minecraft mod (mc/): built with javac against the installed game (no Gradle), copied into ~/.minecraft/mods.
+mc:
+	python3 mc/build.py --install
 
 # Bump the version in Cargo.toml (BUMP=patch|minor|major), build, commit the bump, tag it and publish a GitHub release
 # with the Linux and Windows builds. If the Windows build fails, it asks whether to release without it.

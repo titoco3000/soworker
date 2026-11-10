@@ -33,6 +33,8 @@ pub struct World {
     pub soft: HashMap<(i32, i32), u8>,
     pub zones: Vec<Zone>,
     dirty: bool,
+    /// Counts the rebuilds that changed something, so a frontend can tell the map changed since it last looked.
+    pub generation: u64,
 }
 
 pub fn tile(v: f32) -> i32 {
@@ -83,6 +85,7 @@ impl World {
             return false;
         }
         self.dirty = false;
+        self.generation += 1;
         self.floors.clear();
         self.walls.clear();
         self.soft.clear();
