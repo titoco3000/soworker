@@ -122,6 +122,9 @@ def reader(ws, args):
             key = p[3:3 + kl].decode()
             w, h = struct.unpack("<HH", p[3 + kl:7 + kl])
             px = p[7 + kl:]
+            if kind == 3:  # the full-screen view of a share: a JPEG
+                print(f"<- full {key!r} {w}x{h} (JPEG, {len(p) - 7 - kl} bytes)")
+                continue
             face = kind == 2  # a camera for a face: RGB, not map colours
             want = w * h * (3 if face else 1)
             print(f"<- {'face' if face else 'video'} {key!r} {w}x{h} ({len(px)} bytes{'' if len(px) == want else ', WRONG SIZE'})")

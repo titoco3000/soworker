@@ -25,6 +25,11 @@ const TICK: Duration = Duration::from_millis(33);
 const STATE_EVERY: f64 = 0.1;
 /// Video frames per screen per second, at most.
 const VIDEO_FPS: f64 = 8.0;
+/// Frames of the share watched full screen: big JPEGs.
+const WATCH_FPS: f64 = 8.0;
+/// The widest share picture asked for while one is watched full screen, and otherwise (the wall is 512 wide).
+const WATCH_WIDTH: u32 = 1920;
+const WALL_WIDTH: u32 = 640;
 /// Camera frames on faces: small, so a little faster.
 const FACE_FPS: f64 = 10.0;
 
@@ -64,6 +69,9 @@ struct Bridge {
     retry_login_at: Option<f64>,
     /// When we last waved at each user from Minecraft (a snowball spray must not become a burst of real waves).
     waved_at: HashMap<String, f64>,
+    /// The screen share shown full screen in Minecraft (a snowball hit its wall), and when its last frame went out.
+    watching: Option<String>,
+    watch_at: f64,
 }
 
 /// Seconds between two snowball waves at the same user.
@@ -424,6 +432,34 @@ impl Bridge {
                     None => st.say(format!("Nobody called {arg:?} is here"), now),
                 }
             }
+            // a snowball hit a screen share's wall: show it full screen until `unwatch`
+            "watch" if st.call.tiles.iter().any(|t| t.key == arg && arg.ends_with(":screen")) => {
+                self.watching = Some(arg.to_string());
+                self.watch_at = 0.0;
+                crate::calls::set_video_width(640, WATCH_WIDTH);
+            }
+            "watch" => self.say("That screen share has ended"),
+            "unwatch" => self.unwatch(),
+            // an ender pearl landed at block (x, z): SoWork's teleport (Shift+click) there, then put the player where
+            // the avatar ended up (back where they were when the spot is off the floor)
+            "pearl" => {
+                let mut it = arg.split_whitespace().filter_map(|v| v.parse::<f64>().ok());
+                if let (Some(bx), Some(bz)) = (it.next(), it.next()) {
+                    let (x, y) = geom::from_block(self.map.origin, bx, bz);
+                    let before = self.me_pos();
+                    self.st.click(x, y, true, now);
+                    if self.st.confirm_leave.is_some() {
+                        self.st.leave_choice(true, now); // landing outside the meeting is the answer to "leave it?"
+                    }
+                    if self.me_pos() == before {
+                        self.say("You cannot teleport there");
+                    }
+                    self.our_goal = None;
+                    self.blocked_goal = None;
+                    self.headway = None;
+                    self.teleport();
+                }
+            }
             "say" | "chat" if arg.is_empty() => {}
             // `chat`: a plain Minecraft chat line, which Minecraft shows itself; `say`: `/sw say`, which it does not
             "say" | "chat" => match st.conversation() {
@@ -445,6 +481,12 @@ impl Bridge {
                 eprintln!("mc: unknown command {other:?}");
                 self.say(&format!("Unknown command {other:?}"));
             }
+        }
+    }
+
+    fn unwatch(&mut self) {
+        if self.watching.take().is_some() {
+            crate::calls::set_video_width(640, WALL_WIDTH);
         }
     }
 
@@ -476,6 +518,13 @@ impl Bridge {
         match &ev {
             MediaEvent::Video { key, w: 0, .. } if self.st.call.tiles.iter().any(|t| &t.key == key) => return, // "still there"
             MediaEvent::Video { key, w, h, rgba, .. } if *w > 0 && self.link.connected() => {
+                if self.watching.as_ref() == Some(key) && now - self.watch_at >= 1.0 / WATCH_FPS && rgba.len() == (*w * *h * 4) as usize {
+                    self.watch_at = now;
+                    match palette::jpeg(*w, *h, rgba) {
+                        Ok(j) => self.link.video(&format!("{key}#full"), palette::full_message(key, *w, *h, &j)),
+                        Err(e) => eprintln!("mc: jpeg: {e}"),
+                    }
+                }
                 let fps = if key.ends_with(":screen") { VIDEO_FPS } else { FACE_FPS };
                 if self.video_at.get(key).is_none_or(|t| now - t >= 1.0 / fps) && rgba.len() == (*w * *h * 4) as usize {
                     self.video_at.insert(key.clone(), now);
@@ -492,6 +541,10 @@ impl Bridge {
             }
             MediaEvent::VideoGone(key) => {
                 self.video_at.remove(key);
+                if self.watching.as_ref() == Some(key) {
+                    self.unwatch();
+                    self.link.send(&json!({"t": "watch_end"}));
+                }
                 self.link.send(&json!({"t": "video_gone", "key": key}));
             }
             _ => {}
@@ -504,6 +557,7 @@ impl Bridge {
         match m {
             Msg::Mc(In::Connected) => self.full_state(),
             Msg::Mc(In::Disconnected) => {
+                self.unwatch();
                 self.following = false;
                 self.our_goal = None;
             }
@@ -573,7 +627,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     // all video, sized for the map screens (a share is 512 wide on the wall, a camera 256)
     crate::calls::want_video(None);
-    crate::calls::set_video_width(640, 640);
+    crate::calls::set_video_width(640, WALL_WIDTH);
 
     let be = Backend::new(emit.clone(), dry, path.clone());
     let mut b = Bridge {
@@ -597,6 +651,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         toast_seen: None,
         retry_login_at: None,
         waved_at: HashMap::new(),
+        watching: None,
+        watch_at: 0.0,
     };
     b.st.talk_key = crate::talk::key_label();
     let e = emit.clone();

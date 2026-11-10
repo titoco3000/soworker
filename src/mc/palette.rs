@@ -114,6 +114,23 @@ pub fn frame_message(key: &str, w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
     m
 }
 
+/// A screen share frame for the full-screen view: RGBA to a JPEG at its own size.
+pub fn jpeg(w: u32, h: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 88)
+        .encode(&rgb, w, h, image::ExtendedColorType::Rgb8)
+        .map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// The binary full-screen message: `[u8 3][u16 key length][key][u16 width][u16 height][JPEG]`, little-endian.
+pub fn full_message(key: &str, w: u32, h: u32, jpeg: &[u8]) -> Vec<u8> {
+    let mut m = frame_message(key, w, h, jpeg);
+    m[0] = 3;
+    m
+}
+
 /// Camera frames go on the avatar's face: a `FACE`×`FACE` RGB square, not map colours.
 pub const FACE: u32 = 64;
 
@@ -160,6 +177,15 @@ pub fn face_message(key: &str, w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_full_screen_frame_is_a_jpeg_of_the_picture() {
+        let rgba = [200u8, 10, 10, 255].repeat(16 * 8);
+        let j = super::jpeg(16, 8, &rgba).unwrap();
+        assert_eq!(&j[..2], &[0xFF, 0xD8]);
+        let m = super::full_message("u:screen", 16, 8, &j);
+        assert_eq!((m[0], &m[3..11], &m[11..15]), (3, &b"u:screen"[..], &[16, 0, 8, 0][..]));
+    }
+
     #[test]
     fn a_face_is_the_middle_square_of_the_picture() {
         // 4x2: left and right columns red, the middle two green; the face is the green middle

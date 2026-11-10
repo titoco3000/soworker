@@ -280,8 +280,19 @@ public final class Villagers {
             u.still = 0;
             return;
         }
-        if (d < 0.35) {
+        if (d < 0.05) {
             if (!v.getNavigation().isDone()) v.getNavigation().stop();
+            u.still = 0;
+            return;
+        }
+        // The last stretch, inside the target's own tile (its blocks, no fence between them): step straight there.
+        // A user standing still is at a tile centre, which is a block corner, and the pathfinder only ends paths at
+        // block centres, 0.7 away: left to it, the villager re-paths every tick and shuffles round the corner forever.
+        if (d < 1.0) {
+            if (!v.getNavigation().isDone()) v.getNavigation().stop();
+            double step = Math.min(d, SPEED * 0.2);
+            v.setDeltaMovement(0, v.getDeltaMovement().y, 0);
+            v.setPos(v.getX() + dx / d * step, v.getY(), v.getZ() + dz / d * step);
             u.still = 0;
             return;
         }

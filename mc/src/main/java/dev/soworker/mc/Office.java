@@ -206,6 +206,7 @@ public final class Office {
         if (in.binary() != null) {
             byte[] b = in.binary();
             if (enabled && b.length > 0 && b[0] == 2) face(b);
+            else if (enabled && b.length > 0 && b[0] == 3) watchFrame(b);
             else if (enabled) screens.frame(l, b);
             return;
         }
@@ -248,6 +249,7 @@ public final class Office {
                 lastScreens = m;
                 screens.apply(l, m, joinedZone(), zoneBox());
             }
+            case "watch_end" -> sendWatch(new WatchPayload(WatchPayload.CLOSE, "", new byte[0]));
             case "video_gone" -> {
                 String key = m.get("key").getAsString();
                 if (key.endsWith(":screen")) screens.gone(l, key);
@@ -285,6 +287,28 @@ public final class Office {
         byte[] rgb = new byte[w * h * 3];
         buf.get(rgb);
         sendFace(new String(k, java.nio.charset.StandardCharsets.UTF_8), w, h, rgb);
+    }
+
+    /** A snowball hit a screen share's wall: show it full screen on the player's client. */
+    void watch(ServerPlayer p, Screens.Screen s) {
+        if (!bridge.connected() || !net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.canSend(p, WatchPayload.TYPE)) return;
+        cmd("watch", s.key);
+        sendWatch(new WatchPayload(WatchPayload.OPEN, s.name, new byte[0]));
+    }
+
+    /** A full-screen frame: [u8 3][u16 key length][key][u16 w][u16 h][JPEG], little-endian. */
+    void watchFrame(byte[] b) {
+        int kl = (b[1] & 0xFF) | (b[2] & 0xFF) << 8;
+        int at = 3 + kl + 4;
+        if (b.length <= at) return;
+        sendWatch(new WatchPayload(WatchPayload.FRAME, "", java.util.Arrays.copyOfRange(b, at, b.length)));
+    }
+
+    void sendWatch(WatchPayload w) {
+        ServerPlayer p = player();
+        if (p != null && net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.canSend(p, WatchPayload.TYPE)) {
+            net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(p, w);
+        }
     }
 
     /** Tell the clients whether we are away (they hold sneak for the player while we are). */
@@ -373,7 +397,7 @@ public final class Office {
                 toolsDirty = false;
             }
             Tools.sweepDropped(p);
-            Tools.refillSnowball(p);
+            Tools.refillThrowables(p);
         }
     }
 

@@ -19,7 +19,7 @@ portal = ["dep:zbus"]
 # a small always-on-top "you are live" pill through the wlr layer-shell protocol (Wayland; nothing elsewhere)
 overlay = ["render", "dep:smithay-client-toolkit", "dep:wayland-client"]
 # The office inside Minecraft (`soworker --mc`): a headless bridge the Fabric mod in mc/ connects to.
-mc = []
+mc = ["dep:image"]
 # Audio/video calls through the official LiveKit Rust SDK (needs clang++ and the libwebrtc prebuilt at build time).
 calls = ["dep:livekit", "dep:tokio", "dep:futures-util", "dep:v4l", "dep:nokhwa", "dep:deep_filter", "dep:ndarray", "dep:cpal"]
 

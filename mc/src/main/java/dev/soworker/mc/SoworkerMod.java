@@ -40,6 +40,11 @@ public final class SoworkerMod implements ModInitializer {
         Tools.init();
         PayloadTypeRegistry.clientboundPlay().register(FacePayload.TYPE, FacePayload.CODEC);
         PayloadTypeRegistry.clientboundPlay().register(AwayPayload.TYPE, AwayPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().registerLarge(WatchPayload.TYPE, WatchPayload.CODEC, WatchPayload.MAX + 1024);
+        PayloadTypeRegistry.serverboundPlay().register(UnwatchPayload.TYPE, UnwatchPayload.CODEC);
+        net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.registerGlobalReceiver(UnwatchPayload.TYPE, (p, ctx) -> {
+            if (office != null && office.bridge.connected()) office.cmd("unwatch", null);
+        });
         ServerLifecycleEvents.SERVER_STARTED.register(s -> office = new Office(s, new Bridge(PORT)));
         ServerLifecycleEvents.SERVER_STOPPING.register(s -> {
             if (office != null) office.save();
@@ -93,6 +98,26 @@ public final class SoworkerMod implements ModInitializer {
             office.cmd(tool, null);
         }
         return InteractionResult.FAIL;
+    }
+
+    /** The player's ender pearl landed: SoWork's teleport there. False when the office is not on (vanilla pearl). */
+    public static boolean pearl(ServerPlayer p, net.minecraft.world.phys.Vec3 at) {
+        if (office == null || !office.enabled || !office.bridge.connected()) return false;
+        office.cmd("pearl", String.format(java.util.Locale.ROOT, "%.2f %.2f", at.x, at.z));
+        return true;
+    }
+
+    /** The screen share whose wall a projectile hit, or null. */
+    public static Screens.Screen screenHit(net.minecraft.world.phys.HitResult h) {
+        if (office == null || !office.enabled) return null;
+        if (h instanceof net.minecraft.world.phys.EntityHitResult e) return office.screens.screenOf(e.getEntity());
+        if (h instanceof net.minecraft.world.phys.BlockHitResult b) return office.screens.screenAt(b.getBlockPos());
+        return null;
+    }
+
+    /** A snowball from the player hit a screen share's wall: show it full screen. */
+    public static void snowballWatch(ServerPlayer p, Screens.Screen s) {
+        if (office != null && office.enabled) office.watch(p, s);
     }
 
     /** A snowball from the player hit a coworker's villager: wave at them (soworker limits how often). */

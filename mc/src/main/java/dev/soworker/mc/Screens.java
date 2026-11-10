@@ -41,8 +41,8 @@ import net.minecraft.world.level.saveddata.maps.MapItemSavedData;
 public final class Screens {
     static final int BASE_Y = MapBuilder.FLOOR_Y + 3;
 
-    static final class Screen {
-        String key, name, kind;
+    public static final class Screen {
+        public String key, name, kind;
         int cols, rows, x0, top, z;
         MapId[] maps;
         List<GlowItemFrame> frames = new ArrayList<>();
@@ -66,6 +66,21 @@ public final class Screens {
         for (GlowItemFrame f : s.frames) f.discard();
         if (s.label != null) s.label.discard();
         if (s.maps != null) for (MapId m : s.maps) spareMaps.add(m);
+    }
+
+    /** The share shown by this item frame, or null. */
+    public Screen screenOf(net.minecraft.world.entity.Entity e) {
+        for (Screen s : shown.values()) if (s.frames.contains(e)) return s;
+        return null;
+    }
+
+    /** The share whose wall (the black backing or a frame's block) is at this block, or null. */
+    public Screen screenAt(BlockPos p) {
+        for (Screen s : shown.values()) {
+            boolean inX = p.getX() >= s.x0 && p.getX() < s.x0 + s.cols, inY = p.getY() <= s.top && p.getY() > s.top - s.rows;
+            if (inX && inY && (p.getZ() == s.z || p.getZ() == s.z - 1)) return s;
+        }
+        return null;
     }
 
     /** The `screens` list, for the zone of the call we are in (null = none). */

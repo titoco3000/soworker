@@ -361,5 +361,18 @@ the ordered dithering off.
   holds sneak for the player (`KeyboardInputMixin`, sprint off), matching away coworkers, who crouch. Cleared on
   `available`, `/sw disable`, a lost soworker connection, or leaving the world.
 - **Spyglass and snowballs.** Hotbar slots 6 and 7 always hold a spyglass and one snowball (given back the tick
-  after it is thrown, under a 5 s item cooldown), protected like the tools but used the vanilla way (`Tools.plain`). Items found there are moved, as
+  after it is thrown, under a 1 s item cooldown, as the ender pearl), protected like the tools but used the vanilla way (`Tools.plain`). Items found there are moved, as
   for slots 8 and 9; only slot 5 is left to the player.
+- **Screen share full screen.** A snowball on a share's wall (a map frame or the black backing) sends
+  `cmd {name: "watch", arg: <key>}` and opens `client.ShareView` on the player's client (`soworker:watch` payload,
+  `OPEN`). While a share is watched soworker asks for it up to 1920 wide (otherwise 640) and sends JPEGs (quality 88, at
+  most 8/s) as binary kind 3 (`[u8 3][u16 key length][key][u16 w][u16 h][JPEG]`); the mod passes them on as `FRAME`
+  payloads (registered large, up to 8 MB) and the client draws them letterboxed over the whole window. A movement key,
+  jump, sneak or Esc closes the view and sends `soworker:unwatch`, so soworker sends `cmd unwatch` and goes back to 640.
+  When the share ends soworker sends `{"t": "watch_end"}` and the view closes.
+- **Ender pearls teleport.** Hotbar slot 5 always holds one ender pearl (given back at once; vanilla's one-second
+  cooldown applies), so only slots 1–4 outside meetings are left to the player. Where the player's pearl lands, the mod
+  sends `cmd {name: "pearl", arg: "x z"}` (blocks) instead of the vanilla teleport (`EnderPearlMixin`); soworker does
+  SoWork's Shift+click teleport there (leaving a meeting without asking, joining one by landing in it) and sends
+  `teleport` to put the player where the avatar is. A spot off the floor: "You cannot teleport there" and the player
+  goes back. With the office off, pearls are vanilla.

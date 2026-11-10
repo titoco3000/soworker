@@ -46,6 +46,7 @@ public final class Faces implements ClientModInitializer {
     @SuppressWarnings({"unchecked", "rawtypes"})
     public void onInitializeClient() {
         ClientPlayNetworking.registerGlobalReceiver(FacePayload.TYPE, (p, ctx) -> ctx.client().execute(() -> frame(p)));
+        ShareView.register();
         ClientPlayNetworking.registerGlobalReceiver(AwayPayload.TYPE, (p, ctx) -> away = p.away());
         LivingEntityRenderLayerRegistrationCallback.EVENT.register((type, renderer, helper, ctx) -> {
             if (renderer instanceof AvatarRenderer<?> r) helper.register(new FaceLayer((AvatarRenderer) r));
