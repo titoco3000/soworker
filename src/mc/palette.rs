@@ -114,8 +114,66 @@ pub fn frame_message(key: &str, w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
     m
 }
 
+/// Camera frames go on the avatar's face: a `FACE`×`FACE` RGB square, not map colours.
+pub const FACE: u32 = 64;
+
+/// The middle square of an RGBA picture, scaled to `n`×`n` RGB (each pixel averages the source pixels it covers).
+pub fn face_pixels(src_w: u32, src_h: u32, rgba: &[u8], n: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (n * n * 3) as usize];
+    if src_w == 0 || src_h == 0 || n == 0 || rgba.len() < (src_w * src_h * 4) as usize {
+        return out;
+    }
+    let side = src_w.min(src_h);
+    let (ox, oy) = ((src_w - side) / 2, (src_h - side) / 2);
+    let span = |d: u32| -> (u32, u32) {
+        let a = (d as u64 * side as u64 / n as u64) as u32;
+        let b = (((d + 1) as u64 * side as u64).div_ceil(n as u64) as u32).max(a + 1).min(side);
+        (a, b)
+    };
+    for y in 0..n {
+        let (y0, y1) = span(y);
+        for x in 0..n {
+            let (x0, x1) = span(x);
+            let mut acc = [0u32; 3];
+            for sy in oy + y0..oy + y1 {
+                let row = &rgba[((sy * src_w + ox + x0) * 4) as usize..((sy * src_w + ox + x1) * 4) as usize];
+                for p in row.chunks_exact(4) {
+                    acc[0] += p[0] as u32;
+                    acc[1] += p[1] as u32;
+                    acc[2] += p[2] as u32;
+                }
+            }
+            let c = ((y1 - y0) * (x1 - x0)).max(1);
+            let i = ((y * n + x) * 3) as usize;
+            out[i..i + 3].copy_from_slice(&acc.map(|v| (v / c) as u8));
+        }
+    }
+    out
+}
+
+/// The binary face message: `[u8 2][u16 key length][key][u16 width][u16 height][width × height × RGB]`, little-endian.
+pub fn face_message(key: &str, w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
+    let mut m = frame_message(key, w, h, rgb);
+    m[0] = 2;
+    m
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_face_is_the_middle_square_of_the_picture() {
+        // 4x2: left and right columns red, the middle two green; the face is the green middle
+        let mut rgba = vec![];
+        for _ in 0..2 {
+            for x in 0..4 {
+                rgba.extend_from_slice(if x == 0 || x == 3 { &[255, 0, 0, 255] } else { &[0, 255, 0, 255] });
+            }
+        }
+        assert_eq!(super::face_pixels(4, 2, &rgba, 1), vec![0, 255, 0]);
+        let m = super::face_message("u1", 1, 1, &[1, 2, 3]);
+        assert_eq!(m, vec![2, 2, 0, b'u', b'1', 1, 0, 1, 0, 1, 2, 3]);
+    }
+
     use super::*;
 
     #[test]

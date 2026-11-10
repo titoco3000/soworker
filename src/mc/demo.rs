@@ -140,3 +140,13 @@ pub fn tick(st: &mut State, now: f64) {
         b.speaking = (now / 3.0) as u64 % 2 == 1;
     }
 }
+
+/// Every 15 s someone waves, as gaia would report it: Cy at us, then Ana at Bo (a wave between two others).
+pub fn emotes(now: f64, last: &mut f64) -> Vec<Net> {
+    if now - *last < 15.0 {
+        return vec![];
+    }
+    *last = now;
+    let (sender, recipient) = if (now / 15.0) as u64 % 2 == 1 { ("demo-cy", ME) } else { ("demo-ana", "demo-bo") };
+    vec![Net::Emote { sender: sender.into(), recipient: recipient.into(), emote: "wave".into() }]
+}

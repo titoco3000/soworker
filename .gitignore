@@ -10,3 +10,14 @@ third_party/
 logs
 profile
 mc/build/
+.bash_profile 
+.bashrc 
+.gitconfig 
+.gitmodules 
+.idea 
+.mcp.json 
+.profile 
+.ripgreprc 
+.vscode 
+.zprofile 
+.zshrc

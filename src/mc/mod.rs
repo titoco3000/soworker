@@ -25,6 +25,8 @@ const TICK: Duration = Duration::from_millis(33);
 const STATE_EVERY: f64 = 0.1;
 /// Video frames per screen per second, at most.
 const VIDEO_FPS: f64 = 8.0;
+/// Camera frames on faces: small, so a little faster.
+const FACE_FPS: f64 = 10.0;
 
 enum Msg {
     App(Event),
@@ -60,7 +62,12 @@ struct Bridge {
     toast_seen: Option<(String, f64)>,
     /// Offline at start: when to check the saved sign-in again.
     retry_login_at: Option<f64>,
+    /// When we last waved at each user from Minecraft (a snowball spray must not become a burst of real waves).
+    waved_at: HashMap<String, f64>,
 }
+
+/// Seconds between two snowball waves at the same user.
+const WAVE_COOLDOWN: f64 = 5.0;
 
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
@@ -190,7 +197,7 @@ impl Bridge {
 
     /// The screens to show: a share first, then cameras by name.
     fn screens_msg(&self) -> Value {
-        let mut tiles: Vec<&crate::app::Tile> = self.st.call.tiles.iter().filter(|t| t.img.w > 0).collect();
+        let mut tiles: Vec<&crate::app::Tile> = self.st.call.tiles.iter().filter(|t| t.img.w > 0 && t.key.ends_with(":screen")).collect(); // cameras are on faces
         tiles.sort_by_key(|t| (!t.key.ends_with(":screen"), t.name.to_lowercase(), t.key.clone()));
         let list: Vec<Value> = tiles
             .into_iter()
@@ -398,6 +405,17 @@ impl Bridge {
             }
             "leave" if st.call.joined.is_some() || st.call.want.is_some() => st.dock_press(Hit::Ctl(Ctl::Leave), now),
             "leave" => st.say("Not in a meeting", now),
+            // a snowball hitting a coworker's villager: the arg is the user id
+            "wave_id" => {
+                if arg == st.me_id || !st.users.contains_key(arg) {
+                    return;
+                }
+                if self.waved_at.get(arg).is_some_and(|&t| now - t < WAVE_COOLDOWN) {
+                    return;
+                }
+                self.waved_at.insert(arg.to_string(), now);
+                st.sidebar_press(crate::directory::Hit::Wave(arg.to_string()), now);
+            }
             "wave" => {
                 let want = arg.to_lowercase();
                 let found = st.users.values().filter(|u| u.id != st.me_id).find(|u| u.name.to_lowercase() == want).or_else(|| st.users.values().filter(|u| u.id != st.me_id).find(|u| u.name.to_lowercase().starts_with(&want) && !want.is_empty())).map(|u| u.id.clone());
@@ -406,9 +424,17 @@ impl Bridge {
                     None => st.say(format!("Nobody called {arg:?} is here"), now),
                 }
             }
-            "say" if arg.is_empty() => {}
-            "say" => match st.conversation() {
-                Some(conversation) => st.chat_out.push(crate::chat::ChatCmd::SendArea { conversation, text: arg.to_string() }),
+            "say" | "chat" if arg.is_empty() => {}
+            // `chat`: a plain Minecraft chat line, which Minecraft shows itself; `say`: `/sw say`, which it does not
+            "say" | "chat" => match st.conversation() {
+                Some(conversation) => {
+                    st.chat_out.push(crate::chat::ChatCmd::SendArea { conversation, text: arg.to_string() });
+                    // the chat socket does not echo our own lines back: show it the way others' lines are shown
+                    if name == "say" {
+                        let me = st.users.get(&st.me_id).map(|u| u.name.clone()).unwrap_or_else(|| "You".into());
+                        self.say(&format!("{me}: {arg}"));
+                    }
+                }
                 None => st.say("Room chat works in a meeting", now),
             },
             "status" => {
@@ -450,11 +476,18 @@ impl Bridge {
         match &ev {
             MediaEvent::Video { key, w: 0, .. } if self.st.call.tiles.iter().any(|t| &t.key == key) => return, // "still there"
             MediaEvent::Video { key, w, h, rgba, .. } if *w > 0 && self.link.connected() => {
-                if self.video_at.get(key).is_none_or(|t| now - t >= 1.0 / VIDEO_FPS) && rgba.len() == (*w * *h * 4) as usize {
+                let fps = if key.ends_with(":screen") { VIDEO_FPS } else { FACE_FPS };
+                if self.video_at.get(key).is_none_or(|t| now - t >= 1.0 / fps) && rgba.len() == (*w * *h * 4) as usize {
                     self.video_at.insert(key.clone(), now);
-                    let (sw, sh) = palette::screen_size(key);
-                    let px = palette::encode_pixels(*w, *h, rgba, sw, sh, self.dither);
-                    self.link.video(key, palette::frame_message(key, sw, sh, &px));
+                    if key.ends_with(":screen") {
+                        let (sw, sh) = palette::screen_size(key);
+                        let px = palette::encode_pixels(*w, *h, rgba, sw, sh, self.dither);
+                        self.link.video(key, palette::frame_message(key, sw, sh, &px));
+                    } else {
+                        // a camera goes on its owner's face (key = user id, or "me")
+                        let px = palette::face_pixels(*w, *h, rgba, palette::FACE);
+                        self.link.video(key, palette::face_message(key, palette::FACE, palette::FACE, &px));
+                    }
                 }
             }
             MediaEvent::VideoGone(key) => {
@@ -490,7 +523,15 @@ impl Bridge {
                 if emote == "wave" && sender != self.st.me_id {
                     self.link.send(&json!({"t": "emote", "from": sender, "to": recipient, "emote": emote}));
                 }
+                let to_me = emote == "wave" && recipient == self.st.me_id && sender != self.st.me_id;
+                let name = self.st.name_of(&sender, None);
+                let before = self.st.toast.clone();
                 self.st.apply(Net::Emote { sender, recipient, emote }, now);
+                // State only toasts a wave from someone with no unanswered wave yet, and Minecraft cannot answer
+                // waves, so every later one would pass in silence
+                if to_me && self.st.toast == before {
+                    self.say(&format!("{name} waved at you"));
+                }
             }
             Msg::App(Event::Net(e)) => self.st.apply(e, now),
             Msg::App(Event::Media(e)) => self.media(e, now),
@@ -555,6 +596,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         dither: !args.iter().any(|a| a == "--mc-no-dither"),
         toast_seen: None,
         retry_login_at: None,
+        waved_at: HashMap::new(),
     };
     b.st.talk_key = crate::talk::key_label();
     let e = emit.clone();
@@ -580,6 +622,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let mut last_tick = Instant::now();
     let mut demo_frame = 0.0;
+    let mut demo_wave = 0.0;
     loop {
         match rx.recv_timeout(TICK) {
             Ok(m) => {
@@ -606,6 +649,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             demo::tick(&mut b.st, now);
             for ev in demo::media(&mut b.st, now, &mut demo_frame) {
                 b.media(ev, now);
+            }
+            for e in demo::emotes(now, &mut demo_wave) {
+                b.handle(Msg::App(Event::Net(e)))?;
             }
         }
         b.st.update(dt, now);

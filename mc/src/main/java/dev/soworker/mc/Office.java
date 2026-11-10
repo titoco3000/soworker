@@ -34,6 +34,7 @@ public final class Office {
     final Tools tools = new Tools();
     final Screens screens = new Screens();
     final Panel panel = new Panel();
+    final ZoneLabels zoneLabels = new ZoneLabels();
     boolean enabled;
     long tick;
     JsonObject hello, call, me, lastScreens;
@@ -139,6 +140,8 @@ public final class Office {
         rail.finish(level(), player());
         screens.clear(level());
         panel.clear();
+        zoneLabels.clear();
+        sendAway(false);
         ServerPlayer p = player();
         if (p != null) {
             Tools.removeAll(p);
@@ -196,11 +199,14 @@ public final class Office {
         }
         if (in.disconnected()) {
             follow = null;
+            sendAway(false);
             if (enabled) chat("Lost the connection to soworker; trying again", ChatFormatting.RED);
             return;
         }
         if (in.binary() != null) {
-            if (enabled) screens.frame(l, in.binary());
+            byte[] b = in.binary();
+            if (enabled && b.length > 0 && b[0] == 2) face(b);
+            else if (enabled) screens.frame(l, b);
             return;
         }
         JsonObject m = in.json();
@@ -224,6 +230,7 @@ public final class Office {
             case "me" -> {
                 me = m;
                 tools.available = m.get("available").getAsBoolean();
+                sendAway(!tools.available);
                 toolsDirty = true;
             }
             case "call" -> {
@@ -241,7 +248,11 @@ public final class Office {
                 lastScreens = m;
                 screens.apply(l, m, joinedZone(), zoneBox());
             }
-            case "video_gone" -> screens.gone(l, m.get("key").getAsString());
+            case "video_gone" -> {
+                String key = m.get("key").getAsString();
+                if (key.endsWith(":screen")) screens.gone(l, key);
+                else sendFace(key, 0, 0, new byte[0]);
+            }
             case "teleport" -> {
                 ServerPlayer p = player();
                 follow = null;
@@ -254,8 +265,46 @@ public final class Office {
                 if (p != null) rail.start(l, p, m.getAsJsonArray("path"));
             }
             case "follow_end" -> follow = null;
-            case "emote" -> villagers.wave(l, m.get("from").getAsString());
+            case "emote" -> {
+                String to = m.get("to").getAsString();
+                boolean toMe = hello != null && hello.has("me") && to.equals(hello.get("me").getAsString());
+                villagers.wave(l, m.get("from").getAsString(), to, toMe ? player() : null);
+            }
             default -> {}
+        }
+    }
+
+    /** A camera frame for a face: [u8 2][u16 key length][key][u16 w][u16 h][w*h*3 RGB], little-endian. */
+    void face(byte[] b) {
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buf.get();
+        byte[] k = new byte[buf.getShort() & 0xFFFF];
+        buf.get(k);
+        int w = buf.getShort() & 0xFFFF, h = buf.getShort() & 0xFFFF;
+        if (buf.remaining() < w * h * 3) return;
+        byte[] rgb = new byte[w * h * 3];
+        buf.get(rgb);
+        sendFace(new String(k, java.nio.charset.StandardCharsets.UTF_8), w, h, rgb);
+    }
+
+    /** Tell the clients whether we are away (they hold sneak for the player while we are). */
+    void sendAway(boolean away) {
+        for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
+            if (net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.canSend(sp, AwayPayload.TYPE)) {
+                net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(sp, new AwayPayload(away));
+            }
+        }
+    }
+
+    /** Pass a face frame (key = user id, or "me" for our own camera) to every client that has the mod. */
+    void sendFace(String key, int w, int h, byte[] rgb) {
+        net.minecraft.world.entity.Entity e = key.equals("me") ? player() : villagers.shown(key);
+        if (e == null) return;
+        FacePayload p = new FacePayload(e.getId(), w, h, rgb);
+        for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
+            if (net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.canSend(sp, FacePayload.TYPE)) {
+                net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(sp, p);
+            }
         }
     }
 
@@ -300,6 +349,7 @@ public final class Office {
         if (saveIn > 0 && --saveIn == 0) save();
         if (!map.busy()) villagers.tick(l, tick); // only on a finished floor: they would fall in and be built over
         ServerPlayer p = player();
+        if (tick % 5 == 0 && map.hasMap) zoneLabels.update(l, map, p);
         if (p == null) return;
         if (bridge.connected()) {
             panel.update(l, call, zoneBox(), joinedZone() == null ? null : map.zoneNames.get(joinedZone()));
@@ -323,6 +373,7 @@ public final class Office {
                 toolsDirty = false;
             }
             Tools.sweepDropped(p);
+            Tools.refillSnowball(p);
         }
     }
 

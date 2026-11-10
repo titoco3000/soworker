@@ -335,3 +335,31 @@ the ordered dithering off.
   per two. Removed blocks below the sea surface turn back into water. A world for it: Superflat, custom preset
   `minecraft:bedrock,117*minecraft:stone,2*minecraft:sand,7*minecraft:water;minecraft:ocean` (water up to y = 62,
   two below the office floor).
+
+### Waves, chat, faces, room names
+
+- **Snowballs are waves.** A snowball the player throws at a coworker sends `cmd {name: "wave_id", arg: <user id>}`;
+  soworker waves as the sidebar's Wave button does, at most once per user every 5 s (`WAVE_COOLDOWN`). Every wave
+  soworker hears of that is not ours (`emote`) makes the waver throw a snowball at its target: the player when it is
+  for us, else the target's figure. Those snowballs carry the `soworker_wave` tag, never hurt or push, and land as
+  hearts. A wave to us always gives a "X waved at you" chat line (State only toasts the first unanswered one).
+  `--mc-demo` fakes a wave every 15 s (Cy at us, Ana at Bo).
+- **Chat.** Plain Minecraft chat stays in Minecraft and also goes to the SoWork room chat (`cmd chat`, no echo);
+  `/sw say` sends and echoes the line.
+- **Room names.** A text display with each meeting room's name floats over the room's middle (`ZoneLabels`), except
+  over the room the player stands in.
+- **Figures and camera faces.** Each coworker is a `Mannequin` (player model, default skin, description hidden,
+  immovable) moved every tick onto an invisible, brainless villager that still does the pathfinding. Cameras are no
+  longer wall screens (only screen shares are): soworker sends each camera as a 64×64 RGB square (the middle of the
+  picture, up to 10 frames/s) in a binary message of kind 2 (`[u8 2][u16 key length][key][u16 w][u16 h][w*h*3]`,
+  key = user id, or `me` for our own). The mod sends it to clients as a `soworker:face` payload with the entity id
+  (the mannequin, or the player for `me`); the client keeps a `DynamicTexture` per entity and `FaceLayer` draws it
+  over the front of the head of anything drawn by `AvatarRenderer` (mannequins and players, so our own face shows in
+  third person). Someone with a live face turns head (and body past 70°) toward the viewer (`AvatarRendererMixin`).
+  A face with no frame for 3 s is dropped. Needs the mod on the client; a vanilla client sees plain mannequins.
+- **Away crouches.** While we are away (`me.available == false`) the mod sends a `soworker:away` payload and the client
+  holds sneak for the player (`KeyboardInputMixin`, sprint off), matching away coworkers, who crouch. Cleared on
+  `available`, `/sw disable`, a lost soworker connection, or leaving the world.
+- **Spyglass and snowballs.** Hotbar slots 6 and 7 always hold a spyglass and one snowball (given back the tick
+  after it is thrown, under a 5 s item cooldown), protected like the tools but used the vanilla way (`Tools.plain`). Items found there are moved, as
+  for slots 8 and 9; only slot 5 is left to the player.

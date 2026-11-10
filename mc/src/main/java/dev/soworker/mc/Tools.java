@@ -23,13 +23,18 @@ import net.minecraft.world.item.component.ItemLore;
 import net.minecraft.world.phys.AABB;
 
 /**
- * The hotbar tools. Slots 1–4 (inventory 0–3) are the meeting tools while we are in a call; slots 8 and 9 (7, 8) are
- * always "walk to your desk" and "availability". Tools only reflect soworker's state: using one sends a command and the
+ * The hotbar tools. Slots 1–4 (inventory 0–3) are the meeting tools while we are in a call; slots 6–9 (5–8) are
+ * always a spyglass, snowballs (thrown at someone: a wave), "walk to your desk" and "availability". The spyglass and the
+ * snowballs work as in vanilla ({@link #plain}); there is always exactly one snowball, given back as soon as it is thrown but locked for 5 s. Tools only reflect soworker's state: using one sends a command and the
  * next state message changes the item. The player's own items in slots 1–4 are kept in a persistent attachment
  * during a meeting and given back after it; items found in slots 8–9 are moved elsewhere.
  */
 public final class Tools {
     public static final String KEY = "soworker_tool";
+    /** Kept in the hotbar like tools, but used the vanilla way rather than sending a command. */
+    public static boolean plain(String tool) {
+        return "spyglass".equals(tool) || "snowball".equals(tool);
+    }
     static final AttachmentType<List<ItemStack>> SAVED =
             AttachmentRegistry.createPersistent(Identifier.fromNamespaceAndPath("soworker", "saved_hotbar"), ItemStack.OPTIONAL_CODEC.listOf());
 
@@ -73,10 +78,38 @@ public final class Tools {
             w[3] = cam ? make("cam", Items.ENDER_EYE, "Camera: on", true, "Right click: camera off")
                        : make("cam", Items.ENDER_PEARL, "Camera: off", false, "Right click: camera on");
         }
+        w[5] = make("spyglass", Items.SPYGLASS, "Spyglass", false, "Right click: look far");
+        w[6] = snowball();
         w[7] = make("desk", Items.COMPASS, "Walk to your desk", false, "Right click: walk to your desk");
         w[8] = available ? make("away", Items.EMERALD, "Available (use to go away)", false, "Right click: set yourself away")
                          : make("away", Items.REDSTONE, "Away (use to become available)", false, "Right click: become available");
         return w;
+    }
+
+    static ItemStack snowball() {
+        return make("snowball", Items.SNOWBALL, "Snowball", false, "Throw at someone to wave at them");
+    }
+
+    /** Ticks before the snowball can be thrown again (shown as the vanilla cooldown sweep over it). */
+    static final int RELOAD = 100;
+    /** The player threw the snowball (set from the use handler, before vanilla takes it). */
+    public static boolean thrown;
+
+    /**
+     * One snowball, given back the tick after it is thrown (assertSlots would take up to a second) but locked for
+     * {@link #RELOAD} ticks.
+     */
+    public static void refillSnowball(ServerPlayer p) {
+        Inventory inv = p.getInventory();
+        ItemStack s = inv.getItem(6);
+        if (!"snowball".equals(toolOf(s)) || s.getCount() != 1) {
+            if (!s.isEmpty() && toolOf(s) == null) stash(p, s);
+            inv.setItem(6, snowball());
+        }
+        if (thrown) {
+            thrown = false;
+            p.getCooldowns().addCooldown(inv.getItem(6), RELOAD);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -98,7 +131,7 @@ public final class Tools {
                 return;
             }
         }
-        for (int i = 4; i < 7; i++) {
+        for (int i = 4; i < 5; i++) {
             if (inv.getItem(i).isEmpty()) {
                 inv.setItem(i, s);
                 return;

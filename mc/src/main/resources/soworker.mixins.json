@@ -2,6 +2,19 @@
   "required": true,
   "package": "dev.soworker.mc.mixin",
   "compatibilityLevel": "JAVA_25",
-  "mixins": ["VillagerMixin", "TextDisplayAccess", "DisplayAccess", "ItemFrameAccess"],
-  "injectors": { "defaultRequire": 1 }
+  "mixins": [
+    "VillagerMixin",
+    "SnowballMixin",
+    "TextDisplayAccess",
+    "DisplayAccess",
+    "ItemFrameAccess",
+    "MannequinAccess"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "client": [
+    "AvatarRendererMixin",
+    "KeyboardInputMixin"
+  ]
 }

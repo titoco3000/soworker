@@ -122,12 +122,14 @@ def reader(ws, args):
             key = p[3:3 + kl].decode()
             w, h = struct.unpack("<HH", p[3 + kl:7 + kl])
             px = p[7 + kl:]
-            print(f"<- video {key!r} {w}x{h} ({len(px)} px{'' if len(px) == w * h else ', WRONG SIZE'})")
+            face = kind == 2  # a camera for a face: RGB, not map colours
+            want = w * h * (3 if face else 1)
+            print(f"<- {'face' if face else 'video'} {key!r} {w}x{h} ({len(px)} bytes{'' if len(px) == want else ', WRONG SIZE'})")
             if args.frames:
                 os.makedirs(args.frames, exist_ok=True)
                 name = os.path.join(args.frames, key.replace(":", "_").replace("/", "_") + ".ppm")
                 with open(name, "wb") as f:
-                    f.write(f"P6 {w} {h} 255\n".encode() + b"".join(bytes(rgb(i)) for i in px))
+                    f.write(f"P6 {w} {h} 255\n".encode() + (bytes(px) if face else b"".join(bytes(rgb(i)) for i in px)))
             continue
         v = json.loads(p)
         t = v.get("t")

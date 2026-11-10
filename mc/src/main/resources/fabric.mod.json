@@ -6,7 +6,22 @@
   "description": "Shows the SoWork office in Minecraft and lets you take part from there, through a local soworker --mc.",
   "license": "proprietary",
   "environment": "*",
-  "entrypoints": { "main": ["dev.soworker.mc.SoworkerMod"], "client": ["dev.soworker.mc.DevShots"] },
-  "mixins": ["soworker.mixins.json"],
-  "depends": { "fabricloader": ">=0.20.0", "minecraft": "26.3", "fabric-api": "*", "java": ">=25" }
+  "entrypoints": {
+    "main": [
+      "dev.soworker.mc.SoworkerMod"
+    ],
+    "client": [
+      "dev.soworker.mc.DevShots",
+      "dev.soworker.mc.client.Faces"
+    ]
+  },
+  "mixins": [
+    "soworker.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.20.0",
+    "minecraft": "26.3",
+    "fabric-api": "*",
+    "java": ">=25"
+  }
 }
