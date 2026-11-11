@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
-pub const CLIENT_VERSION: &str = "11.202.0";
+pub const CLIENT_VERSION: &str = "11.228.1";
 
 /// Starts the error of a request that never reached the server, as opposed to one the server turned down.
 const OFFLINE: &str = "no connection";

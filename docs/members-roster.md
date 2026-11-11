@@ -3,7 +3,28 @@
 Source: recording `output/raw-logs/2026-10-07T11-54-43-458Z` (the first one with Firestore streams captured, see
 `output/record.mjs`, `res.chunk` events). Facts are **[recording]** unless marked otherwise.
 
-## Where the list comes from
+## Current source (2026-11-11, web app 11.228)
+
+The `group_membermaps` documents below are no longer kept current (shard `updateTime`s hours old, people online in the
+office listed as `isOnline:false`). The web app's people list now comes from a live query on the **chat socket**
+(`wss://chat.sowork.com/ws`), sent after `connection.ready`:
+
+```
+OUT {"type":"query.subscribe","data":{"sub_id":"<id>","collection":"members","group_id":"<groupId>",
+     "query":{"filter":{"include_apps":true},"sort":["availability","last_seen","name"],"limit":5000},"time_zone":"UTC"}}
+IN  {"type":"members.rows","data":{"sub_id","group_id","total","has_more","rows":[row...]}}
+IN  {"type":"members.changes","data":{"sub_id","total","removed":[userId...],"upserted":[row...]}}
+row = {user_id, name, role, is_app, last_seen_at:<ms>, team_ids, uploaded_photo_url, character_string, title,
+       presence:{online, online_since, status, text_status, room_id, zone_id, mode:"room"|"simple"|null,
+                 sessions:[{kind:"web"|"desktop"|"mobile", state:"active"|"locked"|"background"}],
+                 mobile_online, mobile_reachable, idle, forced_away, in_private_conversation, calendar, version, ...}}
+```
+
+An upsert whose `presence.version` is older than the one held is ignored. Verified live: this list matched the browser
+exactly, while `group_membermaps` had three people in the office as offline and one long-gone person as online.
+soworker: `roster::Live` on the chat socket (`chat.rs`); `soworker --roster` still prints the stale Firestore data.
+
+## Where the list came from (October 2026)
 
 gaia's `room.users` only holds people who are connected right now (2 users in this recording, both `isOnline:true`).
 The official client's people list comes from **Firestore** (project `sage-learning-prod`, same Firebase ID token as

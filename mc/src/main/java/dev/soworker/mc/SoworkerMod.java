@@ -31,7 +31,6 @@ import org.slf4j.LoggerFactory;
 /** Entry point: the office (one per running server), the `/sw` commands and the hotbar tool clicks. */
 public final class SoworkerMod implements ModInitializer {
     public static final Logger LOG = LoggerFactory.getLogger("soworker");
-    static final int PORT = Integer.getInteger("soworker.port", 25599);
     static Office office;
     private static long lastUse;
 
@@ -45,9 +44,12 @@ public final class SoworkerMod implements ModInitializer {
         net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.registerGlobalReceiver(UnwatchPayload.TYPE, (p, ctx) -> {
             if (office != null && office.bridge.connected()) office.cmd("unwatch", null);
         });
-        ServerLifecycleEvents.SERVER_STARTED.register(s -> office = new Office(s, new Bridge(PORT)));
+        ServerLifecycleEvents.SERVER_STARTED.register(s -> office = new Office(s));
         ServerLifecycleEvents.SERVER_STOPPING.register(s -> {
-            if (office != null) office.save();
+            if (office != null) {
+                office.save();
+                office.stopChild(true);
+            }
             office = null;
         });
         ServerTickEvents.END_SERVER_TICK.register(s -> {
@@ -150,8 +152,9 @@ public final class SoworkerMod implements ModInitializer {
             if (office.bridge.connected()) office.cmd("status", null);
             return 1;
         }));
-        // close Minecraft mode: soworker opens its usual client again (Minecraft itself stays)
-        sw.then(Commands.literal("exit").executes(ctx -> run(ctx.getSource(), "exit", null)));
+        // sign in again (after a failure, or to take SoWork back after it was opened elsewhere), or as someone else
+        sw.then(Commands.literal("login").executes(ctx -> run(ctx.getSource(), "login", null)));
+        sw.then(Commands.literal("logout").executes(ctx -> run(ctx.getSource(), "logout", null)));
         sw.then(Commands.literal("enable").executes(ctx -> {
             if (office == null) return 0;
             office.enable();

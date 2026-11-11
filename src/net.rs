@@ -76,6 +76,8 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
     let req = url.into_client_request().map_err(|e| e.to_string())?;
     let (mut ws, _) = tungstenite::client(req, tls_stream("api.sowork.com")?).map_err(|e| format!("websocket: {e}"))?;
     ws.get_mut().sock.set_read_timeout(Some(Duration::from_millis(25))).ok();
+    // the `error` event the server sent last (code, message): why it disconnects us, if it does
+    let mut refused: Option<(String, String)> = None;
 
     loop {
         while let Ok(e) = link.roster_rx.try_recv() {
@@ -87,7 +89,6 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
         if !link.group_id.is_empty() && link.roster_at.map_or(true, |t| t.elapsed() >= ROSTER_EVERY) {
             link.roster_at = Some(Instant::now());
             if let Ok(token) = auth.id_token() {
-                crate::roster::fetch_async(token.clone(), link.group_id.clone(), link.roster_tx.clone());
                 crate::desks::fetch_async(token.clone(), link.group_id.clone(), link.roster_tx.clone());
                 crate::waves::pending_async(token, auth.uid.clone(), link.roster_tx.clone());
             }
@@ -117,6 +118,26 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
                         ws.send(Message::Binary(event_packet("sync_time", Some(t), Some(0)))).map_err(|e| e.to_string())?;
                     }
                     (4, _) => return Err("gaia rejected the connection (token or version)".into()),
+                    // Socket.IO DISCONNECT from the server ("io server disconnect" in the official client). The reason
+                    // comes just before as an `error` event; without one (or with `user-connect-elsewhere`) the same
+                    // account connected somewhere else with `joinType=force`, and reconnecting would kick that one in turn.
+                    (1, _) => {
+                        eprintln!("gaia: disconnected by the server ({})", refused.as_ref().map_or("no reason", |(c, _)| c.as_str()));
+                        return Err(match refused {
+                            None => REPLACED.into(),
+                            Some((c, _)) if c == "user-connect-elsewhere" || c == "user-new-session" => REPLACED.into(),
+                            Some((c, _)) if c == "outdated-version" => format!("{OUTDATED} (soworker speaks {CLIENT_VERSION})"),
+                            Some((c, m)) => format!("SoWork refused the connection: {m} ({c})"),
+                        });
+                    }
+                    (2, Some((name, payload))) if name == "error" => {
+                        let field = |k: &str| match &payload {
+                            rmpv::Value::Map(m) => m.iter().find(|(key, _)| key.as_str() == Some(k)).and_then(|(_, v)| v.as_str()).unwrap_or("").to_string(),
+                            _ => String::new(),
+                        };
+                        eprintln!("gaia: error {:?}: {:?}", field("code"), field("message"));
+                        refused = Some((field("code"), field("message")));
+                    }
                     (2, Some((name, payload))) => {
                         if name == "init" {
                             for p in init_packets() {
@@ -319,7 +340,13 @@ pub fn urlenc(s: &str) -> String {
         .collect()
 }
 
-/// Runs forever: connect, serve, and reconnect after a drop (the server resends the whole room on reconnect).
+/// The error `session` ends with when the server disconnected us because the account connected elsewhere.
+const REPLACED: &str = "replaced by another session of this account";
+
+/// How `session` ends when the server no longer accepts our `CLIENT_VERSION` (reconnecting cannot help).
+const OUTDATED: &str = "SoWork has a newer version that this soworker does not support yet";
+
+/// Runs until logged out or replaced (see `REPLACED`): connect, serve, and reconnect after a drop (the server resends the whole room on reconnect).
 pub fn run(mut auth: Auth, dry: bool, emit: impl Fn(Net) + Send + 'static, cmds: Receiver<Cmd>) {
     let room_id = loop {
         match auth.find_room() {
@@ -338,6 +365,17 @@ pub fn run(mut auth: Auth, dry: bool, emit: impl Fn(Net) + Send + 'static, cmds:
         if link.logout {
             emit(Net::LoggedOut);
             return;
+        }
+        if res.as_ref().is_err_and(|e| e == REPLACED) {
+            emit(Net::Replaced);
+            return; // a new `run` (signing in again) takes the session back
+        }
+        if let Err(e) = res.as_ref() {
+            if e.starts_with(OUTDATED) {
+                emit(Net::Disconnected);
+                emit(Net::Error(e.clone()));
+                return;
+            }
         }
         if let Err(e) = res {
             emit(Net::Disconnected);

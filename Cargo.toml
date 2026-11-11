@@ -5,7 +5,7 @@ edition = "2021"
 description = "Native lightweight SoWork client (no browser, no Node)"
 
 [features]
-default = ["tui", "gui", "calls", "portal", "mc"]
+default = ["tui", "gui", "calls", "portal"]
 # Terminal client (ratatui). Video shows inline where the terminal supports the kitty graphics protocol, else in a small window.
 tui = ["dep:ratatui", "dep:unicode-width", "window"]
 # Graphical client: software-rendered window with sidebar, map, chat and meeting dock (`soworker --gui`). With both
@@ -18,7 +18,8 @@ render = ["dep:tiny-skia", "dep:fontdue"]
 portal = ["dep:zbus"]
 # a small always-on-top "you are live" pill through the wlr layer-shell protocol (Wayland; nothing elsewhere)
 overlay = ["render", "dep:smithay-client-toolkit", "dep:wayland-client"]
-# The office inside Minecraft (`soworker --mc`): a headless bridge the Fabric mod in mc/ connects to.
+# The office inside Minecraft (`soworker --mc-child`): a headless bridge the Fabric mod in mc/ carries and starts.
+# Only for the binary inside the mod (`make mc`), never in the desktop build.
 mc = ["dep:image"]
 # Audio/video calls through the official LiveKit Rust SDK (needs clang++ and the libwebrtc prebuilt at build time).
 calls = ["dep:livekit", "dep:tokio", "dep:futures-util", "dep:v4l", "dep:nokhwa", "dep:deep_filter", "dep:ndarray", "dep:cpal"]

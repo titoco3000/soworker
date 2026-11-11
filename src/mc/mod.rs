@@ -1,7 +1,11 @@
-//! `soworker --mc`: the office in Minecraft. A headless frontend that runs the same `Backend` and `State` loop as the
-//! terminal client and serves a local WebSocket that the Fabric mod (`mc/`) connects to. It sends the map, the other
-//! users, our own state, the call and its video; the mod sends the player's position and the tool commands back.
-//! See docs/minecraft-bridge-plan.md for the whole design and the protocol.
+//! `soworker --mc-child`: the office in Minecraft. The Fabric mod (`mc/`) carries this binary, starts it and owns it:
+//! a headless frontend that runs the same `Backend` and `State` loop as the terminal client and serves a local
+//! WebSocket the mod connects to. It sends the map, the other users, our own state, the call and its video; the mod
+//! sends the player's position and the tool commands back.
+//!
+//! Started by the mod only: the first stdout line is `port <n>` (the port the system picked), the token the mod must
+//! send comes in `SOWORKER_MC_TOKEN`, and the process ends when its stdin closes (the mod, or Minecraft, went away).
+//! See docs/minecraft-bridge-plan.md and docs/minecraft-mod-bundle-plan.md for the design and the protocol.
 mod demo;
 mod geom;
 mod palette;
@@ -19,7 +23,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use ws::In;
 
-pub const DEFAULT_PORT: u16 = 25599;
+/// Version of the protocol, sent in `hello`; the mod warns when it expects another one.
+pub const PROTO: u32 = 1;
+/// The environment variable the mod passes the WebSocket token in.
+pub const TOKEN_ENV: &str = "SOWORKER_MC_TOKEN";
 const TICK: Duration = Duration::from_millis(33);
 /// Users, our own state and the call go out at most this often (seconds).
 const STATE_EVERY: f64 = 0.1;
@@ -36,6 +43,8 @@ const FACE_FPS: f64 = 10.0;
 enum Msg {
     App(Event),
     Mc(In),
+    /// Standard input closed: the mod is gone.
+    Quit,
 }
 
 struct Bridge {
@@ -72,8 +81,12 @@ struct Bridge {
     /// The screen share shown full screen in Minecraft (a snowball hit its wall), and when its last frame went out.
     watching: Option<String>,
     watch_at: f64,
-    /// `/sw exit`: close the bridge and start the client used last again.
-    exit: bool,
+    /// The sign-in state as last told to the mod (`{"state": …}`, see `set_login`).
+    login: Option<Value>,
+    /// A session is running (the backend was started and not logged out or replaced since).
+    signed_in: bool,
+    /// The browser sign-in is open: the next `Event::Login` is its outcome.
+    browser_open: bool,
 }
 
 /// Seconds between two snowball waves at the same user.
@@ -91,6 +104,9 @@ impl Bridge {
     fn sign_in(&mut self, auth: Auth) {
         let (me, key) = (auth.uid.clone(), self.st.talk_key.clone());
         println!("signed in, connecting to SoWork{}", if self.dry { " (dry run: nothing is sent)" } else { "" });
+        self.set_login(json!({"state": "signed_in", "name": auth.name}));
+        self.signed_in = true;
+        self.browser_open = false;
         self.be.start(auth, false);
         self.st = State::new(&me, self.dry);
         self.st.talk_key = key;
@@ -123,11 +139,71 @@ impl Bridge {
         self.link.send(&json!({"t": "say", "text": text}));
     }
 
+    /// Tell the mod where signing in stands (it is told again on every connect).
+    fn set_login(&mut self, v: Value) {
+        eprintln!("[{:6.1}] login: {v}", self.now());
+        self.login = Some(v.clone());
+        self.sent.remove("login");
+        self.put("login", v);
+    }
+
+    /// No usable saved session: the browser sign-in, when there is a browser to sign in with.
+    fn start_login(&mut self) {
+        if !crate::login::have_browser() {
+            self.browser_open = false;
+            return self.set_login(json!({"state": "no_browser"}));
+        }
+        self.browser_open = true;
+        self.be.begin_login(&mut self.st);
+        self.set_login(json!({"state": "browser"}));
+    }
+
+    /// `/sw login`: sign in again after a failure, or take the session back after it was opened elsewhere.
+    fn login_cmd(&mut self) {
+        if self.browser_open {
+            return self.say("Finish signing in in the browser window (close it to cancel)");
+        }
+        if self.signed_in {
+            return self.say("Already signed in");
+        }
+        match self.login.as_ref().and_then(|l| l["state"].as_str()) {
+            // the saved session still works: load it again, which starts a new connection that takes over
+            Some("replaced" | "offline") => {
+                self.retry_login_at = None;
+                self.st.login_act = Some(crate::app::LoginAct::Retry);
+                self.say("Signing in again…");
+            }
+            _ => self.start_login(),
+        }
+    }
+
+    /// `/sw logout`: leave, forget the saved session, and open the browser to sign in (as someone else).
+    fn logout_cmd(&mut self) {
+        if !self.signed_in {
+            let _ = std::fs::remove_file(&self.be.session_path);
+            return self.login_cmd();
+        }
+        self.st.logout_requested = true;
+        self.say("Signing out…");
+    }
+
+    /// The socket closed after `/sw logout` (or did not answer in time): start over at the browser sign-in.
+    fn finish_logout(&mut self) {
+        self.be.finish_logout();
+        self.signed_in = false;
+        let key = self.st.talk_key.clone();
+        self.st = State::new("", self.dry);
+        self.st.talk_key = key;
+        self.world_gen = None;
+        self.map = geom::Map::default();
+        self.start_login();
+    }
+
     // ------------------------------------------------------------ messages to the mod
 
     fn hello(&self) -> Value {
         let name = self.st.me().map(|m| m.name.clone()).unwrap_or_default();
-        json!({"me": self.st.me_id, "name": name, "room": self.st.room, "dry": self.dry})
+        json!({"me": self.st.me_id, "name": name, "room": self.st.room, "dry": self.dry, "proto": PROTO})
     }
 
     fn world_msg(&self) -> Value {
@@ -222,6 +298,9 @@ impl Bridge {
     /// Everything the client should know right after it connects.
     fn full_state(&mut self) {
         self.sent.clear();
+        if let Some(l) = self.login.clone() {
+            self.put("login", l);
+        }
         self.synced = false;
         self.following = false;
         self.headway = None;
@@ -442,10 +521,8 @@ impl Bridge {
             }
             "watch" => self.say("That screen share has ended"),
             "unwatch" => self.unwatch(),
-            "exit" => {
-                self.say("Back to SoWorker: closing Minecraft mode");
-                self.exit = true;
-            }
+            "login" => self.login_cmd(),
+            "logout" => self.logout_cmd(),
             // an ender pearl landed at block (x, z): SoWork's teleport (Shift+click) there, then put the player where
             // the avatar ended up (back where they were when the spot is off the floor)
             "pearl" => {
@@ -568,9 +645,16 @@ impl Bridge {
                 self.our_goal = None;
             }
             Msg::Mc(In::Msg(v)) => self.from_mod(v),
-            Msg::App(Event::Net(Net::LoggedOut)) => {
-                self.be.finish_logout();
-                return Err("logged out".into());
+            Msg::Quit => return Err("quit".into()),
+            // (not again when the timeout in `run` already finished it)
+            Msg::App(Event::Net(Net::LoggedOut)) if self.be.logging_out().is_some() => self.finish_logout(),
+            Msg::App(Event::Net(Net::LoggedOut)) => {}
+            Msg::App(Event::Net(Net::Replaced)) => {
+                // opened somewhere else: stay out until `/sw login` (which in turn disconnects the other one)
+                self.signed_in = false;
+                self.unwatch();
+                self.st.apply(Net::Replaced, now);
+                self.set_login(json!({"state": "replaced"}));
             }
             Msg::App(Event::Net(Net::Chat(crate::chat::ChatEvent::Message(m)))) => {
                 if m.user != self.st.me_id {
@@ -597,14 +681,52 @@ impl Bridge {
             Msg::App(Event::Media(e)) => self.media(e, now),
             Msg::App(Event::Talk(a)) => self.st.talk(a, now),
             Msg::App(Event::Login(Ok(auth))) => self.sign_in(auth),
+            // the browser sign-in did not work: say why and wait for `/sw login`
+            Msg::App(Event::Login(Err(e))) if std::mem::take(&mut self.browser_open) => {
+                eprintln!("[{now:6.1}] sign-in failed: {e}");
+                self.st.login = None;
+                self.set_login(json!({"state": "failed", "error": e}));
+            }
+            // loading the saved session again (offline at start, `/sw login` after being replaced)
             Msg::App(Event::Login(Err(e))) if session::is_offline(&e) => {
                 eprintln!("[{now:6.1}] still offline: {e}");
                 self.retry_login_at = Some(now + 5.0);
+                if self.login.as_ref().is_none_or(|l| l["state"] != "offline") {
+                    self.set_login(json!({"state": "offline"}));
+                }
             }
-            Msg::App(Event::Login(Err(e))) => return Err(format!("sign-in failed: {e}")),
+            Msg::App(Event::Login(Err(e))) => {
+                eprintln!("[{now:6.1}] the saved sign-in no longer works ({e}): opening the browser");
+                self.start_login();
+            }
         }
         Ok(())
     }
+}
+
+/// The token from the environment (and out of it, so nothing we start inherits it).
+fn token_from_env() -> Result<String, String> {
+    let t = std::env::var(TOKEN_ENV).map_err(|_| format!("{TOKEN_ENV} is not set: this mode is started by the Minecraft mod"))?;
+    std::env::remove_var(TOKEN_ENV);
+    if t.len() < 32 {
+        return Err(format!("{TOKEN_ENV} is too short"));
+    }
+    Ok(t)
+}
+
+/// End when standard input closes: the mod holds the other end, so we go when it does (or when Minecraft dies).
+/// The main loop gets a moment to finish (a recording is written out); then the process ends regardless.
+fn watch_stdin(tx: std::sync::mpsc::Sender<Msg>) {
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 256];
+        let mut input = std::io::stdin();
+        while input.read(&mut buf).is_ok_and(|n| n > 0) {}
+        eprintln!("mc: standard input closed: quitting");
+        let _ = tx.send(Msg::Quit);
+        std::thread::sleep(Duration::from_secs(3));
+        std::process::exit(0);
+    });
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -613,24 +735,32 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let dry = demo || args.iter().any(|a| a == "--dry-run");
     let path = opt("--session").unwrap_or_else(session::default_path);
     session::ensure_private_dir(&path);
-    let port = opt("--mc-port").and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT);
+    let port = opt("--mc-port").and_then(|p| p.parse().ok()).unwrap_or(0);
     let exit_after: Option<f64> = opt("--exit-after").and_then(|s| s.parse().ok());
-    let token = ws::token(&path)?;
+    let token = token_from_env()?;
+    // the file an earlier version kept the token in
+    let _ = std::fs::remove_file(std::path::Path::new(&path).with_file_name("mc-token"));
 
     let (tx, rx) = channel::<Msg>();
     let emit: Emit = {
         let tx = tx.clone();
         Arc::new(move |e| drop(tx.send(Msg::App(e))))
     };
-    let link = {
+    let (link, port) = {
         let tx = tx.clone();
         ws::serve(port, token, move |m| drop(tx.send(Msg::Mc(m))))?
     };
-    println!("soworker --mc: waiting for Minecraft on ws://127.0.0.1:{port} (token in {}){}", ws::token_path(&path).display(), if dry { ", dry run: nothing is sent to SoWork" } else { "" });
+    {
+        // the first line the mod reads
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "port {port}").and_then(|_| out.flush()).map_err(|e| format!("stdout: {e}"))?;
+    }
+    watch_stdin(tx.clone());
     if std::env::var_os("SOWORKER_LOG_STDERR").is_none() {
-        println!("log: soworker.log in the state directory (SOWORKER_LOG_STDERR=1 to log here)");
         crate::mode::log_to_file();
     }
+    eprintln!("mc: soworker {} serving the mod on 127.0.0.1:{port}{}", env!("CARGO_PKG_VERSION"), if dry { ", dry run: nothing is sent to SoWork" } else { "" });
     // all video, sized for the map screens (a share is 512 wide on the wall, a camera 256)
     crate::calls::want_video(None);
     crate::calls::set_video_width(640, WALL_WIDTH);
@@ -659,7 +789,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         waved_at: HashMap::new(),
         watching: None,
         watch_at: 0.0,
-        exit: false,
+        login: None,
+        signed_in: false,
+        browser_open: false,
     };
     b.st.talk_key = crate::talk::key_label();
     let e = emit.clone();
@@ -667,18 +799,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let e = emit.clone();
     crate::talk::portal(move |a| e(Event::Talk(a)), b.st.talk_key.clone());
     if demo {
-        println!("demo office: no SoWork connection at all");
+        eprintln!("demo office: no SoWork connection at all");
         demo::setup(&mut b.st);
+        let name = b.st.me().map(|m| m.name.clone()).unwrap_or_default();
+        b.set_login(json!({"state": "signed_in", "name": name}));
+        b.signed_in = true;
     } else {
         match Auth::load(&path) {
             Ok(auth) => b.sign_in(auth),
             Err(e) if session::is_offline(&e) => {
-                println!("offline ({e}): trying again every 5 s");
+                eprintln!("offline ({e}): trying again every 5 s");
                 b.retry_login_at = Some(b.now() + 5.0);
+                b.set_login(json!({"state": "offline"}));
             }
             Err(e) => {
-                println!("no usable saved sign-in ({e}): opening the browser to sign in");
-                b.be.begin_login(&mut b.st);
+                eprintln!("no usable saved sign-in ({e}): opening the browser to sign in");
+                b.start_login();
             }
         }
     }
@@ -687,22 +823,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut demo_frame = 0.0;
     let mut demo_wave = 0.0;
     loop {
-        match rx.recv_timeout(TICK) {
-            Ok(m) => {
+        let res = match rx.recv_timeout(TICK) {
+            Ok(m) => (|| {
                 b.handle(m)?;
                 b.toasts(); // each message's toast, before the next one replaces it
                 while let Ok(m) = rx.try_recv() {
                     b.handle(m)?;
                     b.toasts();
                 }
-            }
-            Err(RecvTimeoutError::Timeout) => {}
+                Ok(())
+            })(),
+            Err(RecvTimeoutError::Timeout) => Ok(()),
             Err(RecvTimeoutError::Disconnected) => break,
-        }
-        if b.exit {
-            // the goodbye line has a moment to reach Minecraft, then the client used last opens again
-            std::thread::sleep(Duration::from_millis(300));
-            return crate::mode::relaunch(crate::mode::back(args), args);
+        };
+        if let Err(e) = res {
+            if e == "quit" {
+                break;
+            }
+            return Err(e);
         }
         if exit_after.is_some_and(|x| b.now() > x) {
             break;
@@ -712,6 +850,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         if b.retry_login_at.is_some_and(|t| now >= t) {
             b.retry_login_at = None;
             b.st.login_act = Some(crate::app::LoginAct::Retry); // the backend loads the session again on a thread
+        }
+        if b.be.logging_out().is_some_and(|d| d > Duration::from_millis(2500)) {
+            b.finish_logout(); // the socket thread did not answer in time (offline?): go on anyway
         }
         if demo {
             demo::tick(&mut b.st, now);

@@ -7,9 +7,6 @@ use std::process::{Command, Stdio};
 pub enum UiMode {
     Tui,
     Gui,
-    /// The office inside Minecraft (`--mc`): no window of its own. Never chosen by `choose` nor remembered as the
-    /// last client; only reached on purpose (the hidden `/minecraft` chat command), and left with `/sw exit`.
-    Mc,
 }
 
 impl UiMode {
@@ -17,7 +14,6 @@ impl UiMode {
         match self {
             UiMode::Tui => cfg!(feature = "tui"),
             UiMode::Gui => cfg!(feature = "gui"),
-            UiMode::Mc => cfg!(feature = "mc"),
         }
     }
 
@@ -25,14 +21,13 @@ impl UiMode {
         match self {
             UiMode::Tui => "--tui",
             UiMode::Gui => "--gui",
-            UiMode::Mc => "--mc",
         }
     }
 
     fn other(self) -> UiMode {
         match self {
             UiMode::Tui => UiMode::Gui,
-            UiMode::Gui | UiMode::Mc => UiMode::Tui,
+            UiMode::Gui => UiMode::Tui,
         }
     }
 }
@@ -50,13 +45,7 @@ pub fn last() -> Option<UiMode> {
     }
 }
 
-/// The client running in this process (set as it starts): the one the Minecraft bridge goes back to.
-static CURRENT: std::sync::Mutex<Option<UiMode>> = std::sync::Mutex::new(None);
-
 pub fn remember(m: UiMode) {
-    if let Ok(mut c) = CURRENT.lock() {
-        *c = Some(m);
-    }
     let f = file();
     if let Some(d) = f.parent() {
         let _ = std::fs::create_dir_all(d);
@@ -182,48 +171,16 @@ pub fn choose(args: &[String], terminal: bool, last: Option<UiMode>) -> UiMode {
     if want.built() { want } else { want.other() }
 }
 
-/// The arguments worth handing to the next client: not the old client's own flag, nor the Minecraft bridge's options.
-/// The client to start when the Minecraft bridge closes: the one it was started from (`--back tui|gui`), else the
-/// one used last.
-pub fn back(args: &[String]) -> UiMode {
-    let from = args.iter().position(|a| a == "--back").and_then(|i| args.get(i + 1)).and_then(|m| match m.as_str() {
-        "tui" => Some(UiMode::Tui),
-        "gui" => Some(UiMode::Gui),
-        _ => None,
-    });
-    choose(&[], false, from.or_else(last))
-}
-
-/// The arguments for starting `mode`: its flag, what is worth keeping from ours, and for the bridge the client to
-/// go back to.
+/// The arguments for starting `mode`: its flag and what is worth keeping from ours.
 fn next_args(mode: UiMode, forward: &[String]) -> Vec<String> {
     let mut args = client_args(forward);
     args.insert(0, mode.flag().into());
-    let current = CURRENT.lock().ok().and_then(|c| *c);
-    if let (UiMode::Mc, Some(from)) = (mode, current) {
-        args.extend(["--back".into(), if from == UiMode::Tui { "tui" } else { "gui" }.into()]);
-    }
     args
 }
 
+/// The arguments worth handing to the next client: not the old client's own flag.
 fn client_args(forward: &[String]) -> Vec<String> {
-    let mut out = vec![];
-    let mut it = forward.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--gui" | "--tui" | "--mc" | "--mc-demo" => {}
-            "--mc-port" | "--back" => drop(it.next()),
-            _ => out.push(a.clone()),
-        }
-    }
-    out
-}
-
-/// The bridge shows nothing of its own: say what to do next, as the client it replaces has just closed.
-fn started(mode: UiMode) {
-    if mode == UiMode::Mc {
-        crate::notify::message("Minecraft mode: start Minecraft and open your office world (/sw enable the first time). /sw exit comes back.");
-    }
+    forward.iter().filter(|a| !matches!(a.as_str(), "--gui" | "--tui")).cloned().collect()
 }
 
 fn exe() -> Option<String> {
@@ -237,8 +194,7 @@ pub fn relaunch(mode: UiMode, forward: &[String]) -> Result<(), String> {
     let exe = exe().ok_or("cannot find my own binary")?;
     let args = next_args(mode, forward);
     let mut cmd = match mode {
-        // the bridge has no window either: started the same way, detached, quietly
-        UiMode::Gui | UiMode::Mc => {
+        UiMode::Gui => {
             let mut c = Command::new("sh");
             c.args(["-c", "sleep 0.5; exec \"$@\""]).arg("soworker").arg(&exe).args(&args);
             c
@@ -250,7 +206,7 @@ pub fn relaunch(mode: UiMode, forward: &[String]) -> Result<(), String> {
     // in it, unused, and its own camera would fail with EBUSY.
     // SAFETY: runs in the child between fork and exec, and only makes async-signal-safe system calls.
     unsafe { cmd.pre_exec(close_inherited) };
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map(|_| started(mode)).map_err(|e| format!("cannot start {}: {e}", mode.flag()))
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map(drop).map_err(|e| format!("cannot start {}: {e}", mode.flag()))
 }
 
 /// In a forked child: close every descriptor but standard input, output and error.
@@ -297,7 +253,7 @@ pub fn relaunch(mode: UiMode, forward: &[String]) -> Result<(), String> {
     if mode != UiMode::Tui {
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     }
-    cmd.spawn().map(|_| started(mode)).map_err(|e| format!("cannot start {}: {e}", mode.flag()))
+    cmd.spawn().map(drop).map_err(|e| format!("cannot start {}: {e}", mode.flag()))
 }
 
 /// The `terminal` setting of settings.json: the command that runs another inside a terminal, `{}` standing for it.
@@ -368,19 +324,9 @@ mod tests {
     }
 
     #[test]
-    fn the_next_client_gets_neither_the_old_flag_nor_the_bridge_options() {
-        assert_eq!(client_args(&a(&["--mc", "--mc-port", "25600", "--session", "s.json", "--mc-demo"])), a(&["--session", "s.json"]));
+    fn the_next_client_does_not_get_the_old_flag() {
         assert_eq!(client_args(&a(&["--gui", "--dry-run"])), a(&["--dry-run"]));
-        assert_eq!(client_args(&a(&["--mc", "--back", "tui", "--dry-run"])), a(&["--dry-run"]));
-    }
-
-    #[test]
-    fn the_bridge_goes_back_to_the_client_it_came_from() {
-        if !cfg!(all(feature = "tui", feature = "gui")) {
-            return;
-        }
-        assert_eq!(back(&a(&["--mc", "--back", "tui"])), UiMode::Tui);
-        assert_eq!(back(&a(&["--mc", "--back", "gui"])), UiMode::Gui);
+        assert_eq!(client_args(&a(&["--tui", "--session", "s.json"])), a(&["--session", "s.json"]));
     }
 
     #[cfg(target_os = "linux")]

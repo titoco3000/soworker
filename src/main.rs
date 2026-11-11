@@ -129,7 +129,7 @@ fn main() {
         return;
     }
     #[cfg(feature = "mc")]
-    let res = if args.iter().any(|a| a == "--mc") { mc::run(&args) } else { frontend(&args) };
+    let res = if args.iter().any(|a| a == "--mc-child") { mc::run(&args) } else { frontend(&args) };
     #[cfg(not(feature = "mc"))]
     let res = frontend(&args);
     #[cfg(feature = "calls")]

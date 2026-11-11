@@ -1,6 +1,6 @@
-//! The office's member list, online and offline (docs/members-roster.md): Firestore documents
-//! `group_membermaps/<groupId>_<shard>`, read over REST with the signed-in user's ID token.
-use crate::proto::Net;
+//! The office's member list, online and offline (docs/members-roster.md). Live: the chat socket's `members` query,
+//! what the web app's people list shows (`Live`). The Firestore documents `group_membermaps/<groupId>_<shard>` (`fetch`)
+//! are no longer kept current by SoWork (hours stale), so only `soworker --roster` still reads them.
 use serde_json::Value;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -78,22 +78,94 @@ pub fn fetch(token: &str, group_id: &str) -> Result<Vec<Member>, String> {
     Ok(out)
 }
 
-/// Fetch once on a background thread and report through `tx` (the socket thread forwards it to the window).
-pub fn fetch_async(token: String, group_id: String, tx: std::sync::mpsc::Sender<Net>) {
-    std::thread::spawn(move || {
-        let _ = match fetch(&token, &group_id) {
-            Ok(m) => tx.send(Net::Roster(m)),
-            Err(e) => {
-                eprintln!("{e}");
-                Ok(())
+/// Our subscription id for the member list on the chat socket.
+const SUB_ID: &str = "soworker:members";
+
+/// `query.subscribe` for every member, as the web app asks for its people list (sent after `connection.ready`).
+pub fn subscribe_frame(group_id: &str) -> Value {
+    serde_json::json!({"type": "query.subscribe", "data": {
+        "sub_id": SUB_ID, "collection": "members", "group_id": group_id,
+        "query": {"filter": {"include_apps": false}, "sort": ["availability", "last_seen", "name"], "limit": 5000},
+        "time_zone": "UTC",
+    }})
+}
+
+/// One row of `members.rows` / `members.changes`: `{user_id, name, last_seen_at, presence: {online, status, zone_id,
+/// mobile_reachable, sessions: [{kind, state}], version, ...}}`. Returns the member and its presence version.
+pub fn parse_row(r: &Value) -> Option<(Member, i64)> {
+    let p = r.get("presence")?;
+    let online = p["online"].as_bool().unwrap_or(false);
+    let on_phone = p["sessions"].as_array().is_some_and(|s| s.iter().any(|s| s["kind"] == "mobile" && s["state"] != "background"));
+    let m = Member {
+        id: r["user_id"].as_str()?.to_string(),
+        name: r["name"].as_str().unwrap_or("").to_string(),
+        online,
+        status: p["status"].as_str().unwrap_or("online").to_string(),
+        mobile: p["mobile_reachable"].as_bool().unwrap_or(false) || on_phone,
+        last_online: r["last_seen_at"].as_i64(),
+        zone: p["zone_id"].as_str().filter(|z| online && !z.is_empty()).map(String::from),
+    };
+    Some((m, p["version"].as_i64().unwrap_or(0)))
+}
+
+/// The member list as the chat socket keeps it current: the full rows once, then upserts and removals.
+#[derive(Default)]
+pub struct Live {
+    rows: std::collections::HashMap<String, (Member, i64)>,
+}
+
+impl Live {
+    /// Take a chat socket frame; the whole list when it changed it (None for every other frame).
+    pub fn frame(&mut self, text: &str) -> Option<Vec<Member>> {
+        if !text.contains("\"members.") {
+            return None;
+        }
+        let v: Value = serde_json::from_str(text).ok()?;
+        let d = &v["data"];
+        if d["sub_id"] != SUB_ID {
+            return None;
+        }
+        let rows = |k: &str| d[k].as_array().into_iter().flatten().filter_map(parse_row).collect::<Vec<_>>();
+        match v["type"].as_str()? {
+            "members.rows" => self.rows = rows("rows").into_iter().map(|(m, ver)| (m.id.clone(), (m, ver))).collect(),
+            "members.changes" => {
+                for id in d["removed"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    self.rows.remove(id);
+                }
+                for (m, ver) in rows("upserted") {
+                    // an older presence than the one we have keeps ours (the web app does the same)
+                    if self.rows.get(&m.id).is_none_or(|(_, have)| *have <= ver) {
+                        self.rows.insert(m.id.clone(), (m, ver));
+                    }
+                }
             }
-        };
-    });
+            _ => return None,
+        }
+        let mut out: Vec<Member> = self.rows.values().map(|(m, _)| m.clone()).collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Some(out)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follows_the_live_member_list() {
+        let row = |id: &str, online: bool, ver: i64| serde_json::json!({"user_id": id, "name": id, "last_seen_at": 5,
+            "presence": {"online": online, "status": "online", "zone_id": if online { "Z" } else { "" }, "sessions": [], "version": ver}});
+        let mut l = Live::default();
+        let rows = serde_json::json!({"type": "members.rows", "data": {"sub_id": SUB_ID, "rows": [row("a", true, 1), row("b", false, 1)]}});
+        let m = l.frame(&rows.to_string()).unwrap();
+        assert_eq!(m.iter().map(|m| (m.id.as_str(), m.online, m.zone.as_deref())).collect::<Vec<_>>(), [("a", true, Some("Z")), ("b", false, None)]);
+        let ch = serde_json::json!({"type": "members.changes", "data": {"sub_id": SUB_ID, "removed": ["b"], "upserted": [row("a", false, 3), row("c", true, 1)]}});
+        let m = l.frame(&ch.to_string()).unwrap();
+        assert_eq!(m.iter().map(|m| (m.id.as_str(), m.online)).collect::<Vec<_>>(), [("a", false), ("c", true)]);
+        let stale = serde_json::json!({"type": "members.changes", "data": {"sub_id": SUB_ID, "removed": [], "upserted": [row("a", true, 2)]}});
+        assert!(!l.frame(&stale.to_string()).unwrap()[0].online, "an older presence version is ignored");
+        assert!(l.frame(r#"{"type":"message.new","data":{}}"#).is_none());
+    }
 
     #[test]
     fn parses_a_membermaps_document() {

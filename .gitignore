@@ -21,3 +21,4 @@ mc/build/
 .vscode 
 .zprofile 
 .zshrc
+__pycache__/

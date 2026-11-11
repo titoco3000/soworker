@@ -1,5 +1,5 @@
-//! The WebSocket server the Minecraft mod connects to: localhost only, one client at a time, and the first message must
-//! carry the token from `mc-token` (next to the saved session). Each connection runs on its own thread that both
+//! The WebSocket server the Minecraft mod connects to: localhost only, on a port the system picks, one client at a time,
+//! and the first message must carry the token the mod handed us in `SOWORKER_MC_TOKEN`. Each connection runs on its own thread that both
 //! writes what is queued and reads what the mod sends; incoming JSON goes to the main loop through `emit`.
 //!
 //! Outgoing: JSON text messages in order, and video frames that are replaced by a newer frame of the same screen while
@@ -77,43 +77,10 @@ impl Link {
     }
 }
 
-/// Where the token lives: `mc-token` next to the session file.
-pub fn token_path(session_path: &str) -> std::path::PathBuf {
-    std::path::Path::new(session_path).with_file_name("mc-token")
-}
-
-/// The token the mod must send, created (random, readable by the user only) if there is none yet.
-pub fn token(session_path: &str) -> Result<String, String> {
-    let p = token_path(session_path);
-    if let Ok(t) = std::fs::read_to_string(&p) {
-        let t = t.trim().to_string();
-        if t.len() >= 32 {
-            return Ok(t);
-        }
-    }
-    let mut b = [0u8; 24];
-    getrandom::getrandom(&mut b).map_err(|e| format!("random token: {e}"))?;
-    let t: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
-    }
-    use std::io::Write;
-    o.open(&p).and_then(|mut f| f.write_all(t.as_bytes())).map_err(|e| format!("cannot write {}: {e}", p.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(t)
-}
-
-/// Listen on 127.0.0.1:`port` and serve clients on their own threads.
-pub fn serve(port: u16, token: String, emit: impl Fn(In) + Send + Sync + 'static) -> Result<Link, String> {
+/// Listen on 127.0.0.1:`port` (0: any free port) and serve clients on their own threads. Returns the port.
+pub fn serve(port: u16, token: String, emit: impl Fn(In) + Send + Sync + 'static) -> Result<(Link, u16), String> {
     let l = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("cannot listen on 127.0.0.1:{port}: {e}"))?;
+    let port = l.local_addr().map_err(|e| e.to_string())?.port();
     let link = Link::default();
     let (lk, emit) = (link.clone(), Arc::new(emit));
     std::thread::spawn(move || {
@@ -126,7 +93,7 @@ pub fn serve(port: u16, token: String, emit: impl Fn(In) + Send + Sync + 'static
             });
         }
     });
-    Ok(link)
+    Ok((link, port))
 }
 
 fn would_block(e: &tungstenite::Error) -> bool {

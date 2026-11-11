@@ -4,6 +4,10 @@ Status: phases 1–6 built and tested in dry run and in the `--mc-demo` office (
 live test (phase 4, movement visible to coworkers) is still to do, by the user. This document was the hand-off for the
 build; where the implementation settled a detail differently, "Protocol" and "As built" say what is implemented.
 
+The mod now carries soworker itself and starts it as a child process; there is no `soworker --mc` any more, and the
+desktop soworker has no Minecraft code. See `docs/minecraft-mod-bundle-plan.md` for that part (packaging, the child's
+lifetime, signing in from the mod); where the two differ, that one wins.
+
 ## Goal
 
 Show the SoWork office inside Minecraft and let the user take part in it from there:
@@ -44,12 +48,15 @@ Decisions already made with the user (do not reopen):
 ## Architecture
 
 ```
- SoWork servers  <──  soworker --mc  (Rust, this repo)  ──ws://127.0.0.1:25599──  Fabric mod (Java, mc/)
-                       Backend + State as in the TUI,        JSON + binary frames      map, villagers, screens,
-                       LiveKit audio/video, no screen                                  hotbar tools, /sw commands
+ SoWork servers  <──  soworker --mc-child  (Rust, this repo)  ──ws://127.0.0.1:<port>──  Fabric mod (Java, mc/)
+                       Backend + State as in the TUI,              JSON + binary frames     map, villagers, screens,
+                       LiveKit audio/video, no screen                                       hotbar tools, /sw commands
+                       started by the mod, ends with its stdin
 ```
 
-- `soworker --mc` is a third frontend next to `tui` and `gui`. It runs the same `Backend` (`src/backend.rs`) and
+- `soworker --mc-child` is a headless frontend next to `tui` and `gui`, built only into the binary the mod carries
+  (feature `mc`, not in the default build). The mod extracts it from its jar and starts it; it lives as long as its
+  stdin pipe (see the bundle plan). It runs the same `Backend` (`src/backend.rs`) and
   `State` (`src/app.rs`) loop as the TUI (`src/tui/mod.rs`, `event_loop`): handle `Event`s (`st.apply`,
   `st.apply_media`, `st.talk`), then `st.update(dt, now)`, then `be.flush(&mut st, start)`, then compare against the
   state last sent and send what changed to the mod.
@@ -195,17 +202,22 @@ Hotbar slots are numbered 1–9 (Minecraft inventory indices 0–8).
 
 ## Protocol
 
-`ws://127.0.0.1:25599` (`--mc-port` changes it), soworker is the server and listens on localhost only. The first
-message from the mod is `{"t":"auth","token":"…"}` with the token from `mc-token` next to the session file
-(`~/.config/soworker/mc-token`; random, created by soworker with `0600` permissions); anything else closes the socket.
-One client at a time: a newly signed-in client replaces the old one. On (re)connect soworker sends the full state.
+soworker is the server and listens on localhost only, on a port the system picks; its first stdout line is
+`port <n>` (`--mc-port` fixes one, for tests). The first message from the mod is `{"t":"auth","token":"…"}` with the
+token the mod generated for this start and passed in the `SOWORKER_MC_TOKEN` environment variable (random, 24 bytes
+hex; never on the command line, nor in a file); anything else closes the socket. One client at a time: a newly
+signed-in client replaces the old one. On (re)connect soworker sends the full state.
 
 **All coordinates on the wire are blocks** (fractional, two decimals), already converted by `src/mc/geom.rs`; the mod
 never needs `T` or the origin. Tile lists are integer block (x, z) pairs.
 
 soworker to mod, JSON text messages (`t` = type); each kind is only sent when it differs from the last one sent:
 
-- `hello {me, name, room, dry}`
+- `hello {me, name, room, dry, proto}`: `proto` is the protocol version (1); the mod logs a warning on a mismatch.
+- `login {state, name?, error?}`: where signing in stands, sent on every change and on connect. `browser` (no usable
+  session: the browser sign-in opened), `no_browser` (no Chrome, Chromium or Edge), `failed` + `error` (the sign-in
+  failed or was cancelled; `cmd login` tries again), `offline` (retrying every 5 s), `signed_in` + `name`, `replaced`
+  (the account connected elsewhere and the server disconnected us; no reconnect until `cmd login`).
 - `world {origin:[min_i,min_j], floors:[[x,z]…], meeting:[[x,z]…], fences:[[x,z]…], barriers:[[x,z]…], zones:[{id,name,i0,j0,i1,j1}]}`:
   `floors` = grass (meeting tiles not included), `meeting` = cobblestone, `fences` = oak fence at y = 65 (may lie just
   outside the floor), `barriers` = the ring around the floor (barrier at y = 65 and 66; never on a fence tile). A zone's
@@ -230,11 +242,14 @@ mod to soworker:
 
 - `auth {token}`
 - `pos {x, z, input?}` (blocks, 10 times a second; `input: true` when the player pressed a movement key)
-- `cmd {name: "mic"|"share"|"rec"|"cam"|"desk"|"away"|"hand"|"leave"|"wave"|"say"|"status", arg?}`
+- `cmd {name: "mic"|"share"|"rec"|"cam"|"desk"|"away"|"hand"|"leave"|"wave"|"say"|"status"|"login"|"logout", arg?}`:
+  `login` signs in again (after `failed`, `no_browser` or `replaced`), `logout` forgets the saved session and opens
+  the browser sign-in again.
 
-Testing without Minecraft or SoWork: `soworker --mc --mc-demo` serves a made-up office (meeting room with walls and
-doors, three coworkers, one walking a loop, a desk to walk to) with no SoWork connection at all;
-`python3 analysis/scratch/mc_client.py --map` connects, draws the block map as text and prints every message; type
+Testing without Minecraft or SoWork: `SOWORKER_MC_TOKEN=<48 hex> soworker --mc-child --mc-demo` (the mod's build:
+`target/mc/release/soworker`) serves a made-up office (meeting room with walls and doors, three coworkers, one walking
+a loop, a desk to walk to) with no SoWork connection at all; `python3 analysis/scratch/mc_client.py --port <n> --map`
+(token from the same variable) connects, draws the block map as text and prints every message; type
 `pos X Z`, `pos! X Z` or a command name on its stdin. `--frames DIR` saves video frames as PPM. `--mc-no-dither` turns
 the ordered dithering off.
 
@@ -376,8 +391,6 @@ the ordered dithering off.
   SoWork's Shift+click teleport there (leaving a meeting without asking, joining one by landing in it) and sends
   `teleport` to put the player where the avatar is. A spot off the floor: "You cannot teleport there" and the player
   goes back. With the office off, pearls are vanilla.
-- **Getting in and out from the clients.** Hidden on purpose: typing `/minecraft` in the chat box of either client
-  (any tab, never sent) sets `State::switch` to `UiMode::Mc`, and the client hands over like the TUI/GUI hop does
-  (`mode::relaunch`, detached, with a desktop notification saying what to do next, since nothing else is on screen).
-  `/sw exit` in Minecraft sends `cmd exit`; soworker says goodbye in the chat and starts the client it came from
-  (the client passes `--back tui|gui`; else `mode::last`, the window when there is none). Minecraft mode is never remembered as the last client.
+- **Getting in and out.** Replaced by the bundled mod (`docs/minecraft-mod-bundle-plan.md`): the `/minecraft` chat
+  command, `UiMode::Mc`, `--back` and `/sw exit` are gone. `/sw enable` starts the mod's own soworker, `/sw disable`
+  stops it.

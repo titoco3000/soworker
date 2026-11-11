@@ -3,7 +3,7 @@
   "id": "soworker",
   "version": "0.1.0",
   "name": "SoWorker bridge",
-  "description": "Shows the SoWork office in Minecraft and lets you take part from there, through a local soworker --mc.",
+  "description": "Shows the SoWork office in Minecraft and lets you take part from there. Carries its own soworker (Linux and Windows x86_64); /sw enable in a void world.",
   "license": "proprietary",
   "environment": "*",
   "entrypoints": {

@@ -311,6 +311,12 @@ impl State {
         match ev {
             Net::Connected => self.status.clear(),
             Net::Disconnected => self.status = "reconnecting…".into(),
+            Net::Replaced => {
+                eprintln!("[{now:6.1}] net: replaced by another session of this account");
+                self.status = "SoWork was opened somewhere else".into();
+                self.say("SoWork was opened somewhere else: this one is disconnected", now);
+                self.media_out.push(MediaCmd::Leave);
+            }
             Net::Error(e) => {
                 eprintln!("[{now:6.1}] net: {e}");
                 self.say(e, now)

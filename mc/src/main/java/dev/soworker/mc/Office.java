@@ -28,7 +28,11 @@ import net.minecraft.world.level.storage.LevelResource;
 public final class Office {
     static final String FILE = "soworker-office.json";
     final MinecraftServer server;
-    final Bridge bridge;
+    /** The soworker process (started while the office is on) and the connection to it. */
+    final Child child = new Child();
+    final Bridge bridge = new Bridge(child);
+    /** Lines for the chat from other threads (starting the child). */
+    final java.util.concurrent.ConcurrentLinkedQueue<String> notes = new java.util.concurrent.ConcurrentLinkedQueue<>();
     final MapBuilder map = new MapBuilder();
     final Villagers villagers = new Villagers();
     final Tools tools = new Tools();
@@ -46,10 +50,10 @@ public final class Office {
     boolean swept;
     int saveIn = -1;
 
-    Office(MinecraftServer server, Bridge bridge) {
+    Office(MinecraftServer server) {
         this.server = server;
-        this.bridge = bridge;
         load();
+        if (enabled) startChild();
     }
 
     ServerLevel level() {
@@ -129,13 +133,47 @@ public final class Office {
         if (bridge.connected()) {
             chat("Office switched on: building it", ChatFormatting.GREEN);
         } else {
-            chat("Office switched on. Start soworker --mc to connect.", ChatFormatting.YELLOW);
+            chat("Starting SoWork…", ChatFormatting.YELLOW);
+            startChild();
         }
+    }
+
+    /** Start the soworker process (on its own thread: the first start unpacks it from the jar). */
+    void startChild() {
+        if (!Child.supported()) {
+            chat("SoWork in Minecraft runs on Linux and Windows x86_64 only", ChatFormatting.RED);
+            return;
+        }
+        if (child.running()) return;
+        Thread t = new Thread(() -> {
+            try {
+                child.start();
+            } catch (Exception e) {
+                SoworkerMod.LOG.warn("soworker: cannot start soworker: {}", e.toString());
+                notes.add("Cannot start SoWork: " + e.getMessage());
+            }
+        }, "soworker-start");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Stop the soworker process. {@code wait}: return only once it is gone (the server is stopping). */
+    void stopChild(boolean wait) {
+        if (wait) {
+            child.stop();
+            return;
+        }
+        Runnable finish = child.detach(); // now, so a /sw enable right after starts a new one
+        if (finish == null) return;
+        Thread t = new Thread(finish, "soworker-stop");
+        t.setDaemon(true);
+        t.start();
     }
 
     void disable() {
         enabled = false;
         save();
+        stopChild(false);
         villagers.clear();
         rail.finish(level(), player());
         screens.clear(level());
@@ -189,18 +227,13 @@ public final class Office {
     void handle(Bridge.In in) {
         ServerLevel l = level();
         if (in.connected()) {
-            if (enabled) {
-                prepareWorld();
-                chat("Connected to soworker", ChatFormatting.GREEN);
-            } else {
-                chat("soworker is running. Type /sw enable to build the office in this world (use a new void world: it rebuilds the ground around 0 64 0).", ChatFormatting.YELLOW);
-            }
+            if (enabled) prepareWorld(); // what comes next (signing in, the office) is said by the `login` message
             return;
         }
         if (in.disconnected()) {
             follow = null;
             sendAway(false);
-            if (enabled) chat("Lost the connection to soworker; trying again", ChatFormatting.RED);
+            if (enabled && child.running()) chat("Lost the connection to SoWork; trying again", ChatFormatting.RED);
             return;
         }
         if (in.binary() != null) {
@@ -218,6 +251,12 @@ public final class Office {
         }
         if (t.equals("hello")) {
             hello = m;
+            int proto = m.has("proto") ? m.get("proto").getAsInt() : 0;
+            if (proto != PROTO) SoworkerMod.LOG.warn("soworker: the soworker process speaks protocol {}, this mod {}", proto, PROTO);
+            return;
+        }
+        if (t.equals("login")) {
+            login(m);
             return;
         }
         if (!enabled) return;
@@ -273,6 +312,32 @@ public final class Office {
                 villagers.wave(l, m.get("from").getAsString(), to, toMe ? player() : null);
             }
             default -> {}
+        }
+    }
+
+    /** Version of the protocol with the soworker process (its `hello` says which it speaks). */
+    static final int PROTO = 1;
+
+    /** Where signing in stands, from the soworker process. */
+    void login(JsonObject m) {
+        String state = m.get("state").getAsString();
+        switch (state) {
+            case "browser" -> chat("Sign in to SoWork in the browser window that just opened", ChatFormatting.YELLOW);
+            case "no_browser" -> chat("Install Chrome, Chromium or Edge to sign in to SoWork, then /sw login", ChatFormatting.RED);
+            case "failed" -> {
+                String err = m.has("error") ? m.get("error").getAsString() : "unknown error";
+                chat("Signing in failed: " + err + ". /sw login to try again", ChatFormatting.RED);
+            }
+            case "offline" -> chat("Cannot reach SoWork: trying again every 5 s", ChatFormatting.YELLOW);
+            case "signed_in" -> {
+                String name = m.has("name") ? m.get("name").getAsString() : "";
+                chat("Signed in" + (name.isEmpty() ? "" : " as " + name) + ": building your office", ChatFormatting.GREEN);
+            }
+            case "replaced" -> {
+                villagers.clear();
+                chat("SoWork was opened somewhere else. /sw login to use it here again", ChatFormatting.YELLOW);
+            }
+            default -> SoworkerMod.LOG.warn("soworker: unknown sign-in state {}", state);
         }
     }
 
@@ -347,7 +412,14 @@ public final class Office {
         o.addProperty("name", name);
         if (arg != null) o.addProperty("arg", arg);
         if (!bridge.connected()) {
-            chat("Not connected to soworker (start soworker --mc)", ChatFormatting.RED);
+            if (!enabled) {
+                chat("The office is off: /sw enable switches it on", ChatFormatting.RED);
+            } else if (!child.running()) {
+                chat("SoWork is not running: starting it", ChatFormatting.YELLOW);
+                startChild();
+            } else {
+                chat("SoWork is starting: try again in a moment", ChatFormatting.YELLOW);
+            }
             return;
         }
         bridge.send(o);
@@ -357,6 +429,18 @@ public final class Office {
 
     void tick() {
         tick++;
+        for (String n; (n = notes.poll()) != null; ) chat(n, ChatFormatting.RED);
+        if (child.died()) {
+            follow = null;
+            if (!enabled) {
+                // switched off meanwhile: nothing to bring back
+            } else if (child.mayRestart()) {
+                chat("SoWork stopped (see " + Child.logPath() + "): starting it again", ChatFormatting.RED);
+                startChild();
+            } else {
+                chat("SoWork keeps stopping (see " + Child.logPath() + "). /sw enable to start it again", ChatFormatting.RED);
+            }
+        }
         bridge.tick();
         for (Bridge.In in; (in = bridge.poll()) != null; ) {
             try {
@@ -416,7 +500,7 @@ public final class Office {
     String status() {
         StringBuilder s = new StringBuilder();
         s.append(enabled ? "office on" : "office off (/sw enable)");
-        s.append(bridge.connected() ? ", connected to soworker" : ", soworker not connected");
+        s.append(bridge.connected() ? ", connected to SoWork" : child.running() ? ", SoWork starting" : ", SoWork not running");
         if (hello != null) s.append(", signed in as ").append(hello.get("name").getAsString()).append(hello.get("dry").getAsBoolean() ? " (dry run)" : "");
         s.append(", ").append(villagers.users.size()).append(" others shown");
         return s.toString();

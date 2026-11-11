@@ -12,7 +12,7 @@ endif
 # release bumps this part of the version: patch (default), minor or major
 BUMP ?= patch
 
-.PHONY: dev build build-tui build-windows install test release mc
+.PHONY: dev build build-tui build-windows install test release mc mc-linux mc-windows mc-jar mc-test
 
 # Rebuild and restart the app whenever a source file changes (needs cargo-watch).
 dev:
@@ -29,14 +29,16 @@ build-tui:
 # fetches the MSVC headers and libraries (accepting Microsoft's license). One-time setup:
 #   rustup target add x86_64-pc-windows-msvc && rustup component add llvm-tools && cargo install cargo-xwin --locked
 # The rustup llvm-tools have no `llvm-lib`; `llvm-ar` does the same job under that name.
+# XWIN_ARGS: extra cargo arguments (the mod's build passes its features and target dir).
 XWIN_BIN := $(CURDIR)/target/xwin-bin
 LLVM_TOOLS := $(shell rustc --print sysroot)/lib/rustlib/$(shell rustc -vV | sed -n 's/^host: //p')/bin
+XWIN_ARGS ?=
 build-windows:
 	@mkdir -p $(XWIN_BIN)
 	@ln -sf $(LLVM_TOOLS)/llvm-ar $(XWIN_BIN)/llvm-lib
 	@ln -sf $(LLVM_TOOLS)/llvm-ar $(XWIN_BIN)/llvm-ar
 	@ln -sf $(LLVM_TOOLS)/rust-lld $(XWIN_BIN)/lld-link
-	env -u LK_CUSTOM_WEBRTC -u CC -u CXX PATH="$(XWIN_BIN):$$PATH" cargo xwin build --release --target x86_64-pc-windows-msvc
+	env -u LK_CUSTOM_WEBRTC -u CC -u CXX PATH="$(XWIN_BIN):$$PATH" cargo xwin build --release --target x86_64-pc-windows-msvc $(XWIN_ARGS)
 
 install:
 	cargo install --path . --locked --force
@@ -44,12 +46,36 @@ install:
 test:
 	cargo test
 
-# The Minecraft mod (mc/): built with javac against the installed game (no Gradle), copied into ~/.minecraft/mods.
-mc:
-	python3 mc/build.py --install
+# The Minecraft mod (mc/) carries its own soworker: the bridge only (`mc` feature, no windows, no terminal client),
+# for Linux and Windows, stripped (release profile), in a target dir of its own. The jar is built with javac against the installed game
+# (no Gradle) and copied into ~/.minecraft/mods. `make mc MC_ALLOW_MISSING=1` builds a jar without the Windows binary
+# when that build fails.
+MC_FEATURES := --no-default-features --features mc,calls
+MC_LINUX := target/mc/release/soworker
+MC_WINDOWS := target/mc/x86_64-pc-windows-msvc/release/soworker.exe
+mc-linux:
+	cargo build --release $(MC_FEATURES) --target-dir target/mc
+	@# the oldest glibc the binary starts on is the newest symbol version it needs
+	@echo "$(MC_LINUX) needs glibc $$(objdump -T $(MC_LINUX) | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | sed 's/GLIBC_//')"
+
+mc-windows:
+	$(MAKE) --no-print-directory build-windows XWIN_ARGS="$(MC_FEATURES) --target-dir target/mc"
+
+mc-jar:
+	python3 mc/build.py --bin linux=$(MC_LINUX) $(if $(wildcard $(MC_WINDOWS)),--bin windows=$(MC_WINDOWS)) $(if $(MC_ALLOW_MISSING),--allow-missing) $(MC_JAR_ARGS)
+
+mc: mc-linux
+	@$(MAKE) --no-print-directory mc-windows || { [ -n "$(MC_ALLOW_MISSING)" ] && rm -f $(MC_WINDOWS); } || { echo "Windows build failed: MC_ALLOW_MISSING=1 builds the jar without it"; exit 1; }
+	@$(MAKE) --no-print-directory mc-jar MC_JAR_ARGS=--install
+
+# The tests of the mod's binary (the `mc` feature is not in the default build).
+mc-test:
+	cargo test $(MC_FEATURES) --target-dir target/mc
 
 # Bump the version in Cargo.toml (BUMP=patch|minor|major), build, commit the bump, tag it and publish a GitHub release
-# with the Linux and Windows builds. If the Windows build fails, it asks whether to release without it.
+# with the Linux and Windows builds and the Minecraft mod jar (which carries the mod's own Linux and Windows binaries).
+# If a Windows build fails, it asks whether to release without Windows: the jar then has no Windows binary and the
+# release notes say so. A failing Linux mod build or jar fails the release (same undo).
 release:
 	@test -z "$$(git status --porcelain)" || { echo "commit your changes first"; exit 1; }
 	@set -e; \
@@ -62,7 +88,7 @@ release:
 	committed=0; tagged=0; pushed=0; \
 	undo() { \
 		[ $$? -eq 0 ] && return; \
-		if [ $$pushed -eq 1 ]; then echo "pushed $$tag but the GitHub release failed: run: gh release create $$tag $$asset $$win --generate-notes"; return; fi; \
+		if [ $$pushed -eq 1 ]; then echo "pushed $$tag but the GitHub release failed: run: gh release create $$tag $$asset $$win $$jar --generate-notes"; return; fi; \
 		echo "release failed: undoing the version bump"; \
 		[ $$tagged -eq 1 ] && git tag -d "$$tag" >/dev/null; \
 		[ $$committed -eq 1 ] && git reset -q --hard HEAD~1; \
@@ -76,14 +102,22 @@ release:
 	win=""; \
 	winzip="$$PWD/target/release/soworker-$$tag-windows-x86_64.zip"; \
 	rm -f "$$winzip"; \
-	if $(MAKE) --no-print-directory build-windows && (cd target/x86_64-pc-windows-msvc/release && zip -q "$$winzip" soworker.exe); then \
+	$(MAKE) --no-print-directory mc-linux; \
+	rm -f $(MC_WINDOWS); \
+	if $(MAKE) --no-print-directory build-windows && (cd target/x86_64-pc-windows-msvc/release && zip -q "$$winzip" soworker.exe) && $(MAKE) --no-print-directory mc-windows; then \
 		win="$$winzip"; \
 	else \
 		read -r -p "Windows build failed (see build-windows for the cargo-xwin setup). Release without it? [y/N] " ans; \
 		case "$$ans" in [yY]*) ;; *) exit 1;; esac; \
+		win=""; rm -f "$$winzip" $(MC_WINDOWS); \
 	fi; \
+	if [ -n "$$win" ]; then $(MAKE) --no-print-directory mc-jar; else $(MAKE) --no-print-directory mc-jar MC_ALLOW_MISSING=1; fi; \
+	jar="mc/build/soworker-mc-$$new.jar"; \
+	test -f "$$jar"; \
+	notes=""; \
+	if [ -z "$$win" ]; then notes="No Windows build in this release: soworker-mc-$$new.jar carries the Linux binary only, so the Minecraft mod works on Linux only."; fi; \
 	git add Cargo.toml Cargo.lock; \
 	git commit -q -m "Release $$tag"; committed=1; \
 	git tag "$$tag"; tagged=1; \
 	git push origin HEAD "$$tag"; pushed=1; \
-	gh release create "$$tag" "$$asset" $$win --title "$$tag" --generate-notes
+	gh release create "$$tag" "$$asset" $$win "$$jar" --title "$$tag" --generate-notes $${notes:+--notes "$$notes"}

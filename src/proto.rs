@@ -68,6 +68,9 @@ pub enum Net {
     Chat(crate::chat::ChatEvent),
     /// The socket thread closed the connection after a logout request.
     LoggedOut,
+    /// The server disconnected us because this account connected elsewhere (another soworker, a browser tab). The
+    /// socket thread has stopped and does not reconnect, so the two do not keep kicking each other out.
+    Replaced,
     /// Profile update for a user (name, photo, avatar config).
     UserInfo { id: String, name: Option<String>, photo: Option<Option<String>>, portrait: Option<String> },
     /// Our new profile photo is uploaded and saved; the socket thread tells gaia (`info_update`) before passing it on.

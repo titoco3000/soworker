@@ -119,6 +119,12 @@ impl Drop for Browser {
     }
 }
 
+/// Whether there is a browser to sign in with (Chrome, Chromium, or Edge on Windows).
+#[cfg_attr(not(feature = "mc"), allow(dead_code))]
+pub fn have_browser() -> bool {
+    find_chrome().is_some()
+}
+
 pub fn capture(opts: &Options, cancel: &AtomicBool) -> Result<Captured, String> {
     let missing = if cfg!(windows) { "Chrome or Edge is needed for signing in, but neither was found" } else { "Chrome or Chromium is needed for signing in, but none was found in PATH" };
     let chrome = find_chrome().ok_or(missing)?;

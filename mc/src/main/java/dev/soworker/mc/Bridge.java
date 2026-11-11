@@ -7,16 +7,15 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * The WebSocket client to {@code soworker --mc} on localhost. Connects (and reconnects every 5 s), signs in with the
- * token from {@code mc-token}, and queues what arrives; the server thread drains the queue on its tick.
+ * The WebSocket client to the soworker child process ({@link Child}) on localhost. Connects once the child said its
+ * port (and reconnects every 2 s), signs in with the child's token, and queues what arrives; the server thread drains
+ * the queue on its tick.
  */
 public final class Bridge {
     /** An incoming message: a JSON object, or a binary video frame. */
@@ -25,21 +24,15 @@ public final class Bridge {
     private final ConcurrentLinkedQueue<In> inbox = new ConcurrentLinkedQueue<>();
     private final AtomicReference<WebSocket> ws = new AtomicReference<>();
     private final HttpClient http = HttpClient.newHttpClient();
-    private final int port;
+    private final Child child;
     private volatile boolean connecting;
     private volatile long nextTry;
+    /** The child's port of the last attempt: a new child (new port) is tried at once. */
+    private int lastPort;
     private CompletableFuture<?> sending = CompletableFuture.completedFuture(null);
 
-    public Bridge(int port) {
-        this.port = port;
-    }
-
-    static Path tokenPath() {
-        String xdg = System.getenv("XDG_CONFIG_HOME");
-        Path base = xdg != null && !xdg.isEmpty() ? Path.of(xdg) : Path.of(System.getProperty("user.home"), ".config");
-        String win = System.getenv("APPDATA");
-        if (System.getProperty("os.name", "").toLowerCase().contains("win") && win != null) base = Path.of(win);
-        return base.resolve("soworker").resolve("mc-token");
+    public Bridge(Child child) {
+        this.child = child;
     }
 
     public boolean connected() {
@@ -53,16 +46,13 @@ public final class Bridge {
     /** Call on every tick: starts a connection attempt when there is none. */
     public void tick() {
         long now = System.currentTimeMillis();
-        if (connected() || connecting || now < nextTry) return;
+        int port = child.port();
+        if (connected() || connecting || port == 0) return; // not started, or has not said its port yet
+        if (now < nextTry && port == lastPort) return;
+        lastPort = port;
         connecting = true;
-        nextTry = now + 5000;
-        String token;
-        try {
-            token = Files.readString(tokenPath()).trim();
-        } catch (Exception e) {
-            connecting = false;
-            return; // soworker --mc has not run yet
-        }
+        nextTry = now + 2000;
+        String token = child.token();
         http.newWebSocketBuilder().buildAsync(URI.create("ws://127.0.0.1:" + port), new Listener()).whenComplete((w, err) -> {
             connecting = false;
             if (err != null) return;
@@ -72,7 +62,7 @@ public final class Bridge {
             w.sendText(auth.toString(), true);
             ws.set(w);
             inbox.add(new In(null, null, true, false));
-            SoworkerMod.LOG.info("soworker: connected to soworker --mc on port {}", port);
+            SoworkerMod.LOG.info("soworker: connected to the soworker process on port {}", port);
         });
     }
 
@@ -87,9 +77,9 @@ public final class Bridge {
     private void lost() {
         if (ws.getAndSet(null) != null) {
             inbox.add(new In(null, null, false, true));
-            SoworkerMod.LOG.info("soworker: lost the connection to soworker --mc");
+            SoworkerMod.LOG.info("soworker: lost the connection to the soworker process");
         }
-        nextTry = System.currentTimeMillis() + 5000;
+        nextTry = System.currentTimeMillis() + 2000;
     }
 
     private final class Listener implements WebSocket.Listener {

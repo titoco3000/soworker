@@ -269,6 +269,7 @@ fn socket(sh: &Arc<Shared>, stop: &dyn Fn() -> bool) -> Result<(), String> {
         ws.send(Message::Text(m.to_string()))
     };
     let (mut last_report, mut last_frame) = (Instant::now(), Instant::now());
+    let mut members = crate::roster::Live::default();
     loop {
         if stop() {
             let _ = ws.close(None);
@@ -278,8 +279,11 @@ fn socket(sh: &Arc<Shared>, stop: &dyn Fn() -> bool) -> Result<(), String> {
             Ok(Message::Text(t)) => {
                 last_frame = Instant::now();
                 if t.contains("\"connection.ready\"") {
+                    ws.send(Message::Text(crate::roster::subscribe_frame(&sh.group).to_string())).map_err(|e| e.to_string())?;
                     report(&mut ws).map_err(|e| e.to_string())?;
                     last_report = Instant::now();
+                } else if let Some(list) = members.frame(&t) {
+                    (sh.emit)(Net::Roster(list));
                 } else {
                     on_frame(sh, &t);
                 }

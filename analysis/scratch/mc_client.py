@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Stand-in for the Minecraft mod: connects to `soworker --mc`, signs in with the token and prints what arrives.
+"""Stand-in for the Minecraft mod: connects to `soworker --mc-child`, signs in with the token and prints what arrives.
 
-    python3 analysis/scratch/mc_client.py [--port 25599] [--map] [--frames DIR] [--quiet-users]
+Start the child yourself with a token of your choosing; it prints `port <n>` first:
+
+    export SOWORKER_MC_TOKEN=$(openssl rand -hex 24)
+    target/mc/release/soworker --mc-child --mc-demo        # port 41234
+    python3 analysis/scratch/mc_client.py --port 41234 [--map] [--frames DIR] [--quiet-users]
 
 Type on stdin to talk back:
     pos X Z          the player stands at block (X, Z)   (`pos! X Z` = with a movement key pressed)
-    mic | share | rec | cam | desk | away | hand | leave | status
+    mic | share | rec | cam | desk | away | hand | leave | status | login | logout
     wave NAME | say TEXT
     {"t": ...}       any raw JSON message
 No dependencies: a minimal WebSocket client on a plain socket.
@@ -163,14 +167,16 @@ def reader(ws, args):
 def main():
     sys.stdout.reconfigure(line_buffering=True)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=25599)
-    ap.add_argument("--token", default=os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "soworker", "mc-token"))
+    ap.add_argument("--port", type=int, required=True, help="the port from the child's `port <n>` line")
+    ap.add_argument("--token", default=os.environ.get("SOWORKER_MC_TOKEN"), help="default: $SOWORKER_MC_TOKEN")
     ap.add_argument("--map", action="store_true", help="draw the block map as text")
     ap.add_argument("--frames", help="save the latest video frame of each screen as DIR/<key>.ppm")
     ap.add_argument("--quiet-users", action="store_true", help="only print the user list when someone joins or leaves")
     ap.add_argument("--bad-token", action="store_true", help="send a wrong token (soworker should close the socket)")
     args = ap.parse_args()
-    token = "wrong" if args.bad_token else open(args.token).read().strip()
+    if not args.token and not args.bad_token:
+        raise SystemExit("set SOWORKER_MC_TOKEN (the token the child was started with) or pass --token")
+    token = "wrong" if args.bad_token else args.token
     ws = WS("127.0.0.1", args.port)
     ws.send_json({"t": "auth", "token": token})
     threading.Thread(target=reader, args=(ws, args), daemon=True).start()
