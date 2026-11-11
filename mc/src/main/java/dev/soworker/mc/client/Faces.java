@@ -52,6 +52,7 @@ public final class Faces implements ClientModInitializer {
             if (renderer instanceof AvatarRenderer<?> r) helper.register(new FaceLayer((AvatarRenderer) r));
         });
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
+            ZombieSkins.ensure(mc);
             if (mc.level == null) away = false;
             long now = System.currentTimeMillis();
             for (Iterator<Face> it = FACES.values().iterator(); it.hasNext(); ) {

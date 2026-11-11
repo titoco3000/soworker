@@ -47,6 +47,7 @@ public final class Villagers {
     static final double SPEED = 1.5;
 
     static final class U {
+        String id;
         Villager v;
         Mannequin m;
         /** The name over the head: a text display riding the villager, bigger than a vanilla name tag. */
@@ -92,6 +93,7 @@ public final class Villagers {
             boolean fresh = u == null;
             if (fresh) {
                 u = new U();
+                u.id = id;
                 users.put(id, u);
             }
             u.name = o.get("name").getAsString();
@@ -159,6 +161,7 @@ public final class Villagers {
             m.setNoGravity(true);
             ((MannequinAccess) m).soworker$setHideDescription(true);
             ((MannequinAccess) m).soworker$setImmovable(true);
+            ((MannequinAccess) m).soworker$setProfile(Skins.profile(u.id));
             level.addFreshEntity(m);
             u.m = m;
         }

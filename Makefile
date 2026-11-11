@@ -40,8 +40,18 @@ build-windows:
 	@ln -sf $(LLVM_TOOLS)/rust-lld $(XWIN_BIN)/lld-link
 	env -u LK_CUSTOM_WEBRTC -u CC -u CXX PATH="$(XWIN_BIN):$$PATH" cargo xwin build --release --target x86_64-pc-windows-msvc $(XWIN_ARGS)
 
+# Also refreshes the Minecraft mod when there is a Minecraft with a mods folder (MINECRAFT, default ~/.minecraft): the
+# Linux binary is rebuilt, the Windows one is reused when built before (else the jar goes without it).
+MINECRAFT ?= $(HOME)/.minecraft
 install:
 	cargo install --path . --locked --force
+	@if [ -d "$(MINECRAFT)/mods" ]; then \
+		echo "$(MINECRAFT)/mods found: updating the soworker mod"; \
+		$(MAKE) --no-print-directory mc-linux && \
+		$(MAKE) --no-print-directory mc-jar MC_ALLOW_MISSING=1 MC_JAR_ARGS="--install --minecraft $(MINECRAFT)"; \
+	else \
+		echo "no $(MINECRAFT)/mods: skipping the Minecraft mod"; \
+	fi
 
 test:
 	cargo test

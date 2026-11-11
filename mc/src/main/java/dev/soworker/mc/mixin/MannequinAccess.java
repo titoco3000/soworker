@@ -11,4 +11,7 @@ public interface MannequinAccess {
 
     @Invoker("setImmovable")
     void soworker$setImmovable(boolean immovable);
+
+    @Invoker("setProfile")
+    void soworker$setProfile(net.minecraft.world.item.component.ResolvableProfile profile);
 }

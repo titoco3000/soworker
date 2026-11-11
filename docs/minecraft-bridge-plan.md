@@ -325,6 +325,11 @@ the ordered dithering off.
   mic/camera, raised hands). **Screens:** glow item frames with locked maps on black concrete from y = 67, at the
   zone's north edge facing south; map updates are sent to nearby players directly after each frame (vanilla only
   refreshes framed maps every 10 ticks).
+- **Skins:** each coworker's mannequin wears a game skin picked from a hash of their user id (`Skins.java`), so a
+  person keeps theirs: one of the nine default skins (wide or slim arms), zombie, husk or drowned, all equally likely.
+  Only textures in the player skin layout fit the mannequin: skeletons (64x32, thin limbs) and piglins (wider head) do
+  not. Zombie and husk leave the left limbs blank (their model mirrors the right ones), so the client makes
+  `soworker:entity/skin/{zombie,husk}` from the game's textures with the right limbs copied over (`client/ZombieSkins`).
 - **Testing:** `soworker --mc --mc-demo` also fakes a call: walking into the demo meeting room joins it (Bo is there
   with a raised hand, a camera and a screen share as moving test pictures), mic/camera/share/record answer like the
   media thread, walking out or `leave` ends it. `DevShots` (client side) saves a screenshot for each
