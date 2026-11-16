@@ -37,10 +37,13 @@ public final class Office {
     final Villagers villagers = new Villagers();
     final Tools tools = new Tools();
     final Screens screens = new Screens();
+    final Preview preview = new Preview();
     final Panel panel = new Panel();
     final ZoneLabels zoneLabels = new ZoneLabels();
     boolean enabled;
     long tick;
+    /** The tick of the last tool click (per office: tick starts again at 0 in each world). */
+    long lastUse = -5;
     JsonObject hello, call, me, lastScreens;
     /** Where soworker carries the player during its own walk (null = the player walks). */
     double[] follow;
@@ -240,7 +243,7 @@ public final class Office {
             byte[] b = in.binary();
             if (enabled && b.length > 0 && b[0] == 2) face(b);
             else if (enabled && b.length > 0 && b[0] == 3) watchFrame(b);
-            else if (enabled) screens.frame(l, b);
+            else if (enabled && !preview.frame(l, b, player())) screens.frame(l, b);
             return;
         }
         JsonObject m = in.json();
@@ -293,6 +296,7 @@ public final class Office {
                 String key = m.get("key").getAsString();
                 if (key.endsWith(":screen")) screens.gone(l, key);
                 else sendFace(key, 0, 0, new byte[0]);
+                if (key.equals("me")) preview.clear(l, player());
             }
             case "teleport" -> {
                 ServerPlayer p = player();
@@ -477,6 +481,7 @@ public final class Office {
                 bridge.send(o);
             }
             if (toolsDirty || tick % 20 == 0) {
+                tools.preview = preview.map(l);
                 tools.assertSlots(p);
                 toolsDirty = false;
             }

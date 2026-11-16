@@ -619,6 +619,11 @@ impl Bridge {
                         // a camera goes on its owner's face (key = user id, or "me")
                         let px = palette::face_pixels(*w, *h, rgba, palette::FACE);
                         self.link.video(key, palette::face_message(key, palette::FACE, palette::FACE, &px));
+                        if key == "me" {
+                            // and on the map in the player's off-hand, mirrored like any self view
+                            let px = palette::preview_pixels(*w, *h, rgba, self.dither);
+                            self.link.video(palette::PREVIEW, palette::frame_message(palette::PREVIEW, 128, 128, &px));
+                        }
                     }
                 }
             }

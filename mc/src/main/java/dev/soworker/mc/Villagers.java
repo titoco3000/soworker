@@ -45,6 +45,8 @@ public final class Villagers {
     static final double Y = MapBuilder.FLOOR_Y + 1;
     /** SoWork walks 800 units/s = 7.6 blocks/s at two blocks per tile; 0.75 here was about 3.8 blocks/s. */
     static final double SPEED = 1.5;
+    /** The least a walker moves in a tick for its mannequin to turn that way (blocks). */
+    static final double TURN_STEP = 0.05;
 
     static final class U {
         String id;
@@ -59,8 +61,81 @@ public final class Villagers {
         String shown = "";
         Boolean crouched;
         double lastX, lastZ;
+        double lastSpotX = Double.NaN, lastSpotZ = Double.NaN;
         int still;
         double navX = Double.NaN, navZ = Double.NaN;
+        /** Where the walker heads: the SoWork spot, or the nearest free point round it (see spread). */
+        double gx = Double.NaN, gz = Double.NaN;
+        /** The tick the SoWork spot last moved: who was there first keeps it. */
+        long since;
+    }
+
+    /** Two walkers' goals (and a goal and a player) are kept this far apart, a little over a villager's width. */
+    static final double ROOM = 0.7;
+    /** A spot taken: the points tried round it, nearest first (rings of 6 and 12 at ROOM and 2 ROOM). */
+    static final double[][] AROUND = around();
+
+    private static double[][] around() {
+        java.util.List<double[]> out = new java.util.ArrayList<>();
+        out.add(new double[] {0, 0});
+        for (int ring = 1; ring <= 3; ring++) {
+            int n = 6 * ring;
+            for (int i = 0; i < n; i++) {
+                double a = 2 * Math.PI * i / n + ring * 0.5;
+                out.add(new double[] {Math.cos(a) * ROOM * ring, Math.sin(a) * ROOM * ring});
+            }
+        }
+        return out.toArray(new double[0][]);
+    }
+
+    /** Nothing to bump into at foot height there (no fence, wall or furniture): a point to stand aside on. */
+    private static boolean clear(ServerLevel level, double x, double z) {
+        net.minecraft.core.BlockPos p = net.minecraft.core.BlockPos.containing(x, Y, z);
+        return level.getBlockState(p).getCollisionShape(level, p).isEmpty() && !level.getBlockState(p.below()).getCollisionShape(level, p.below()).isEmpty();
+    }
+
+    /**
+     * Give every walker a goal as close to its SoWork spot as it can be without crowding another: the spot itself
+     * when it is free, else the nearest free point round it. Taken in arrival order, so whoever stood there first
+     * keeps the spot and the newcomer stands beside them. Players count as taken points too: someone pushed aside
+     * (or whose spot the player stands on) waits next to the player and walks back once the spot is free.
+     */
+    private void spread(ServerLevel level, long tick) {
+        java.util.List<U> order = new java.util.ArrayList<>(users.values());
+        for (U u : order) {
+            if (Double.isNaN(u.gx) || Math.hypot(u.x - u.lastSpotX, u.z - u.lastSpotZ) > 0.3) {
+                u.since = tick;
+                u.lastSpotX = u.x;
+                u.lastSpotZ = u.z;
+            }
+        }
+        order.sort(java.util.Comparator.comparingLong((U u) -> u.since).thenComparing(u -> u.id));
+        java.util.List<double[]> taken = new java.util.ArrayList<>();
+        for (var p : level.players()) taken.add(new double[] {p.getX(), p.getZ()});
+        for (U u : order) {
+            double[] g = place(u.x, u.z, taken, (x, z) -> clear(level, x, z));
+            u.gx = g[0];
+            u.gz = g[1];
+            taken.add(g);
+        }
+    }
+
+    /** The point nearest (x, z) at least ROOM from every taken one, reachable in a straight line: see spread. */
+    static double[] place(double x, double z, java.util.List<double[]> taken, java.util.function.BiPredicate<Double, Double> clear) {
+        for (double[] o : AROUND) {
+            double cx = x + o[0], cz = z + o[1];
+            boolean centre = o[0] == 0 && o[1] == 0;
+            if (!centre && !(clear.test(cx, cz) && clear.test(x + o[0] / 2, z + o[1] / 2))) continue;
+            boolean free = true;
+            for (double[] t : taken) {
+                if (Math.hypot(cx - t[0], cz - t[1]) < ROOM - 1e-6) {
+                    free = false;
+                    break;
+                }
+            }
+            if (free) return new double[] {cx, cz};
+        }
+        return new double[] {x, z}; // crowded all round: the spot itself
     }
 
     final Map<String, U> users = new HashMap<>();
@@ -241,6 +316,7 @@ public final class Villagers {
     }
 
     public void tick(ServerLevel level, long tick) {
+        spread(level, tick);
         for (U u : users.values()) {
             Villager v = u.v;
             if (v == null || v.isRemoved() || u.m == null || u.m.isRemoved() || u.label == null || u.label.isRemoved()) {
@@ -266,9 +342,10 @@ public final class Villagers {
                 level.sendParticles(ParticleTypes.NOTE, m.getX(), m.getY() + 2.3, m.getZ(), 1, 0.3, 0.1, 0.3, 1);
             }
             walk(v, u);
-            // the mannequin stands where the walker is, facing where it walks (or keeps facing when it stops)
+            // the mannequin stands where the walker is, facing where it walks (or keeps facing when it stops). Only a
+            // real step turns it (walking moves ~0.3 blocks a tick): the last nudges onto the spot must not swing it round
             double mx = v.getX() - m.getX(), mz = v.getZ() - m.getZ();
-            float yaw = Math.hypot(mx, mz) > 0.01 ? (float) Math.toDegrees(Math.atan2(-mx, mz)) : m.getYRot();
+            float yaw = Math.hypot(mx, mz) > TURN_STEP ? (float) Math.toDegrees(Math.atan2(-mx, mz)) : m.getYRot();
             m.setPos(v.getX(), v.getY(), v.getZ());
             m.setYRot(yaw);
             m.setYHeadRot(yaw);
@@ -277,11 +354,12 @@ public final class Villagers {
     }
 
     private static void walk(Villager v, U u) {
-        double dx = u.x - v.getX(), dz = u.z - v.getZ();
+        double tx = Double.isNaN(u.gx) ? u.x : u.gx, tz = Double.isNaN(u.gz) ? u.z : u.gz;
+        double dx = tx - v.getX(), dz = tz - v.getZ();
         double d = Math.sqrt(dx * dx + dz * dz);
         if (d > 16 || v.getY() < Y - 0.5) { // far behind, or fallen off (or buried in) the floor
             v.getNavigation().stop();
-            v.snapTo(u.x, Y, u.z, v.getYRot(), 0);
+            v.snapTo(tx, Y, tz, v.getYRot(), 0);
             u.still = 0;
             return;
         }
@@ -311,14 +389,14 @@ public final class Villagers {
         u.still = moved < 0.01 ? u.still + 1 : 0;
         if (u.still > 60) {
             v.getNavigation().stop();
-            v.snapTo(u.x, Y, u.z, v.getYRot(), 0);
+            v.snapTo(tx, Y, tz, v.getYRot(), 0);
             u.still = 0;
             return;
         }
-        if (v.getNavigation().isDone() || Math.hypot(u.x - u.navX, u.z - u.navZ) > 0.3) {
-            v.getNavigation().moveTo(u.x, Y, u.z, SPEED);
-            u.navX = u.x;
-            u.navZ = u.z;
+        if (v.getNavigation().isDone() || Math.hypot(tx - u.navX, tz - u.navZ) > 0.3) {
+            v.getNavigation().moveTo(tx, Y, tz, SPEED);
+            u.navX = tx;
+            u.navZ = tz;
         }
     }
 }

@@ -114,6 +114,28 @@ pub fn frame_message(key: &str, w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
     m
 }
 
+/// The key of our own camera's preview: one map (128×128) held in the off-hand.
+pub const PREVIEW: &str = "me#preview";
+
+/// Our own camera for the off-hand map: the centre square, scaled to 128×128 and mirrored left to right.
+pub fn preview_pixels(src_w: u32, src_h: u32, rgba: &[u8], dither: bool) -> Vec<u8> {
+    if src_w == 0 || src_h == 0 || rgba.len() < (src_w * src_h * 4) as usize {
+        return encode_pixels(0, 0, &[], 128, 128, dither);
+    }
+    let side = src_w.min(src_h);
+    let (ox, oy) = ((src_w - side) / 2, (src_h - side) / 2);
+    let mut sq = Vec::with_capacity((side * side * 4) as usize);
+    for y in oy..oy + side {
+        let start = ((y * src_w + ox) * 4) as usize;
+        sq.extend_from_slice(&rgba[start..start + (side * 4) as usize]);
+    }
+    let mut px = encode_pixels(side, side, &sq, 128, 128, dither);
+    for row in px.chunks_exact_mut(128) {
+        row.reverse();
+    }
+    px
+}
+
 /// A screen share frame for the full-screen view: RGBA to a JPEG at its own size.
 pub fn jpeg(w: u32, h: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
     let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
@@ -268,6 +290,21 @@ mod tests {
         let distinct = |v: &[u8]| v.iter().collect::<std::collections::HashSet<_>>().len();
         assert_eq!(distinct(&flat), 1);
         assert!(distinct(&dith) > 1);
+    }
+
+    #[test]
+    fn preview_is_mirrored() {
+        // 4×2, columns green, red, blue, green: the centre square (red, blue) fills the map, mirrored
+        let mut rgba = Vec::new();
+        for _y in 0..2 {
+            rgba.extend_from_slice(&[0, 255, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255, 0, 255, 0, 255]);
+        }
+        let px = preview_pixels(4, 2, &rgba, false);
+        assert_eq!(px.len(), 128 * 128);
+        for y in [0, 64, 127] {
+            assert_eq!(px[y * 128], nearest(0, 0, 255));
+            assert_eq!(px[y * 128 + 127], nearest(255, 0, 0));
+        }
     }
 
     #[test]

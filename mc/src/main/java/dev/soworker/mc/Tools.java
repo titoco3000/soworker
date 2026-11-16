@@ -20,6 +20,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.component.ItemLore;
+import net.minecraft.world.level.saveddata.maps.MapId;
 import net.minecraft.world.phys.AABB;
 
 /**
@@ -27,7 +28,8 @@ import net.minecraft.world.phys.AABB;
  * always an ender pearl (SoWork's teleport where it lands), a spyglass, snowballs (thrown at someone: a wave), "walk to your desk" and "availability". The spyglass and the
  * snowballs work as in vanilla ({@link #plain}); there is always exactly one snowball, given back as soon as it is thrown but locked for 1 s (as the ender pearl). Tools only reflect soworker's state: using one sends a command and the
  * next state message changes the item. The player's own items in slots 1–4 are kept in a persistent attachment
- * during a meeting and given back after it; items found in slots 5–9 are moved elsewhere.
+ * during a meeting and given back after it; items found in slots 5–9 are moved elsewhere. While the camera is on, the
+ * off-hand holds a map of it (Preview); the player's own off-hand item is kept the same way and given back.
  */
 public final class Tools {
     public static final String KEY = "soworker_tool";
@@ -37,10 +39,15 @@ public final class Tools {
     }
     static final AttachmentType<List<ItemStack>> SAVED =
             AttachmentRegistry.createPersistent(Identifier.fromNamespaceAndPath("soworker", "saved_hotbar"), ItemStack.OPTIONAL_CODEC.listOf());
+    /** The player's own off-hand item while the camera preview is there. */
+    static final AttachmentType<ItemStack> SAVED_OFFHAND =
+            AttachmentRegistry.createPersistent(Identifier.fromNamespaceAndPath("soworker", "saved_offhand"), ItemStack.OPTIONAL_CODEC);
 
     /** What the tools show; filled from the `call` and `me` messages. */
     public boolean inCall, mic, cam, share, rec, available = true;
     public String recClock;
+    /** The map that shows our own camera (Preview), held in the off-hand while the camera is on. */
+    public MapId preview;
 
     public static void init() {
         // touching the class registers the attachment type at start-up
@@ -85,6 +92,14 @@ public final class Tools {
         w[8] = available ? make("away", Items.EMERALD, "Available (use to go away)", false, "Right click: set yourself away")
                          : make("away", Items.REDSTONE, "Away (use to become available)", false, "Right click: become available");
         return w;
+    }
+
+    /** The off-hand item: our camera on a map while it is on in a call, otherwise the player's own. */
+    ItemStack wantedOffhand() {
+        if (!inCall || !cam || preview == null) return null;
+        ItemStack s = make("preview", Items.FILLED_MAP, "Your camera", false, "What the others see");
+        s.set(DataComponents.MAP_ID, preview);
+        return s;
     }
 
     static ItemStack pearl() {
@@ -133,6 +148,26 @@ public final class Tools {
         else ((AttachmentTarget) (Object) p).setAttached(SAVED, l);
     }
 
+    static ItemStack savedOffhand(ServerPlayer p) {
+        return ((AttachmentTarget) (Object) p).getAttached(SAVED_OFFHAND);
+    }
+
+    static void setSavedOffhand(ServerPlayer p, ItemStack s) {
+        if (s == null) ((AttachmentTarget) (Object) p).removeAttached(SAVED_OFFHAND);
+        else ((AttachmentTarget) (Object) p).setAttached(SAVED_OFFHAND, s);
+    }
+
+    /** Give the player's own off-hand item back (to the off-hand if it is free). */
+    static void restoreOffhand(ServerPlayer p) {
+        ItemStack keep = savedOffhand(p);
+        if (keep == null) return;
+        setSavedOffhand(p, null);
+        if (keep.isEmpty()) return;
+        Inventory inv = p.getInventory();
+        if (inv.getItem(Inventory.SLOT_OFFHAND).isEmpty()) inv.setItem(Inventory.SLOT_OFFHAND, keep.copy());
+        else stash(p, keep.copy());
+    }
+
     /** Put a stack somewhere other than the tool slots, or at the player's feet. */
     static void stash(ServerPlayer p, ItemStack s) {
         Inventory inv = p.getInventory();
@@ -172,7 +207,24 @@ public final class Tools {
             }
             setSaved(p, null);
         }
+        // the off-hand: the camera preview while the camera is on; the player's own item is kept until it goes
+        ItemStack hand = wantedOffhand();
+        ItemStack off = inv.getItem(Inventory.SLOT_OFFHAND);
+        if (hand != null) {
+            if (toolOf(off) == null && !off.isEmpty()) {
+                if (savedOffhand(p) == null) setSavedOffhand(p, off.copy());
+                else stash(p, off.copy());
+                off = ItemStack.EMPTY;
+            } else if (savedOffhand(p) == null) {
+                setSavedOffhand(p, ItemStack.EMPTY);
+            }
+            if (!ItemStack.matches(off, hand)) inv.setItem(Inventory.SLOT_OFFHAND, hand);
+        } else {
+            if (toolOf(off) != null) inv.setItem(Inventory.SLOT_OFFHAND, ItemStack.EMPTY);
+            restoreOffhand(p);
+        }
         for (int i = 0; i < inv.getContainerSize(); i++) {
+            if (i == Inventory.SLOT_OFFHAND) continue;
             ItemStack s = inv.getItem(i);
             boolean tool = toolOf(s) != null;
             if (i < 9 && w[i] != null) {
@@ -202,5 +254,6 @@ public final class Tools {
         for (int i = 0; i < inv.getContainerSize(); i++) {
             if (toolOf(inv.getItem(i)) != null) inv.setItem(i, ItemStack.EMPTY);
         }
+        restoreOffhand(p);
     }
 }

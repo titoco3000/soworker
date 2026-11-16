@@ -32,7 +32,6 @@ import org.slf4j.LoggerFactory;
 public final class SoworkerMod implements ModInitializer {
     public static final Logger LOG = LoggerFactory.getLogger("soworker");
     static Office office;
-    private static long lastUse;
 
     @Override
     public void onInitialize() {
@@ -95,8 +94,8 @@ public final class SoworkerMod implements ModInitializer {
         String tool = Tools.toolOf(s);
         if (tool == null || Tools.plain(tool)) return InteractionResult.PASS;
         long now = office.tick;
-        if (now - lastUse >= 5) {
-            lastUse = now;
+        if (now - office.lastUse >= 5) {
+            office.lastUse = now;
             office.cmd(tool, null);
         }
         return InteractionResult.FAIL;
