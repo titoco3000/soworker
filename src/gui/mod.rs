@@ -3,6 +3,7 @@ pub mod chatui;
 pub mod icon;
 pub mod icons;
 pub mod meeting_ui;
+pub mod panels;
 pub mod profile_ui;
 pub mod render;
 pub mod sidebar;
@@ -60,8 +61,8 @@ struct App {
     perf: (f64, f64, u32, Instant),
     map: render::MapCache,
     cursor: (f32, f32),
-    /// The mouse is over the user icon, so the pointer is a hand.
-    hand: bool,
+    /// The pointer's shape: a hand over buttons, a resize arrow over the line between the people list and the chat.
+    pointer: winit::window::CursorIcon,
     mods: ModifiersState,
     exit_after: Option<f64>,
     dry: bool,
@@ -75,7 +76,22 @@ impl App {
     }
 
     fn flush(&mut self) {
+        self.sync_layout();
         self.be.flush(&mut self.st, self.start);
+    }
+
+    /// Follow the window's width into the wide or the narrow (mobile) layout, and keep the chat's read state in step
+    /// with whether it is on screen.
+    fn sync_layout(&mut self) {
+        if let Some(w) = &self.window {
+            let mobile = panels::is_mobile(&self.st, w.inner_size().width as f32);
+            if mobile != self.st.sidebar.mobile {
+                self.st.sidebar.mobile = mobile;
+                self.st.sidebar.hover = None;
+                self.st.dirty = true;
+            }
+        }
+        self.st.sync_chat_shown();
     }
 
     /// Connect everything for a signed-in user: gaia socket, calls, avatar loader.
@@ -202,21 +218,30 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(win) = &self.window {
                     let s = win.inner_size();
                     let (c, w, h) = (self.cursor, s.width as f32, s.height as f32);
-                    if self.st.dock.drag.is_some() {
+                    if self.st.sidebar.split_drag.is_some() {
+                        panels::drag_split(&mut self.st, c.1, w, h);
+                    } else if self.st.dock.drag.is_some() {
                         meeting_ui::drag_to(&mut self.st, c.0, c.1);
                     } else {
                         meeting_ui::update_hover(&mut self.st, &mut self.text, c.0, c.1, w, h);
                     }
-                    sidebar::update_hover(&mut self.st, c.0, c.1, h);
-                    let over_photo = self.st.profile.as_ref().is_some_and(|p| profile_ui::over_photo(&profile_ui::layout(&self.st, p, h), c.0, c.1));
+                    sidebar::update_hover(&mut self.st, c.0, c.1, w, h);
+                    let over_photo = self.st.profile.as_ref().is_some_and(|p| profile_ui::over_photo(&profile_ui::layout(&self.st, p, w, h), c.0, c.1));
                     if let Some(p) = self.st.profile.as_mut().filter(|p| p.photo_hover != over_photo) {
                         p.photo_hover = over_photo;
                         self.st.dirty = true;
                     }
-                    let hand = over_photo || sidebar::hit(&self.st, c.0, c.1, h) == Some(crate::directory::Hit::Profile) || sidebar::hovered(&self.st, h).is_some();
-                    if hand != self.hand {
-                        self.hand = hand;
-                        win.set_cursor(if hand { winit::window::CursorIcon::Pointer } else { winit::window::CursorIcon::Default });
+                    use winit::window::CursorIcon;
+                    let pointer = if self.st.profile.is_none() && panels::over_split(&self.st, c.0, c.1, w, h) {
+                        CursorIcon::RowResize
+                    } else if over_photo || panels::nav_hit(&self.st, c.0, c.1, w, h).is_some() || sidebar::hovered(&self.st, w, h).is_some() {
+                        CursorIcon::Pointer
+                    } else {
+                        CursorIcon::Default
+                    };
+                    if pointer != self.pointer {
+                        self.pointer = pointer;
+                        win.set_cursor(pointer);
                     }
                 }
             }
@@ -226,6 +251,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                panels::end_split(&mut self.st);
                 if let Some(win) = &self.window {
                     let s = win.inner_size();
                     meeting_ui::end_drag(&mut self.st, s.width as f32, s.height as f32);
@@ -240,7 +266,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let consumed = self.window.as_ref().is_some_and(|win| {
                         let sz = win.inner_size();
                         let c = self.cursor;
-                        chatui::wheel(&mut self.st, c.0, c.1, sz.width as f32, sz.height as f32, dy) || sidebar::wheel(&mut self.st, c.0, c.1, sz.height as f32, dy) || meeting_ui::wheel(&mut self.st, &mut self.text, c.0, c.1, sz.width as f32, sz.height as f32, dy)
+                        chatui::wheel(&mut self.st, c.0, c.1, sz.width as f32, sz.height as f32, dy) || sidebar::wheel(&mut self.st, c.0, c.1, sz.width as f32, sz.height as f32, dy) || meeting_ui::wheel(&mut self.st, &mut self.text, c.0, c.1, sz.width as f32, sz.height as f32, dy)
                     });
                     if !consumed {
                         self.st.zoom(dy > 0.0);
@@ -262,16 +288,25 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(choice) = render::modal_hit(&self.st, c.0, c.1, sw, sh) {
                             self.st.leave_choice(choice, now);
                         }
+                    } else if let Some(n) = panels::nav_hit(&self.st, c.0, c.1, sw, sh) {
+                        panels::nav_press(&mut self.st, n, now);
                     } else if self.st.profile.is_some() {
-                        // a click outside the profile panel closes it (and does nothing else)
-                        let act = profile_ui::hit(&self.st, c.0, c.1, sh).unwrap_or(crate::profile::Act::Close);
-                        self.st.profile_act(act);
-                    } else if render::notice_rect(&self.st, &mut self.text).is_some_and(|r| r.contains(c.0, c.1)) {
+                        // a click outside the settings closes them (and does nothing else); the bars of a narrow window
+                        // around them only swallow the click
+                        let act = profile_ui::hit(&self.st, c.0, c.1, sw, sh).unwrap_or(crate::profile::Act::Close);
+                        if !(act == crate::profile::Act::Close && self.st.sidebar.mobile && panels::over_nav(&self.st, c.0, c.1, sw, sh)) {
+                            self.st.profile_act(act);
+                        }
+                    } else if render::notice_rect(&self.st, &mut self.text, sw, sh).is_some_and(|r| r.contains(c.0, c.1)) {
                         self.st.dismiss_transcript();
+                    } else if panels::begin_split(&mut self.st, c.0, c.1, sw, sh) {
                     } else if let Some(h) = chatui::hit(&self.st, c.0, c.1, sw, sh) {
                         chatui::press(&mut self.st, h);
-                    } else if let Some(h) = sidebar::hit(&self.st, c.0, c.1, sh) {
+                    } else if let Some(h) = sidebar::hit(&self.st, c.0, c.1, sw, sh) {
+                        self.st.chat.focus = false;
                         self.st.sidebar_press(h, now);
+                    } else if panels::over_nav(&self.st, c.0, c.1, sw, sh) {
+                        self.st.chat.focus = false;
                     } else if let Some(h) = meeting_ui::hit(&self.st, &mut self.text, c.0, c.1, sw, sh) {
                         match h {
                             Hit::Header => meeting_ui::begin_drag(&mut self.st, &mut self.text, c.0, c.1, sw, sh),
@@ -353,8 +388,8 @@ impl ApplicationHandler<UserEvent> for App {
                         ("m", true, false) => self.st.toggle_mic(),
                         ("c", true, false) => self.st.toggle_cam(),
                         ("b", true, false) => {
-                            let a = !self.st.available;
-                            self.st.set_available(a);
+                            let now = self.now();
+                            self.st.toggle_available(now);
                         }
                         _ => {}
                     },
@@ -468,7 +503,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         map: render::MapCache::default(),
         fps_t: Instant::now(),
         cursor: (0.0, 0.0),
-        hand: false,
+        pointer: winit::window::CursorIcon::Default,
         mods: ModifiersState::default(),
         exit_after: opt("--exit-after").and_then(|s| s.parse().ok()),
         dry,

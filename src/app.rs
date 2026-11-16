@@ -226,7 +226,11 @@ impl State {
             desk_owners: None,
             users: HashMap::new(),
             roster: vec![],
-            sidebar: crate::directory::Ui { collapsed: crate::calls::setting("sidebarCollapsed").as_bool().unwrap_or(false), ..Default::default() },
+            sidebar: crate::directory::Ui {
+                collapsed: crate::calls::setting("sidebarCollapsed").as_bool().unwrap_or(false),
+                split: crate::calls::setting("sidebarSplit").as_f64().unwrap_or(0.0) as f32,
+                ..Default::default()
+            },
             waves: vec![],
             chat: Default::default(),
             chat_out: vec![],
@@ -509,6 +513,20 @@ impl State {
         self.dirty = true;
     }
 
+    /// Where our desk in this room is, once the desks and who owns them are known.
+    pub fn my_desk(&self) -> Option<(f32, f32)> {
+        let owners = self.desk_owners.as_ref()?;
+        owners.iter().find(|d| d.owner == self.me_id && d.room == self.room_def).and_then(|d| self.desks.get(&d.desk)).copied()
+    }
+
+    /// We have a desk in this room and are not standing at it (the desk button is worth showing).
+    pub fn away_from_desk(&self) -> bool {
+        match (self.my_desk(), self.me()) {
+            (Some(d), Some(me)) => (d.0 - me.x).hypot(d.1 - me.y) > T,
+            _ => false,
+        }
+    }
+
     /// Walk to the desk assigned to us in this room (Ctrl+D), the way SoWork's own client does: an ordinary walk.
     pub fn go_to_desk(&mut self, now: f64) {
         let Some(owners) = &self.desk_owners else { return self.say("Still looking up the desks, try again in a moment", now) };
@@ -705,7 +723,7 @@ impl State {
         self.dirty = true;
         match hit {
             Hit::Ctl(Ctl::FullToggle) => self.dock.full = !self.dock.full,
-            Hit::Ctl(Ctl::Chat) => self.toggle_chat(),
+            Hit::Ctl(Ctl::Chat) => self.reveal_chat(),
             Hit::Ctl(Ctl::Mic) => self.toggle_mic(),
             Hit::Ctl(Ctl::Cam) => self.toggle_cam(),
             Hit::Ctl(Ctl::Share) => self.toggle_share(),
@@ -774,6 +792,10 @@ impl State {
                 p.photo_hover = false;
                 self.outbox.push(Cmd::ChangePhoto);
                 self.toast = Some(("Choose a picture for your profile…".into(), f64::MAX)); // until the upload answers
+            }
+            Act::Terminal => {
+                self.profile = None;
+                self.switch = Some(crate::mode::UiMode::Tui);
             }
             Act::Close => self.profile = None,
             Act::Panel => p.open = None,
@@ -855,13 +877,8 @@ impl State {
     pub fn sidebar_press(&mut self, hit: crate::directory::Hit, now: f64) {
         use crate::directory::{join_target, Hit};
         match hit {
-            Hit::Away => {
-                let a = !self.available;
-                self.set_available(a);
-            }
             Hit::Collapse => self.toggle_sidebar(),
-            Hit::Profile => self.toggle_profile(),
-            Hit::Terminal => self.switch = Some(crate::mode::UiMode::Tui),
+            Hit::Desk => self.go_to_desk(now),
             // a row of the narrow sidebar has no room for its menu: widen the sidebar first
             Hit::Row(key) if self.sidebar.collapsed => {
                 self.toggle_sidebar();
@@ -874,6 +891,7 @@ impl State {
                     Some(((x, y), name)) => {
                         self.say(format!("Walking to {name}"), now);
                         self.click(x, y, false, now);
+                        self.sidebar.view = crate::directory::View::Main; // a narrow window shows the walk
                     }
                     None => self.say("Cannot find where to walk to", now),
                 }
@@ -898,14 +916,21 @@ impl State {
             }
             Hit::Message(key) => {
                 self.sidebar.open = None;
-                self.open_dm(&key);
+                if key.starts_with("zone:") {
+                    self.select_tab(crate::chatstate::Tab::Area); // the meeting we are in: its area chat
+                    self.chat.focus = true;
+                } else {
+                    self.open_dm(&key);
+                }
+                self.reveal_chat();
             }
-            Hit::Chat => self.toggle_chat(),
+            Hit::Chat => self.reveal_chat(),
             Hit::WaveAccept(from) => {
                 // accepting a wave means going to the person, as the official client does
                 if let Some(((x, y), name)) = join_target(self, &from) {
                     self.say(format!("Walking to {name}"), now);
                     self.click(x, y, false, now);
+                    self.sidebar.view = crate::directory::View::Main;
                 } else {
                     self.say("Cannot find where they are", now);
                 }
@@ -1074,6 +1099,13 @@ impl State {
         if let Some(s) = crate::calls::setting("guiZoom").as_f64() {
             self.scale = (s as f32).clamp(0.08, 1.5);
         }
+    }
+
+    /// Flip between available and away (the availability button, Ctrl+B), and say which one we are now.
+    pub fn toggle_available(&mut self, now: f64) {
+        let a = !self.available;
+        self.set_available(a);
+        self.say(if a { "You are now available" } else { "You are now away" }, now);
     }
 
     pub fn set_available(&mut self, a: bool) {

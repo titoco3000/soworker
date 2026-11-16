@@ -14,6 +14,8 @@ pub enum Act {
     TestSound,
     /// Pick a new profile photo.
     ChangePhoto,
+    /// Move to the terminal client.
+    Terminal,
     Close,
     /// A click on the panel itself: nothing to do.
     Panel,

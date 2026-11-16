@@ -1,29 +1,30 @@
-//! The left sidebar: availability and chat buttons, then everyone in the office: people in meetings (grouped by
-//! meeting zone), other people who are online, and people who are offline. Clicking an online person or a meeting
-//! opens a small menu with Join (walk there) and Wave (not implemented yet).
+//! The people list (top of the left sidebar, or a whole panel of a narrow window): everyone in the office: people in meetings (grouped by meeting zone), other people who are online, and people who
+//! are offline. Clicking a person or a meeting opens a small menu with Join (walk there), Wave and Message.
 use crate::app::State;
 use crate::gui::meeting_ui::R;
+use crate::gui::panels;
 use crate::gui::render::{paint, Text};
 use crate::gui::theme::*;
 use tiny_skia::{FillRule, PathBuilder, PixmapMut, PixmapPaint, Stroke, Transform};
 pub use crate::directory::*;
 
 
-pub const WIDTH: f32 = 252.0;
+pub const WIDTH: f32 = 280.0;
 /// Width of the collapsed sidebar: one column of avatars.
 pub const NARROW: f32 = 56.0;
-const HEADER: f32 = 92.0;
-/// The collapsed header stacks its three buttons.
-const NARROW_HEADER: f32 = 116.0;
-pub const FOOTER: f32 = 28.0;
+const HEADER: f32 = 56.0;
+/// The collapsed header: the expand button, and under it the unread counter when there is one.
+const NARROW_HEADER: f32 = 46.0;
+const NARROW_HEADER_UNREAD: f32 = 80.0;
 const PAD: f32 = 12.0;
 
-pub fn width(st: &State) -> f32 {
-    if st.login.is_some() || st.dock.tile_full { 0.0 } else { full_width(st) }
+pub fn full_width(st: &State) -> f32 {
+    if st.sidebar.collapsed { NARROW * st.ui } else { WIDTH * st.ui }
 }
 
-fn full_width(st: &State) -> f32 {
-    if st.sidebar.collapsed { NARROW * st.ui } else { WIDTH * st.ui }
+/// Avatars only: the collapsed sidebar of a wide window.
+fn narrow(st: &State) -> bool {
+    st.sidebar.collapsed && !st.sidebar.mobile
 }
 
 fn row_h(r: &Row, collapsed: bool) -> f32 {
@@ -38,37 +39,30 @@ fn row_h(r: &Row, collapsed: bool) -> f32 {
 
 pub struct Layout {
     pub panel: R,
-    /// The collapse / expand button.
+    /// The collapse / expand button (none on a narrow window).
     pub toggle: R,
-    pub away: R,
+    /// The unread counter of the collapsed sidebar: shows the chat.
     pub chat: R,
-    /// The user icon in the footer, next to the memory use: opens the profile panel.
-    pub profile: R,
-    /// The "Terminal" button in the footer.
-    pub term: R,
     pub list: R,
     pub items: Vec<(Row, R)>,
     pub max_scroll: f32,
 }
 
-pub fn layout(st: &State, h: f32) -> Layout {
-    let (u, narrow) = (st.ui, st.sidebar.collapsed);
-    let panel = R { x: 0.0, y: 0.0, w: full_width(st), h };
-    let (toggle, away, chat, header) = if narrow {
-        // toggle, availability and chat stacked in one column
+const NONE: R = R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 };
+
+pub fn layout(st: &State, w: f32, h: f32) -> Layout {
+    let (u, narrow) = (st.ui, narrow(st));
+    let panel = panels::frame(st, w, h).users;
+    let (y0, mobile) = (panel.y, st.sidebar.mobile);
+    let (toggle, chat, header) = if narrow {
         let bw = panel.w - 2.0 * PAD * u;
-        let b = |y: f32| R { x: PAD * u, y: y * u, w: bw, h: 28.0 * u };
-        (b(12.0), b(46.0), b(80.0), NARROW_HEADER)
+        let b = |y: f32| R { x: PAD * u, y: y0 + y * u, w: bw, h: 28.0 * u };
+        if st.unread_total() > 0 { (b(12.0), b(46.0), NARROW_HEADER_UNREAD) } else { (b(12.0), NONE, NARROW_HEADER) }
     } else {
-        let gap = 8.0 * u;
-        let bw = (panel.w - 2.0 * PAD * u - gap) / 2.0;
-        let by = (HEADER - 36.0) * u;
-        let toggle = R { x: panel.w - (PAD + 24.0) * u, y: 10.0 * u, w: 24.0 * u, h: 24.0 * u };
-        (toggle, R { x: PAD * u, y: by, w: bw, h: 28.0 * u }, R { x: PAD * u + bw + gap, y: by, w: bw, h: 28.0 * u }, HEADER)
+        let toggle = if mobile { NONE } else { R { x: panel.w - (PAD + 24.0) * u, y: y0 + 10.0 * u, w: 24.0 * u, h: 24.0 * u } };
+        (toggle, NONE, HEADER)
     };
-    let list = R { x: 0.0, y: header * u, w: panel.w, h: (h - (header + FOOTER) * u).max(0.0) };
-    let profile_x = if narrow { (panel.w - 22.0 * u) / 2.0 } else { (PAD - 4.0) * u };
-    let profile = R { x: profile_x, y: list.y + list.h + 3.0 * u, w: 22.0 * u, h: (FOOTER - 6.0) * u };
+    let list = R { x: 0.0, y: y0 + header * u, w: panel.w, h: (panel.h - header * u).max(0.0) };
     let rows = rows(st);
     let total: f32 = rows.iter().map(|r| row_h(r, narrow) * u).sum::<f32>() + 8.0 * u;
     let max_scroll = (total - list.h).max(0.0);
@@ -83,8 +77,7 @@ pub fn layout(st: &State, h: f32) -> Layout {
             (r, rect)
         })
         .collect();
-    let term = if cfg!(feature = "tui") && !narrow { R { x: panel.w - (PAD + 84.0) * u, y: list.y + list.h + 3.0 * u, w: 84.0 * u, h: (FOOTER - 6.0) * u } } else { R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 } };
-    Layout { panel, toggle, away, chat, profile, term, list, items, max_scroll }
+    Layout { panel, toggle, chat, list, items, max_scroll }
 }
 
 /// The buttons of a Menu row, side by side.
@@ -103,28 +96,51 @@ fn wave_buttons(rect: &R, u: f32) -> (R, R) {
     (R { x: PAD * u, y, w: bw, h }, R { x: PAD * u + bw + 8.0 * u, y, w: bw, h })
 }
 
-pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Hit> {
-    if st.dock.tile_full {
+/// The floating desk button at the top left of the map (empty when not shown): only while we have a desk in this
+/// room and are not at it, and the map is on screen (not covered by settings on a narrow window, nor by a full dock).
+pub fn map_desk(st: &State, w: f32, h: f32) -> R {
+    if st.dock.tile_full || st.login.is_some() || (st.sidebar.mobile && st.profile.is_some()) || !st.away_from_desk() {
+        return NONE;
+    }
+    if crate::meeting::visible(st) && (st.dock.full || st.sidebar.mobile) {
+        return NONE;
+    }
+    let f = panels::frame(st, w, h);
+    if !f.main_shown || panels::empty(&f.main) {
+        return NONE;
+    }
+    let (u, s) = (st.ui, 40.0 * st.ui);
+    R { x: f.main.x + 10.0 * u, y: f.main.y + 10.0 * u, w: s, h: s }
+}
+
+pub fn draw_map_desk(st: &State, pm: &mut PixmapMut<'_>) {
+    let r = map_desk(st, pm.width() as f32, pm.height() as f32);
+    if panels::empty(&r) {
+        return;
+    }
+    let u = st.ui;
+    fill(pm, &r, r.w / 2.0, SURFACE, 235);
+    outline(pm, &r, r.w / 2.0, LINE);
+    let s = 20.0 * u;
+    crate::gui::icon::draw(pm, crate::gui::icons::TABLE, r.x + (r.w - s) / 2.0, r.y + (r.h - s) / 2.0, s, INK);
+}
+
+pub fn hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<Hit> {
+    if st.dock.tile_full || st.login.is_some() {
         return None;
     }
-    let l = layout(st, h);
-    if !l.panel.contains(px, py) {
+    if map_desk(st, w, h).contains(px, py) {
+        return Some(Hit::Desk);
+    }
+    let l = layout(st, w, h);
+    if panels::empty(&l.panel) || !l.panel.contains(px, py) {
         return None;
     }
     if l.toggle.contains(px, py) {
         return Some(Hit::Collapse);
     }
-    if l.away.contains(px, py) {
-        return Some(Hit::Away);
-    }
     if l.chat.contains(px, py) {
         return Some(Hit::Chat);
-    }
-    if l.profile.contains(px, py) {
-        return Some(Hit::Profile);
-    }
-    if l.term.w > 0.0 && l.term.contains(px, py) {
-        return Some(Hit::Terminal);
     }
     if l.list.contains(px, py) {
         for (row, rect) in &l.items {
@@ -144,7 +160,7 @@ pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Hit> {
                         MenuBtn::Message => Hit::Message(key.clone()),
                     }),
                 // too narrow for Accept and Dismiss: widen the sidebar to show them
-                Row::Wave { .. } if st.sidebar.collapsed => Hit::Collapse,
+                Row::Wave { .. } if narrow(st) => Hit::Collapse,
                 Row::Wave { from, .. } => {
                     let (accept, dismiss) = wave_buttons(rect, st.ui);
                     if accept.contains(px, py) {
@@ -162,9 +178,9 @@ pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Hit> {
     Some(Hit::Panel)
 }
 
-pub fn wheel(st: &mut State, px: f32, py: f32, h: f32, dy: f32) -> bool {
-    let l = layout(st, h);
-    if !l.panel.contains(px, py) {
+pub fn wheel(st: &mut State, px: f32, py: f32, w: f32, h: f32, dy: f32) -> bool {
+    let l = layout(st, w, h);
+    if panels::empty(&l.panel) || !l.panel.contains(px, py) {
         return false;
     }
     st.sidebar.scroll = (st.sidebar.scroll - dy.signum() * 40.0 * st.ui).clamp(0.0, l.max_scroll);
@@ -204,7 +220,7 @@ fn dot(pm: &mut PixmapMut<'_>, x: f32, y: f32, r: f32, col: Rgb) {
 }
 
 /// Proportional memory of this whole process in MB, re-read at most once a second (smaps is not free).
-fn pss_mb() -> f64 {
+pub fn pss_mb() -> f64 {
     thread_local!(static LAST: std::cell::Cell<Option<(std::time::Instant, u64)>> = const { std::cell::Cell::new(None) });
     LAST.with(|c| {
         let bytes = match c.get() {
@@ -247,15 +263,18 @@ fn person_avatar(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, p: &Person
     if p.online {
         dot(pm, cx + r * 0.75, cy + r * 0.75, 3.5 * st.ui, if p.away { AMBER } else { SPEAKING });
     }
+    if p.unread > 0 {
+        panels::unread_mark(pm, cx + r * 0.8, cy - r * 0.8, st.ui);
+    }
 }
 
 /// The row of the collapsed sidebar under the mouse, if it is a person, a meeting or a wave.
-pub fn hovered(st: &State, h: f32) -> Option<(Row, R)> {
+pub fn hovered(st: &State, w: f32, h: f32) -> Option<(Row, R)> {
     let (px, py) = st.sidebar.hover?;
-    if !st.sidebar.collapsed || st.login.is_some() || st.dock.tile_full {
+    if !narrow(st) || st.login.is_some() || st.dock.tile_full {
         return None;
     }
-    let l = layout(st, h);
+    let l = layout(st, w, h);
     if !l.list.contains(px, py) {
         return None;
     }
@@ -263,17 +282,17 @@ pub fn hovered(st: &State, h: f32) -> Option<(Row, R)> {
 }
 
 /// The mouse moved: remember where, and redraw when it reaches another row of the collapsed sidebar.
-pub fn update_hover(st: &mut State, px: f32, py: f32, h: f32) {
-    let before = hovered(st, h).map(|(r, _)| r);
+pub fn update_hover(st: &mut State, px: f32, py: f32, w: f32, h: f32) {
+    let before = hovered(st, w, h).map(|(r, _)| r);
     st.sidebar.hover = Some((px, py));
-    if hovered(st, h).map(|(r, _)| r) != before {
+    if hovered(st, w, h).map(|(r, _)| r) != before {
         st.dirty = true;
     }
 }
 
 /// The card next to the hovered avatar of the collapsed sidebar: the name and whatever else the wide sidebar shows.
 pub fn draw_hover_card(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
-    let Some((row, rect)) = hovered(st, pm.height() as f32) else { return };
+    let Some((row, rect)) = hovered(st, pm.width() as f32, pm.height() as f32) else { return };
     let u = st.ui;
     let (title, lines): (String, Vec<String>) = match &row {
         Row::Person { p, .. } => {
@@ -294,7 +313,7 @@ pub fn draw_hover_card(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_
             }
             (p.name.clone(), v)
         }
-        Row::Group { key, title, count } => {
+        Row::Group { key, title, count, unread } => {
             let zone = key.strip_prefix("zone:");
             let mut names: Vec<String> = people(st).into_iter().filter(|p| p.online && p.zone.as_deref() == zone).map(|p| p.name).collect();
             names.sort_by_key(|n| n.to_lowercase());
@@ -302,6 +321,9 @@ pub fn draw_hover_card(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_
             v.extend(names.into_iter().take(8));
             if *count > 8 {
                 v.push(format!("and {} more", count - 8));
+            }
+            if *unread > 0 {
+                v.push(format!("{} unread message{}", unread, if *unread == 1 { "" } else { "s" }));
             }
             (title.clone(), v)
         }
@@ -334,17 +356,15 @@ fn draw_narrow_row(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, row: &Ro
     let card = R { x: 6.0 * u, y: rect.y + 2.0 * u, w: rect.w - 12.0 * u, h: rect.h - 4.0 * u };
     match row {
         Row::Section(_) => fill(pm, &R { x: PAD * u, y: mid, w: rect.w - 2.0 * PAD * u, h: 1.0 }, 0.0, LINE, 255),
-        Row::Group { count, .. } => {
+        Row::Group { count, unread, .. } => {
             fill(pm, &card, 8.0 * u, MUTED, 255);
             dot(pm, card.x + 7.0 * u, mid, 3.0 * u, BRAND);
             text.draw(pm, &count.to_string(), cx + 4.0 * u, mid + 4.5 * u, 12.0 * u, INK, 0.5);
-        }
-        Row::Person { p, .. } => {
-            person_avatar(st, pm, text, p, cx, mid, r);
-            if p.unread > 0 {
-                dot(pm, cx + r * 0.8, mid - r * 0.8, 4.5 * u, BRAND);
+            if *unread > 0 {
+                panels::unread_mark(pm, card.x + card.w - 2.0 * u, card.y + 2.0 * u, u);
             }
         }
+        Row::Person { p, .. } => person_avatar(st, pm, text, p, cx, mid, r),
         Row::Wave { from, name } => {
             fill(pm, &card, 8.0 * u, MUTED, 255);
             outline(pm, &card, 8.0 * u, BRAND);
@@ -358,13 +378,18 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
     if st.login.is_some() || st.dock.tile_full {
         return;
     }
-    let (u, h, narrow) = (st.ui, pm.height() as f32, st.sidebar.collapsed);
-    let l = layout(st, h);
+    let (u, w, h, narrow) = (st.ui, pm.width() as f32, pm.height() as f32, narrow(st));
+    let l = layout(st, w, h);
+    if panels::empty(&l.panel) {
+        return;
+    }
     fill(pm, &l.panel, 0.0, SURFACE, 255);
+    let bottom = l.list.y + l.list.h;
 
-    // rows, clipped to the list area by skipping what falls outside it
+    // rows, clipped to the list area by skipping what falls outside it (what sticks out below is covered by the
+    // chat or the nav, drawn later)
     for (row, rect) in &l.items {
-        if rect.y + rect.h < l.list.y || rect.y > h {
+        if rect.y + rect.h < l.list.y || rect.y > bottom {
             continue;
         }
         if narrow {
@@ -374,10 +399,14 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
         let mid = rect.y + rect.h / 2.0;
         match row {
             Row::Section(t) => text.draw(pm, t, PAD * u, rect.y + rect.h - 8.0 * u, 11.0 * u, INK_FAINT, 0.0),
-            Row::Group { key, title, count } => {
+            Row::Group { key, title, count, unread } => {
                 let inner = R { x: 6.0 * u, y: rect.y + 2.0 * u, w: rect.w - 12.0 * u, h: rect.h - 4.0 * u };
                 fill(pm, &inner, 8.0 * u, if st.sidebar.open.as_deref() == Some(key) { LINE } else { MUTED }, 255);
-                dot(pm, PAD * u + 8.0 * u, mid, 4.0 * u, BRAND);
+                let (dx, r) = (PAD * u + 8.0 * u, 4.0 * u);
+                dot(pm, dx, mid, r, BRAND);
+                if *unread > 0 {
+                    panels::unread_mark(pm, dx + 5.0 * u, mid - 5.0 * u, u);
+                }
                 let name = fit(text, title, 13.0 * u, rect.w - 90.0 * u);
                 text.draw(pm, &name, PAD * u + 22.0 * u, mid + 4.5 * u, 13.0 * u, INK, 0.0);
                 text.draw(pm, &count.to_string(), rect.w - PAD * u - 6.0 * u, mid + 4.5 * u, 12.0 * u, INK_MUTED, 1.0);
@@ -399,24 +428,17 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
                 } else {
                     String::new()
                 };
-                if p.unread > 0 {
-                    let label = p.unread.to_string();
-                    let bw = (text.width(&label, 11.0 * u) + 12.0 * u).max(18.0 * u);
-                    let badge = R { x: rect.w - PAD * u - 6.0 * u - bw, y: mid - 8.0 * u, w: bw, h: 16.0 * u };
-                    fill(pm, &badge, 8.0 * u, BRAND, 255);
-                    text.draw(pm, &label, badge.x + bw / 2.0, badge.y + 12.0 * u, 11.0 * u, ON_BRAND, 0.5);
-                }
-                let right = if p.unread > 0 { String::new() } else { right };
-                let rw = text.width(&right, 11.0 * u).max(if p.unread > 0 { 26.0 * u } else { 0.0 });
+                let rw = text.width(&right, 11.0 * u);
                 let name = fit(text, &p.name, 13.0 * u, rect.w - (x0 + 2.0 * r + 12.0 * u + 14.0 * u) - rw);
                 text.draw(pm, &name, x0 + 2.0 * r + 10.0 * u, mid + 4.5 * u, 13.0 * u, if p.online { INK } else { INK_FAINT }, 0.0);
                 text.draw(pm, &right, rect.w - PAD * u - 6.0 * u, mid + 4.0 * u, 11.0 * u, INK_FAINT, 1.0);
             }
-            Row::Menu { buttons, .. } => {
+            Row::Menu { key, buttons } => {
                 for (b, r) in menu_buttons(rect, u, buttons) {
                     let (label, primary) = match b {
                         MenuBtn::Join { enabled } => ("Join", enabled),
                         MenuBtn::Wave => ("Wave", false),
+                        MenuBtn::Message if key.starts_with("zone:") => ("Chat", false),
                         MenuBtn::Message => ("Message", false),
                     };
                     let dead = matches!(b, MenuBtn::Join { enabled: false });
@@ -444,61 +466,31 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now_ms: i64) {
     }
 
     // header on top of the scrolled rows
-    fill(pm, &R { x: 0.0, y: 0.0, w: l.panel.w, h: l.list.y }, 0.0, SURFACE, 255);
-    outline(pm, &l.toggle, 6.0 * u, LINE);
+    fill(pm, &R { x: 0.0, y: l.panel.y, w: l.panel.w, h: l.list.y - l.panel.y }, 0.0, SURFACE, 255);
     let s = 14.0 * u;
-    let chevron = if narrow { crate::gui::icons::CHEVRON_RIGHT } else { crate::gui::icons::CHEVRON_LEFT };
-    crate::gui::icon::draw(pm, chevron, l.toggle.x + (l.toggle.w - s) / 2.0, l.toggle.y + (l.toggle.h - s) / 2.0, s, INK_MUTED);
-    if !narrow {
-        let room = if st.room.is_empty() { "SoWorker".to_string() } else { st.room.clone() };
-        let room = fit(text, &room, 15.0 * u, l.toggle.x - (PAD + 6.0) * u);
-        text.draw(pm, &room, PAD * u, 26.0 * u, 15.0 * u, INK, 0.0);
-        let online = people(st).iter().filter(|p| p.online).count();
-        let sub = if st.status.is_empty() { format!("{online} online{}", if st.dry { " · dry run" } else { "" }) } else { st.status.clone() };
-        text.draw(pm, &sub, PAD * u, 44.0 * u, 12.0 * u, INK_MUTED, 0.0);
-    }
-    let (label, on) = if st.available { ("Available", true) } else { ("Away", false) };
-    if on {
-        fill(pm, &l.away, 6.0 * u, [47, 111, 79], 255);
-    } else {
-        fill(pm, &l.away, 6.0 * u, [106, 47, 58], 255);
+    if !panels::empty(&l.toggle) {
+        outline(pm, &l.toggle, 6.0 * u, LINE);
+        let chevron = if narrow { crate::gui::icons::CHEVRON_RIGHT } else { crate::gui::icons::CHEVRON_LEFT };
+        crate::gui::icon::draw(pm, chevron, l.toggle.x + (l.toggle.w - s) / 2.0, l.toggle.y + (l.toggle.h - s) / 2.0, s, INK_MUTED);
     }
     if narrow {
-        dot(pm, l.away.x + l.away.w / 2.0, l.away.y + l.away.h / 2.0, 4.0 * u, if on { SPEAKING } else { INK });
-    } else {
-        text.draw(pm, label, l.away.x + l.away.w / 2.0, l.away.y + l.away.h / 2.0 + 4.5 * u, 12.0 * u, INK, 0.5);
-    }
-    let unread = st.unread_total();
-    if st.chat.open {
-        fill(pm, &l.chat, 6.0 * u, LINE, 255);
-    }
-    outline(pm, &l.chat, 6.0 * u, LINE);
-    let chat_col = if unread > 0 { BRAND } else { INK_MUTED };
-    if narrow {
-        crate::gui::icon::draw(pm, crate::gui::icons::MESSAGE_CIRCLE, l.chat.x + (l.chat.w - s) / 2.0, l.chat.y + (l.chat.h - s) / 2.0, s, chat_col);
-        if unread > 0 {
-            dot(pm, l.chat.x + l.chat.w - 4.0 * u, l.chat.y + 4.0 * u, 3.5 * u, BRAND);
+        // the only thing about the chat a collapsed sidebar shows: how many messages wait
+        let unread = st.unread_total();
+        if unread > 0 && !panels::empty(&l.chat) {
+            fill(pm, &l.chat, 6.0 * u, BRAND, 255);
+            let label = if unread > 99 { "99+".to_string() } else { unread.to_string() };
+            text.draw(pm, &label, l.chat.x + l.chat.w / 2.0, l.chat.y + l.chat.h / 2.0 + 4.5 * u, 12.0 * u, ON_BRAND, 0.5);
         }
-    } else {
-        let chat_label = if unread > 0 { format!("Chat ({unread})") } else { "Chat".to_string() };
-        text.draw(pm, &chat_label, l.chat.x + l.chat.w / 2.0, l.chat.y + l.chat.h / 2.0 + 4.5 * u, 12.0 * u, chat_col, 0.5);
+        return;
     }
-    let footer = R { x: 0.0, y: l.list.y + l.list.h, w: l.panel.w, h: FOOTER * u };
-    fill(pm, &footer, 0.0, SURFACE, 255);
-    fill(pm, &R { h: 1.0, ..footer }, 0.0, LINE, 255);
-    let open = st.profile.is_some();
-    // a solid round button, brand-coloured while the profile panel is open
-    fill(pm, &l.profile, l.profile.w.min(l.profile.h) / 2.0, if open { BRAND } else { LINE }, 255);
-    crate::gui::icon::draw(pm, crate::gui::icons::USER, l.profile.x + (l.profile.w - s) / 2.0, l.profile.y + (l.profile.h - s) / 2.0, s, if open { ON_BRAND } else { INK });
-    if !narrow {
-        text.draw(pm, &format!("Memory {:.1} MB", pss_mb()), l.profile.x + l.profile.w + 6.0 * u, footer.y + footer.h / 2.0 + 4.0 * u, 11.0 * u, INK_FAINT, 0.0);
-    }
-    if l.term.w > 0.0 {
-        outline(pm, &l.term, 6.0 * u, LINE);
-        text.draw(pm, "Terminal", l.term.x + l.term.w / 2.0, l.term.y + l.term.h / 2.0 + 4.0 * u, 11.0 * u, INK_MUTED, 0.5);
-    }
-    let edge = R { x: l.panel.w - 1.0, y: 0.0, w: 1.0, h };
-    fill(pm, &edge, 0.0, LINE, 255);
+    let y0 = l.panel.y;
+    let room = if st.room.is_empty() { "SoWorker".to_string() } else { st.room.clone() };
+    let room_w = if panels::empty(&l.toggle) { l.panel.w - 2.0 * PAD * u } else { l.toggle.x - (PAD + 6.0) * u };
+    let room = fit(text, &room, 15.0 * u, room_w);
+    text.draw(pm, &room, PAD * u, y0 + 26.0 * u, 15.0 * u, INK, 0.0);
+    let online = people(st).iter().filter(|p| p.online).count();
+    let sub = if st.status.is_empty() { format!("{online} online{}", if st.dry { " · dry run" } else { "" }) } else { st.status.clone() };
+    text.draw(pm, &sub, PAD * u, y0 + 44.0 * u, 12.0 * u, INK_MUTED, 0.0);
 }
 
 #[cfg(test)]
@@ -506,22 +498,25 @@ mod tests {
     use super::*;
     use crate::directory::tests::state;
 
+    const W: f32 = 1000.0;
+
     #[test]
     fn rows_react_to_clicks() {
         let mut st = state();
         st.ui = 1.0;
         st.sidebar.collapsed = false;
-        let l = layout(&st, 700.0);
+        let l = layout(&st, W, 700.0);
         let (_, ana) = l.items.iter().find(|(r, _)| matches!(r, Row::Person { p, .. } if p.id == "d")).unwrap();
-        assert_eq!(hit(&st, 100.0, ana.y + 5.0, 700.0), Some(Hit::Row("d".into())));
+        assert_eq!(hit(&st, 100.0, ana.y + 5.0, W, 700.0), Some(Hit::Row("d".into())));
         let (_, me) = l.items.iter().find(|(r, _)| matches!(r, Row::Person { p, .. } if p.me)).unwrap();
-        assert_eq!(hit(&st, 100.0, me.y + 5.0, 700.0), Some(Hit::Panel), "I cannot open a menu on myself");
+        assert_eq!(hit(&st, 100.0, me.y + 5.0, W, 700.0), Some(Hit::Panel), "I cannot open a menu on myself");
         let (_, eve) = l.items.iter().find(|(r, _)| matches!(r, Row::Person { p, .. } if p.id == "e")).unwrap();
-        assert_eq!(hit(&st, 100.0, eve.y + 5.0, 700.0), Some(Hit::Row("e".into())), "offline people can be messaged");
-        assert_eq!(hit(&st, l.away.x + 2.0, l.away.y + 2.0, 700.0), Some(Hit::Away));
-        assert_eq!(hit(&st, l.profile.x + 2.0, l.profile.y + 2.0, 700.0), Some(Hit::Profile));
-        assert_eq!(hit(&st, 600.0, 300.0, 700.0), None, "the map starts right of the panel");
-        assert_eq!(hit(&st, l.toggle.x + 2.0, l.toggle.y + 2.0, 700.0), Some(Hit::Collapse));
+        if eve.y + 5.0 < l.list.y + l.list.h {
+            assert_eq!(hit(&st, 100.0, eve.y + 5.0, W, 700.0), Some(Hit::Row("e".into())), "offline people can be messaged");
+        }
+        assert_eq!(hit(&st, 600.0, 300.0, W, 700.0), None, "the map starts right of the panel");
+        assert_eq!(hit(&st, 100.0, 690.0, W, 700.0), None, "the chat and the nav are below the people list");
+        assert_eq!(hit(&st, l.toggle.x + 2.0, l.toggle.y + 2.0, W, 700.0), Some(Hit::Collapse));
     }
 
     #[test]
@@ -529,16 +524,54 @@ mod tests {
         let mut st = state();
         st.ui = 1.0;
         st.sidebar.collapsed = true;
-        assert_eq!(width(&st), NARROW);
-        let l = layout(&st, 700.0);
+        assert_eq!(full_width(&st), NARROW);
+        let l = layout(&st, W, 700.0);
         assert!(l.items.iter().all(|(_, r)| r.w == NARROW));
         let (_, di) = l.items.iter().find(|(r, _)| matches!(r, Row::Person { p, .. } if p.id == "d")).unwrap();
-        assert_eq!(hit(&st, NARROW / 2.0, di.y + 5.0, 700.0), Some(Hit::Row("d".into())));
-        assert_eq!(hit(&st, l.toggle.x + 2.0, l.toggle.y + 2.0, 700.0), Some(Hit::Collapse));
-        assert_eq!(hit(&st, 100.0, 300.0, 700.0), None, "the map starts right of the narrow panel");
-        update_hover(&mut st, NARROW / 2.0, di.y + 5.0, 700.0);
-        assert!(matches!(hovered(&st, 700.0), Some((Row::Person { p, .. }, _)) if p.id == "d"), "hovering an avatar shows its card");
+        assert_eq!(hit(&st, NARROW / 2.0, di.y + 5.0, W, 700.0), Some(Hit::Row("d".into())));
+        assert_eq!(hit(&st, l.toggle.x + 2.0, l.toggle.y + 2.0, W, 700.0), Some(Hit::Collapse));
+        assert_eq!(hit(&st, 100.0, 300.0, W, 700.0), None, "the map starts right of the narrow panel");
+        update_hover(&mut st, NARROW / 2.0, di.y + 5.0, W, 700.0);
+        assert!(matches!(hovered(&st, W, 700.0), Some((Row::Person { p, .. }, _)) if p.id == "d"), "hovering an avatar shows its card");
         st.sidebar.collapsed = false;
-        assert!(hovered(&st, 700.0).is_none(), "the wide sidebar shows names, so no card");
+        assert!(hovered(&st, W, 700.0).is_none(), "the wide sidebar shows names, so no card");
+    }
+
+    #[test]
+    fn the_desk_button_shows_only_away_from_our_desk() {
+        let mut st = state();
+        st.ui = 1.0;
+        st.sidebar.collapsed = false;
+        assert!(panels::empty(&map_desk(&st, W, 700.0)), "no desk here");
+        st.room_def = "R".into();
+        st.desks.insert("k".into(), (5000.0, 5000.0));
+        st.desk_owners = Some(vec![crate::desks::Desk { room: "R".into(), desk: "k".into(), owner: "me".into() }]);
+        let d = map_desk(&st, W, 700.0);
+        let main = panels::frame(&st, W, 700.0).main;
+        assert!(d.x < main.x + 20.0 && d.y < 20.0, "top left of the map");
+        assert_eq!(hit(&st, d.x + 5.0, d.y + 5.0, W, 700.0), Some(Hit::Desk));
+        st.sidebar.mobile = true;
+        st.sidebar.view = View::Main;
+        let d = map_desk(&st, 360.0, 700.0);
+        assert!(d.x < 20.0 && d.y < panels::HEADER + 20.0, "top left of the map on a narrow window too");
+        st.sidebar.view = View::Users;
+        assert!(panels::empty(&map_desk(&st, 360.0, 700.0)), "not over the people list");
+        st.sidebar.mobile = false;
+        let me = st.users.get_mut("me").unwrap();
+        (me.x, me.y) = (5000.0, 5000.0);
+        assert!(panels::empty(&map_desk(&st, W, 700.0)), "already at our desk");
+    }
+
+    #[test]
+    fn narrow_window_shows_the_list_as_a_whole_panel() {
+        let mut st = state();
+        st.ui = 1.0;
+        st.sidebar.mobile = true;
+        st.sidebar.view = View::Users;
+        let l = layout(&st, 360.0, 700.0);
+        assert_eq!(l.panel.w, 360.0);
+        assert!(crate::gui::panels::empty(&l.toggle), "nothing to collapse");
+        st.sidebar.view = View::Main;
+        assert_eq!(hit(&st, 100.0, 300.0, 360.0, 700.0), None, "the people list is not on screen");
     }
 }

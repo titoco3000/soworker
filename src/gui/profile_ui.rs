@@ -1,12 +1,14 @@
-//! The profile panel: a card that opens above the user icon in the sidebar footer. A big user icon and the name, a
-//! log out button, then the settings: speaker (with a test sound), microphone (with a level meter) and camera, each a
+//! The settings panel, over everything else: a card that opens above the gear in the sidebar's nav (or fills the space
+//! between header and footer of a narrow window). A big user icon and the name, log out and terminal buttons, then
+//! the devices: speaker (with a test sound), microphone (with a level meter) and camera, each a
 //! drop-down list of the devices that are plugged in.
 use crate::app::State;
 use crate::devices::Kind;
 use crate::gui::icons;
 use crate::gui::meeting_ui::R;
 use crate::gui::render::{paint, Text};
-use crate::gui::sidebar::{fill, fit, outline, FOOTER};
+use crate::gui::panels;
+use crate::gui::sidebar::{fill, fit, outline};
 use crate::gui::theme::*;
 use crate::profile::{Act, Profile};
 use tiny_skia::{FillRule, PathBuilder, PixmapMut, PixmapPaint, Transform};
@@ -27,6 +29,8 @@ pub struct Layout {
     pub card: R,
     pub avatar: R,
     pub logout: R,
+    /// Move to the terminal client (none when it is not built in).
+    pub term: R,
     /// The line between the account and the settings.
     pub divider: f32,
     pub lists: Vec<(Kind, R)>,
@@ -36,13 +40,19 @@ pub struct Layout {
     pub options: Option<(R, Vec<(Option<String>, String, R)>)>,
 }
 
-pub fn layout(st: &State, p: &Profile, h: f32) -> Layout {
+pub fn layout(st: &State, p: &Profile, w: f32, h: f32) -> Layout {
     let u = st.ui;
     let ch = (PAD + AVATAR + 16.0 + CTRL_H + 16.0 + 36.0 + (Kind::ALL.len() - 1) as f32 * ROW + ROW_LAST + PAD) * u;
-    let card = R { x: 8.0 * u, y: (h - FOOTER * u - 8.0 * u - ch).max(8.0 * u), w: W * u, h: ch };
+    let f = panels::frame(st, w, h);
+    let card = if f.mobile {
+        R { h: f.content.h.max(ch), ..f.content }
+    } else {
+        R { x: 8.0 * u, y: (f.nav.y - 8.0 * u - ch).max(8.0 * u), w: (W * u).min(w - 16.0 * u), h: ch }
+    };
     let (x, inner) = (card.x + PAD * u, card.w - 2.0 * PAD * u);
     let avatar = R { x, y: card.y + PAD * u, w: AVATAR * u, h: AVATAR * u };
     let logout = R { x, y: avatar.y + avatar.h + 16.0 * u, w: SIDE * u, h: CTRL_H * u };
+    let term = if cfg!(feature = "tui") { R { x: x + logout.w + 8.0 * u, ..logout } } else { R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 } };
     let divider = logout.y + logout.h + 16.0 * u;
     let row = |i: usize| divider + 36.0 * u + i as f32 * ROW * u + 18.0 * u;
     let narrow = inner - (SIDE + 8.0) * u;
@@ -57,13 +67,13 @@ pub fn layout(st: &State, p: &Profile, h: f32) -> Layout {
         let rects = opts.into_iter().enumerate().map(|(i, (id, name))| (id, name, R { x: b.x, y: y0 + 4.0 * u + i as f32 * OPT_H * u, w: b.w, h: OPT_H * u })).collect();
         (R { x: b.x, y: y0, w: b.w, h: total }, rects)
     });
-    Layout { card, avatar, logout, divider, lists, test: side(0), meter: side(1), options }
+    Layout { card, avatar, logout, term, divider, lists, test: side(0), meter: side(1), options }
 }
 
 /// What a click at (px, py) does; None = it fell outside the panel (which closes it).
-pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Act> {
+pub fn hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<Act> {
     let p = st.profile.as_ref()?;
-    let l = layout(st, p, h);
+    let l = layout(st, p, w, h);
     if let Some((list, opts)) = &l.options {
         if let Some((id, ..)) = opts.iter().find(|(_, _, r)| r.contains(px, py)) {
             return Some(Act::Pick(p.open?, id.clone()));
@@ -77,6 +87,9 @@ pub fn hit(st: &State, px: f32, py: f32, h: f32) -> Option<Act> {
     }
     if l.logout.contains(px, py) {
         return Some(Act::Logout);
+    }
+    if !panels::empty(&l.term) && l.term.contains(px, py) {
+        return Some(Act::Terminal);
     }
     if over_photo(&l, px, py) {
         return Some(Act::ChangePhoto);
@@ -99,12 +112,16 @@ fn centred(text: &mut Text, pm: &mut PixmapMut<'_>, s: &str, r: &R, px: f32, col
 
 pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     let Some(p) = st.profile.as_ref() else { return };
-    let (u, h) = (st.ui, pm.height() as f32);
-    let l = layout(st, p, h);
+    let (u, w, h) = (st.ui, pm.width() as f32, pm.height() as f32);
+    let l = layout(st, p, w, h);
     let id = Transform::identity();
-    fill(pm, &R { x: l.card.x + 2.0 * u, y: l.card.y + 4.0 * u, ..l.card }, RADIUS_CARD * u, [0, 0, 0], 90); // shadow
-    fill(pm, &l.card, RADIUS_CARD * u, SURFACE, 255);
-    outline(pm, &l.card, RADIUS_CARD * u, LINE);
+    if st.sidebar.mobile {
+        fill(pm, &l.card, 0.0, SURFACE, 255); // a whole panel
+    } else {
+        fill(pm, &R { x: l.card.x + 2.0 * u, y: l.card.y + 4.0 * u, ..l.card }, RADIUS_CARD * u, [0, 0, 0], 90); // shadow
+        fill(pm, &l.card, RADIUS_CARD * u, SURFACE, 255);
+        outline(pm, &l.card, RADIUS_CARD * u, LINE);
+    }
 
     // who: the picture (or a big user icon) and the name
     let (cx, cy, r) = (l.avatar.x + l.avatar.w / 2.0, l.avatar.y + l.avatar.h / 2.0, l.avatar.w / 2.0);
@@ -146,6 +163,10 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
 
     outline(pm, &l.logout, 6.0 * u, LINE);
     centred(text, pm, "Log out", &l.logout, 13.0 * u, DANGER);
+    if !panels::empty(&l.term) {
+        outline(pm, &l.term, 6.0 * u, LINE);
+        centred(text, pm, "Terminal", &l.term, 13.0 * u, INK_MUTED);
+    }
 
     // settings
     fill(pm, &R { x: l.card.x + PAD * u, y: l.divider, w: l.card.w - 2.0 * PAD * u, h: 1.0 }, 0.0, LINE, 255);
@@ -224,21 +245,21 @@ mod tests {
     #[test]
     fn clicks_in_the_panel() {
         let mut st = state();
-        let l = layout(&st, st.profile.as_ref().unwrap(), 700.0);
-        assert!(l.card.y + l.card.h <= 700.0 - FOOTER, "the card sits above the footer");
-        assert_eq!(hit(&st, l.logout.x + 2.0, l.logout.y + 2.0, 700.0), Some(Act::Logout));
-        assert_eq!(hit(&st, l.test.x + 2.0, l.test.y + 2.0, 700.0), Some(Act::TestSound));
+        let l = layout(&st, st.profile.as_ref().unwrap(), 1000.0, 700.0);
+        assert!(l.card.y + l.card.h <= 700.0 - panels::NAV, "the card sits above the nav");
+        assert_eq!(hit(&st, l.logout.x + 2.0, l.logout.y + 2.0, 1000.0, 700.0), Some(Act::Logout));
+        assert_eq!(hit(&st, l.test.x + 2.0, l.test.y + 2.0, 1000.0, 700.0), Some(Act::TestSound));
         let a = l.avatar;
-        assert_eq!(hit(&st, a.x + a.w / 2.0, a.y + a.h / 2.0, 700.0), Some(Act::ChangePhoto));
-        assert_eq!(hit(&st, a.x + 1.0, a.y + 1.0, 700.0), Some(Act::Panel), "the corner of the square is outside the circle");
+        assert_eq!(hit(&st, a.x + a.w / 2.0, a.y + a.h / 2.0, 1000.0, 700.0), Some(Act::ChangePhoto));
+        assert_eq!(hit(&st, a.x + 1.0, a.y + 1.0, 1000.0, 700.0), Some(Act::Panel), "the corner of the square is outside the circle");
         let (_, out) = l.lists[0];
-        assert_eq!(hit(&st, out.x + 2.0, out.y + 2.0, 700.0), Some(Act::Toggle(Kind::Output)));
-        assert_eq!(hit(&st, 900.0, 100.0, 700.0), None, "outside closes");
+        assert_eq!(hit(&st, out.x + 2.0, out.y + 2.0, 1000.0, 700.0), Some(Act::Toggle(Kind::Output)));
+        assert_eq!(hit(&st, 900.0, 100.0, 1000.0, 700.0), None, "outside closes");
         st.profile.as_mut().unwrap().open = Some(Kind::Output);
-        let l = layout(&st, st.profile.as_ref().unwrap(), 700.0);
+        let l = layout(&st, st.profile.as_ref().unwrap(), 1000.0, 700.0);
         let (_, opts) = l.options.as_ref().unwrap();
         assert_eq!(opts.len(), 3, "the default and two speakers");
         let r = opts[2].2;
-        assert_eq!(hit(&st, r.x + 5.0, r.y + 5.0, 700.0), Some(Act::Pick(Kind::Output, Some("sink.b".into()))));
+        assert_eq!(hit(&st, r.x + 5.0, r.y + 5.0, 1000.0, 700.0), Some(Act::Pick(Kind::Output, Some("sink.b".into()))));
     }
 }

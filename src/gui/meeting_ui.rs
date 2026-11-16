@@ -86,16 +86,21 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
     }
     let u = st.ui;
     let d = &st.dock;
-    let (sb, right) = st.map_edges(w); // the dock lives on the map, between the sidebar and the chat panel
-    let mw = right - sb;
-    let (dw, dh) = if d.full { (mw, h) } else { ((500.0 * u).min(0.7 * mw), (300.0 * u).min(0.7 * h)) };
-    let (dx, dy) = if d.full {
-        (sb, 0.0)
+    let f = crate::gui::panels::frame(st, w, h);
+    if !f.main_shown {
+        return None; // a narrow window shows another panel
+    }
+    let m = f.main; // the dock lives on the map, in the main panel
+    let (sb, top, mw, mh) = (m.x, m.y, m.w, m.h);
+    let full = d.full || f.mobile; // a phone-sized window has no room for a floating card
+    let (dw, dh) = if full { (mw, mh) } else { ((500.0 * u).min(0.7 * mw), (300.0 * u).min(0.7 * mh)) };
+    let (dx, dy) = if full {
+        (sb, top)
     } else if let Some(dr) = d.drag {
         dr.pos
     } else {
-        let (x, y) = slot_pos(d.slot, dw, dh, mw, h, 16.0 * u);
-        (x + sb, y)
+        let (x, y) = slot_pos(d.slot, dw, dh, mw, mh, 16.0 * u);
+        (x + sb, y + top)
     };
     let dock = R { x: dx, y: dy, w: dw, h: dh };
     let header = R { x: dx, y: dy, w: dw, h: 37.0 * u };
@@ -118,7 +123,7 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
     let gap = 8.0 * u;
     let pinned_idx = d.pinned.as_ref().and_then(|p| specs.iter().position(|t| &t.id == p));
     if let (true, Some(pi)) = (d.tile_full, pinned_idx) {
-        let whole = R { x: sb, y: 0.0, w: mw, h };
+        let whole = R { x: sb, y: top, w: mw, h: mh };
         let spec = specs.into_iter().nth(pi)?;
         return Some(Layout { dock: whole, header: R::default(), full_btn: R::default(), tiles: vec![(spec, whole, true)], status: (0.0, 0.0), controls: vec![], chat_col: None, send_btn: None, input: None, bar: R::default(), area: whole, side: None, max_scroll: 0.0, tile_full: true });
     }
@@ -163,12 +168,14 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
     let mut controls = Vec::new();
     let icon_w = 12.0 * u + icon_sz + 12.0 * u + 2.0;
     let share_label = if st.call.share { "Stop sharing screen" } else { "Share screen" };
-    let share_w = 12.0 * u + icon_sz + gp + text_w(text, share_label, fs) + 12.0 * u + 2.0;
+    // the label goes when the row would not fit
+    let labelled = 12.0 * u + icon_sz + gp + text_w(text, share_label, fs) + 12.0 * u + 2.0;
+    let chat_btn = 18.0 * u + 16.0 * u + 2.0;
+    let share_w = if 24.0 * u + 5.0 * (icon_w + 8.0 * u) + labelled + 8.0 * u + chat_btn > dw { icon_w } else { labelled };
     for (c, wd) in [(Ctl::NoiseCancel, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Hand, icon_w), (Ctl::Record, icon_w), (Ctl::Share, share_w)] {
         controls.push((c, R { x, y: by, w: wd, h: bh }));
         x += wd + 8.0 * u; // gap-2
     }
-    let chat_btn = 18.0 * u + 16.0 * u + 2.0;
     controls.push((Ctl::Chat, R { x: dx + dw - 12.0 * u - chat_btn, y: bar.y + (bar_h - chat_btn) / 2.0, w: chat_btn, h: chat_btn }));
 
     let (mut send_btn, mut input) = (None, None);
@@ -361,7 +368,7 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
         draw_tile(st, pm, text, spec, *r, *pinned, st.dock.hover.recent(), true, u, 0.0);
         return;
     }
-    let full = st.dock.full;
+    let full = st.dock.full || st.sidebar.mobile;
     let rad = if full { 0.0 } else { radius };
 
     // shadow, card, border
@@ -453,7 +460,7 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
         };
         stroke_rr(pm, *r, radius, theme::LINE, 1.0);
         let col = if dim { mix(rgb, theme::BG, 0.5) } else { rgb };
-        match label {
+        match label.filter(|_| r.w > 12.0 * u + isz + 12.0 * u + 4.0) {
             Some(t) => {
                 icon::draw(pm, shapes, r.x + 12.0 * u + 1.0, r.y + (r.h - isz) / 2.0, isz, col);
                 text.draw(pm, t, r.x + 12.0 * u + isz + 6.0 * u + 1.0, r.y + r.h / 2.0 + 5.0 * u, 14.0 * u, col, 0.0);
@@ -536,7 +543,7 @@ fn draw_tile(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, spec: &TileSpe
 
 /// Start dragging the dock by its header (mini mode only).
 pub fn begin_drag(st: &mut State, text: &mut Text, px: f32, py: f32, w: f32, h: f32) {
-    if st.dock.full {
+    if st.dock.full || st.sidebar.mobile {
         return;
     }
     if let Some(l) = layout(st, text, w, h) {
@@ -555,9 +562,9 @@ pub fn drag_to(st: &mut State, px: f32, py: f32) {
 pub fn end_drag(st: &mut State, w: f32, h: f32) {
     if let Some(d) = st.dock.drag.take() {
         let u = st.ui;
-        let (sb, right) = st.map_edges(w);
-        let (dw, dh) = ((500.0 * u).min(0.7 * (right - sb)), (300.0 * u).min(0.7 * h));
-        st.dock.slot = nearest_slot(d.pos.0 - sb + dw / 2.0, d.pos.1 + dh / 2.0, right - sb, h);
+        let m = st.main_rect_for(w, h);
+        let (dw, dh) = ((500.0 * u).min(0.7 * m.w), (300.0 * u).min(0.7 * m.h));
+        st.dock.slot = nearest_slot(d.pos.0 - m.x + dw / 2.0, d.pos.1 - m.y + dh / 2.0, m.w, m.h);
         st.dirty = true;
     }
 }

@@ -1,40 +1,35 @@
-//! The chat panel on the right: tabs (the area chat of the call we are in, then one per private chat), the
-//! messages, and a one-line input. State and logic live here too (`impl State`), the transport is `chat.rs`.
+//! The chat panel (under the people list in the sidebar, or a whole panel of a narrow window): one conversation at a
+//! time (the area chat of the meeting we are in, or a private chat picked in the people list), its messages, and a
+//! one-line input. State and logic live in `chatstate.rs` (`impl State`), the transport is `chat.rs`.
 use crate::app::State;
 use crate::chat::ChatMsg;
 use crate::gui::meeting_ui::R;
+use crate::gui::panels;
 use crate::gui::render::{paint, Text};
 use crate::gui::theme::*;
 use tiny_skia::{FillRule, PixmapMut, Stroke, Transform};
 pub use crate::chatstate::*;
 
 
-pub const WIDTH: f32 = 320.0;
-const HEADER: f32 = 44.0;
+const HEADER: f32 = 40.0;
 const INPUT_H: f32 = 52.0;
 const PAD: f32 = 12.0;
 
-
-pub fn width(st: &State) -> f32 {
-    if st.login.is_none() && st.chat.open && !st.dock.tile_full { WIDTH * st.ui } else { 0.0 }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
-    Tab(Tab),
+    /// Back from a private chat to the area chat.
     Close,
     Input,
     Panel,
 }
 
-
-fn tabs(st: &State) -> Vec<Tab> {
-    std::iter::once(Tab::Area).chain(st.chat.dms.iter().cloned().map(Tab::Dm)).collect()
-}
-
-fn tab_label(st: &State, t: &Tab) -> String {
-    match t {
-        Tab::Area => "Area".into(),
+/// What the header calls the conversation on show.
+fn title(st: &State) -> String {
+    match &st.chat.tab {
+        Tab::Area => match st.cur_zone_id.as_deref() {
+            Some(z) if st.conversation().is_some() => crate::directory::zone_title(st, z),
+            _ => "Area chat".into(),
+        },
         Tab::Dm(p) => st.name_of(p, None),
     }
 }
@@ -42,42 +37,35 @@ fn tab_label(st: &State, t: &Tab) -> String {
 struct Layout {
     panel: R,
     close: R,
-    tabs: Vec<(Tab, R)>,
     input: R,
     msgs: R,
 }
 
 fn layout(st: &State, w: f32, h: f32) -> Layout {
     let u = st.ui;
-    let panel = R { x: w - WIDTH * u, y: 0.0, w: WIDTH * u, h };
-    let close = R { x: panel.x + panel.w - 36.0 * u, y: 0.0, w: 36.0 * u, h: HEADER * u };
-    let all = tabs(st);
-    let tw = (panel.w - 36.0 * u) / all.len() as f32;
-    let tabs = all.into_iter().enumerate().map(|(i, t)| (t, R { x: panel.x + i as f32 * tw, y: 0.0, w: tw, h: HEADER * u })).collect();
-    let input = R { x: panel.x + PAD * u, y: h - (INPUT_H - 8.0) * u, w: panel.w - 2.0 * PAD * u, h: (INPUT_H - 16.0) * u };
-    let msgs = R { x: panel.x, y: HEADER * u, w: panel.w, h: (h - (HEADER + INPUT_H) * u).max(0.0) };
-    Layout { panel, close, tabs, input, msgs }
+    let panel = panels::frame(st, w, h).chat;
+    let close = if matches!(st.chat.tab, Tab::Dm(_)) { R { x: panel.x + panel.w - 36.0 * u, y: panel.y, w: 36.0 * u, h: HEADER * u } } else { R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 } };
+    let bottom = panel.y + panel.h;
+    let input = R { x: panel.x + PAD * u, y: bottom - (INPUT_H - 8.0) * u, w: panel.w - 2.0 * PAD * u, h: (INPUT_H - 16.0) * u };
+    let msgs = R { x: panel.x, y: panel.y + HEADER * u, w: panel.w, h: (panel.h - (HEADER + INPUT_H) * u).max(0.0) };
+    Layout { panel, close, input, msgs }
 }
 
 pub fn hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<Hit> {
-    if width(st) == 0.0 {
-        return None;
-    }
     let l = layout(st, w, h);
-    if !l.panel.contains(px, py) {
+    if panels::empty(&l.panel) || !l.panel.contains(px, py) {
         return None;
     }
-    if l.close.contains(px, py) {
+    if !panels::empty(&l.close) && l.close.contains(px, py) {
         return Some(Hit::Close);
     }
-    if let Some((t, _)) = l.tabs.iter().find(|(_, r)| r.contains(px, py)) {
-        return Some(Hit::Tab(t.clone()));
-    }
-    Some(if l.input.contains(px, py) { Hit::Input } else { Hit::Panel })
+    // with room for the input only when the panel is tall enough to show it
+    Some(if l.msgs.h > 0.0 && l.input.contains(px, py) { Hit::Input } else { Hit::Panel })
 }
 
 pub fn wheel(st: &mut State, px: f32, py: f32, w: f32, h: f32, dy: f32) -> bool {
-    if width(st) == 0.0 || !layout(st, w, h).panel.contains(px, py) {
+    let l = layout(st, w, h);
+    if panels::empty(&l.panel) || !l.panel.contains(px, py) {
         return false;
     }
     st.chat.scroll.set((st.chat.scroll.get() + dy.signum() * 40.0 * st.ui).clamp(0.0, st.chat.max_scroll.get()));
@@ -87,10 +75,9 @@ pub fn wheel(st: &mut State, px: f32, py: f32, w: f32, h: f32, dy: f32) -> bool 
 
 pub fn press(st: &mut State, hit: Hit) {
     match hit {
-        Hit::Close => st.toggle_chat(),
-        Hit::Tab(t) => {
-            st.select_tab(t);
-            st.chat.focus = true;
+        Hit::Close => {
+            st.select_tab(Tab::Area);
+            st.chat.focus = false;
         }
         Hit::Input => st.chat.focus = true,
         Hit::Panel => {}
@@ -141,12 +128,21 @@ fn outline(pm: &mut PixmapMut<'_>, r: &R, radius: f32, col: Rgb) {
 }
 
 pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
-    if width(st) == 0.0 {
-        return;
-    }
     let (u, w, h) = (st.ui, pm.width() as f32, pm.height() as f32);
     let l = layout(st, w, h);
+    if panels::empty(&l.panel) {
+        return;
+    }
     fill(pm, &l.panel, 0.0, SURFACE);
+    let header_h = (HEADER * u).min(l.panel.h);
+    let shown_title = crate::gui::sidebar::fit(text, &title(st), 13.0 * u, l.panel.w - 2.0 * PAD * u - if panels::empty(&l.close) { 0.0 } else { 30.0 * u });
+    if l.msgs.h <= 0.0 {
+        // dragged almost shut: only as much of the header as fits
+        if header_h >= 24.0 * u {
+            text.draw(pm, &shown_title, l.panel.x + PAD * u, l.panel.y + header_h / 2.0 + 4.5 * u, 13.0 * u, INK_MUTED, 0.0);
+        }
+        return;
+    }
 
     // messages, newest at the bottom, scrolled up by `scroll`
     let (px, line_h) = (13.0 * u, 17.0 * u);
@@ -181,34 +177,27 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     }
     if msgs.is_empty() {
         let hint = match (&st.chat.tab, st.conversation()) {
-            (Tab::Area, None) => "Walk into a meeting to chat with the people in it.".to_string(),
+            (Tab::Area, None) => "Walk into a meeting to chat with the people in it, or pick someone in the list to message them.".to_string(),
             (Tab::Area, Some(_)) => "No messages yet. Say hi to the area.".to_string(),
             (Tab::Dm(p), _) => format!("No messages yet. Say hi to {}.", st.name_of(p, None)),
         };
         for (i, ln) in wrap(text, &hint, 12.0 * u, inner).iter().enumerate() {
-            text.draw(pm, ln, l.msgs.x + PAD * u, l.msgs.y + 28.0 * u + i as f32 * 16.0 * u, 12.0 * u, INK_FAINT, 0.0);
+            let y = l.msgs.y + 24.0 * u + i as f32 * 16.0 * u;
+            if y < l.msgs.y + l.msgs.h {
+                text.draw(pm, ln, l.msgs.x + PAD * u, y, 12.0 * u, INK_FAINT, 0.0);
+            }
         }
     }
 
     // header and input cover whatever scrolled under them
-    fill(pm, &R { x: l.panel.x, y: 0.0, w: l.panel.w, h: l.msgs.y }, 0.0, SURFACE);
-    for (t, r) in &l.tabs {
-        let active = *t == st.chat.tab;
-        let label = tab_label(st, t);
-        let unread = match t {
-            Tab::Area => st.channel_of(t).and_then(|c| st.chat.threads.get(&c)).map_or(0, |x| x.unread),
-            Tab::Dm(p) => st.unread_dm(p),
-        };
-        let label = if unread > 0 { format!("{label} ({unread})") } else { label };
-        let shown = crate::gui::sidebar::fit(text, &label, 13.0 * u, r.w - 14.0 * u);
-        text.draw(pm, &shown, r.x + r.w / 2.0, r.y + r.h / 2.0 + 4.5 * u, 13.0 * u, if active { INK } else { INK_MUTED }, 0.5);
-        if active {
-            fill(pm, &R { x: r.x + 8.0 * u, y: r.h - 2.0 * u, w: r.w - 16.0 * u, h: 2.0 * u }, 1.0 * u, BRAND);
-        }
+    fill(pm, &R { x: l.panel.x, y: l.panel.y, w: l.panel.w, h: l.msgs.y - l.panel.y }, 0.0, SURFACE);
+    text.draw(pm, &shown_title, l.panel.x + PAD * u, l.panel.y + header_h / 2.0 + 4.5 * u, 13.0 * u, INK, 0.0);
+    if !panels::empty(&l.close) {
+        text.draw(pm, "×", l.close.x + l.close.w / 2.0, l.close.y + l.close.h / 2.0 + 6.0 * u, 20.0 * u, INK_MUTED, 0.5);
     }
-    text.draw(pm, "×", l.close.x + l.close.w / 2.0, l.close.y + l.close.h / 2.0 + 6.0 * u, 20.0 * u, INK_MUTED, 0.5);
     fill(pm, &R { x: l.panel.x, y: l.msgs.y - 1.0, w: l.panel.w, h: 1.0 }, 0.0, LINE);
-    fill(pm, &R { x: l.panel.x, y: l.msgs.y + l.msgs.h, w: l.panel.w, h: h - (l.msgs.y + l.msgs.h) }, 0.0, SURFACE);
+    let bottom = l.panel.y + l.panel.h;
+    fill(pm, &R { x: l.panel.x, y: l.msgs.y + l.msgs.h, w: l.panel.w, h: bottom - (l.msgs.y + l.msgs.h) }, 0.0, SURFACE);
     fill(pm, &R { x: l.panel.x, y: l.msgs.y + l.msgs.h, w: l.panel.w, h: 1.0 }, 0.0, LINE);
     fill(pm, &l.input, 8.0 * u, MUTED);
     outline(pm, &l.input, 8.0 * u, if st.chat.focus { BRAND } else { LINE });
@@ -224,7 +213,6 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
         let caret = if st.chat.focus { "|" } else { "" };
         text.draw(pm, &format!("{shown}{caret}"), l.input.x + 12.0 * u, base, px, INK, 0.0);
     }
-    fill(pm, &R { x: l.panel.x, y: 0.0, w: 1.0, h }, 0.0, LINE);
 }
 
 #[cfg(test)]

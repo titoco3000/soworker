@@ -119,14 +119,15 @@ fn notice_lines(st: &State) -> Vec<String> {
 }
 
 /// Where the transcript notice sits (top left of the map, under the toast), if there is one.
-pub fn notice_rect(st: &State, text: &mut Text) -> Option<crate::gui::meeting_ui::R> {
+pub fn notice_rect(st: &State, text: &mut Text, sw: f32, sh: f32) -> Option<crate::gui::meeting_ui::R> {
     let ui = st.ui;
     let lines = notice_lines(st);
     if lines.is_empty() {
         return None;
     }
     let w = lines.iter().map(|l| text.width(l, 13.0 * ui)).fold(0.0, f32::max) + 24.0 * ui;
-    Some(crate::gui::meeting_ui::R { x: crate::gui::sidebar::width(st) + 10.0 * ui, y: 32.0 * ui, w, h: lines.len() as f32 * 18.0 * ui + 16.0 * ui })
+    let m = st.main_rect_for(sw, sh);
+    Some(crate::gui::meeting_ui::R { x: m.x + 10.0 * ui, y: m.y + 32.0 * ui, w, h: lines.len() as f32 * 18.0 * ui + 16.0 * ui })
 }
 
 fn draw_notice(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, r: crate::gui::meeting_ui::R) {
@@ -282,23 +283,24 @@ fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     text.draw(pm, label, button.x + button.w / 2.0, button.y + button.h / 2.0 + 5.0 * u, 14.0 * u, tc, 0.5);
 }
 
-/// Screen geometry: the map sits between the sidebar and the chat panel, the camera centred on me.
+/// Screen geometry: the map fills the main panel, the camera centred on me.
 impl State {
-    pub fn map_edges(&self, w: f32) -> (f32, f32) {
-        (crate::gui::sidebar::width(self), w - crate::gui::chatui::width(self))
+    pub fn main_rect_for(&self, w: f32, h: f32) -> crate::gui::meeting_ui::R {
+        crate::gui::panels::frame(self, w, h).main
     }
 
-    /// Screen x of the map's centre: the window minus the sidebar on the left.
-    pub fn view_x(&self, w: f32) -> f32 {
-        let (l, r) = self.map_edges(w);
-        l + (r - l) / 2.0
+    /// Screen position of the map's centre: the middle of the main panel.
+    pub fn view_centre(&self, w: f32, h: f32) -> (f32, f32) {
+        let m = self.main_rect_for(w, h);
+        (m.x + m.w / 2.0, m.y + m.h / 2.0)
     }
 
     /// Screen position -> world position for a window of the given size, camera centred on me.
     pub fn to_world(&self, px: f32, py: f32, w: f32, h: f32) -> Option<(f32, f32)> {
         let me = self.me()?;
         let s = self.scale * self.ui;
-        Some((me.x + (px - self.view_x(w)) / s, me.y + (py - h / 2.0) / s))
+        let (vx, vy) = self.view_centre(w, h);
+        Some((me.x + (px - vx) / s, me.y + (py - vy) / s))
     }
 }
 
@@ -318,12 +320,12 @@ fn draw_world(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f3
     let (cx, cy) = me.map_or((3000.0, 3000.0), |m| (m.x, m.y));
     let ui = st.ui;
     let sc = st.scale * ui;
-    let vx = st.view_x(w); // the map lives right of the sidebar
+    let (vx, vy) = st.view_centre(w, h); // the map lives in the main panel
     let xf = |x: f32| (x - cx) * sc + vx;
-    let yf = |y: f32| (y - cy) * sc + h / 2.0;
+    let yf = |y: f32| (y - cy) * sc + vy;
     let px = T * sc;
     let (i0, i1) = (((cx - vx / sc) / T).floor() as i32, ((cx + (w - vx) / sc) / T).floor() as i32); // generous: the panels cover the edges
-    let (j0, j1) = (((cy - h / 2.0 / sc) / T).floor() as i32, ((cy + h / 2.0 / sc) / T).floor() as i32);
+    let (j0, j1) = (((cy - vy / sc) / T).floor() as i32, ((cy + (h - vy) / sc) / T).floor() as i32);
     let id = Transform::identity();
 
     let floor = paint(43, 58, 82, 255);
@@ -458,18 +460,32 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, cache: &mut Map
             cache.data.extend_from_slice(pm.data_mut());
         }
     }
+    let main = st.main_rect_for(w, h);
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     // transient messages (e.g. "Walking to ...")
     if let Some((t, _)) = &st.toast {
-        text.shadowed(pm, t, crate::gui::sidebar::width(st) + 10.0 * ui, 20.0 * ui, 13.0 * ui, [240, 200, 120], 0.0);
+        // right of the desk button when it is there, which shares the corner
+        let desk = crate::gui::sidebar::map_desk(st, w, h);
+        let (tx, ty) = if crate::gui::panels::empty(&desk) { (main.x + 10.0 * ui, main.y + 20.0 * ui) } else { (desk.x + desk.w + 10.0 * ui, desk.y + desk.h / 2.0 + 4.5 * ui) };
+        text.shadowed(pm, t, tx, ty, 13.0 * ui, [240, 200, 120], 0.0);
     }
-    if let Some(r) = notice_rect(st, text) {
+    if let Some(r) = notice_rect(st, text, w, h) {
         draw_notice(st, pm, text, r);
     }
-    crate::gui::sidebar::draw(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
-    crate::gui::meeting_ui::draw(st, pm, text, w, h);
-    crate::gui::sidebar::draw_hover_card(st, pm, text, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
+    crate::gui::panels::draw_back(st, pm);
+    crate::gui::sidebar::draw(st, pm, text, now_ms);
     crate::gui::chatui::draw(st, pm, text);
-    crate::gui::profile_ui::draw(st, pm, text);
+    crate::gui::meeting_ui::draw(st, pm, text, w, h);
+    crate::gui::sidebar::draw_map_desk(st, pm);
+    if st.sidebar.mobile {
+        // settings fill the space between header and footer, which stay on top
+        crate::gui::profile_ui::draw(st, pm, text);
+        crate::gui::panels::draw_nav(st, pm, text);
+    } else {
+        crate::gui::panels::draw_nav(st, pm, text);
+        crate::gui::sidebar::draw_hover_card(st, pm, text, now_ms);
+        crate::gui::profile_ui::draw(st, pm, text); // settings over everything else
+    }
     if st.confirm_logout || st.confirm_leave.is_some() {
         let leave = st.confirm_leave.is_some();
         let (title, l1, l2, yes) = if leave {
