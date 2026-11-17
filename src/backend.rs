@@ -19,6 +19,9 @@ pub enum Event {
     Login(Result<Auth, String>),
     /// Push to talk from outside the terminal or window (desktop shortcut or portal).
     Talk(crate::talk::TalkAct),
+    /// Something the Android side reported (back, media buttons, insets...).
+    #[cfg(all(target_os = "android", feature = "gui"))]
+    Android(crate::android::Msg),
 }
 
 pub type Emit = Arc<dyn Fn(Event) + Send + Sync>;
@@ -91,6 +94,22 @@ impl Backend {
         });
     }
 
+    /// A session captured outside the browser sign-in (Android: the WebView, or a QR code from the desktop): save it
+    /// like `begin_login` does; the outcome comes back as `Event::Login`.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn adopt_login(&mut self, api_key: String, refresh_token: String, group: String, alias: String) {
+        let (path, emit) = (self.session_path.clone(), self.emit.clone());
+        std::thread::spawn(move || {
+            session::ensure_private_dir(&path);
+            let find = serde_json::json!({"type": "group", "groupId": group, "alias": alias, "redirect": true});
+            let res = session::save_session(&path, &SessionFile { api_key, refresh_token, find }).and_then(|_| {
+                session::save_space(&path, &group, &alias);
+                Auth::load(&path)
+            });
+            emit(Event::Login(res));
+        });
+    }
+
     /// Hand everything the state queued to the threads that act on it.
     pub fn flush(&mut self, st: &mut State, start: std::time::Instant) {
         match st.login_act.take() {
@@ -104,7 +123,8 @@ impl Backend {
                     c.store(true, Ordering::Relaxed);
                 }
             }
-            None => {}
+            // the Android window client takes it before this (android_sync); nothing else offers it
+            Some(LoginAct::Scan) | None => {}
         }
         if st.logout_requested && self.logout_started.is_none() {
             // leave the call, close the socket cleanly, then forget the session (see finish_logout)

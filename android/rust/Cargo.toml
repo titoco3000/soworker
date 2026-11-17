@@ -1,0 +1,20 @@
+[package]
+name = "soworker-android"
+version = "0.1.8"
+edition = "2021"
+description = "SoWorker on Android: the native library a GameActivity loads (see docs/android-plan.md)"
+publish = false
+
+[lib]
+name = "soworker_android"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+soworker = { path = "../..", default-features = false, features = ["gui", "calls"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "android-game-activity"] }
+jni = "0.21"
+livekit = { version = "0.9.3", default-features = false, features = ["rustls-tls-webpki-roots"] }
+libc = "0.2"

@@ -29,6 +29,17 @@ pub fn modal_hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<bool> {
     }
 }
 
+/// The font built into the Android app (Liberation Sans, SIL OFL: assets/fonts/LiberationSans-LICENSE).
+#[cfg(target_os = "android")]
+fn builtin_font() -> Option<Vec<u8>> {
+    Some(include_bytes!("../../assets/fonts/LiberationSans-Regular.ttf").to_vec())
+}
+
+#[cfg(not(target_os = "android"))]
+fn builtin_font() -> Option<Vec<u8>> {
+    None
+}
+
 pub struct Text {
     font: Option<fontdue::Font>,
     cache: HashMap<(char, u32), (fontdue::Metrics, Vec<u8>)>,
@@ -36,7 +47,10 @@ pub struct Text {
 
 impl Text {
     pub fn new() -> Self {
-        #[cfg(not(windows))]
+        // Android: one font built in (the system's Roboto is a variable font that differs between vendors)
+        #[cfg(target_os = "android")]
+        let candidates: Vec<std::path::PathBuf> = vec![];
+        #[cfg(not(any(windows, target_os = "android")))]
         let candidates: Vec<std::path::PathBuf> = [
             "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
             "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
@@ -55,6 +69,7 @@ impl Text {
         let font = candidates
             .iter()
             .find_map(|p| std::fs::read(p).ok())
+            .or_else(builtin_font)
             .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok());
         Text { font, cache: HashMap::new() }
     }
@@ -212,24 +227,48 @@ pub fn proc_mem() -> (u64, u64) {
     (rss, pss)
 }
 
-/// The sign-in screen: card, and its single button (Start / Cancel / Try again).
+/// The sign-in screen: card, and its main button (Start / Cancel / Try again).
 pub fn login_layout(st: &State, w: f32, h: f32) -> (crate::gui::meeting_ui::R, crate::gui::meeting_ui::R) {
     use crate::gui::meeting_ui::R;
     let u = st.ui;
-    let (cw, ch) = (440.0 * u, 250.0 * u);
-    let card = R { x: (w - cw) / 2.0, y: (h - ch) / 2.0, w: cw, h: ch };
-    let button = R { x: card.x + 24.0 * u, y: card.y + ch - 24.0 * u - 38.0 * u, w: cw - 48.0 * u, h: 38.0 * u };
+    let cw = (440.0 * u).min(w - 24.0 * u);
+    let ch = if !cfg!(target_os = "android") {
+        250.0 * u
+    } else if st.login == Some(crate::app::LoginPhase::Scanning) {
+        (h - 24.0 * u).min(460.0 * u) // room for the camera picture
+    } else {
+        296.0 * u // and the scan button
+    };
+    let card = R { x: (w - cw) / 2.0, y: ((h - ch) / 2.0).max(12.0 * u), w: cw, h: ch };
+    let below = if login_second(st, w, h).is_some() { 46.0 * u } else { 0.0 };
+    let button = R { x: card.x + 24.0 * u, y: card.y + ch - 24.0 * u - 38.0 * u - below, w: cw - 48.0 * u, h: 38.0 * u };
     (card, button)
+}
+
+/// Android: "Scan a code from your computer", under the main button (Google accounts cannot sign in in a WebView).
+pub fn login_second(st: &State, w: f32, h: f32) -> Option<crate::gui::meeting_ui::R> {
+    use crate::app::LoginPhase;
+    if !cfg!(target_os = "android") || !matches!(st.login, Some(LoginPhase::Idle | LoginPhase::Failed(_))) {
+        return None;
+    }
+    let u = st.ui;
+    let cw = (440.0 * u).min(w - 24.0 * u);
+    let ch = 296.0 * u;
+    let (x, y) = ((w - cw) / 2.0, ((h - ch) / 2.0).max(12.0 * u));
+    Some(crate::gui::meeting_ui::R { x: x + 24.0 * u, y: y + ch - 24.0 * u - 38.0 * u, w: cw - 48.0 * u, h: 38.0 * u })
 }
 
 pub fn login_hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<crate::app::LoginAct> {
     use crate::app::{LoginAct, LoginPhase};
+    if login_second(st, w, h).is_some_and(|r| r.contains(px, py)) {
+        return Some(LoginAct::Scan);
+    }
     let (_, b) = login_layout(st, w, h);
     if !b.contains(px, py) {
         return None;
     }
     Some(match st.login {
-        Some(LoginPhase::Waiting) => LoginAct::Cancel,
+        Some(LoginPhase::Waiting | LoginPhase::Scanning) => LoginAct::Cancel,
         Some(LoginPhase::Offline) => LoginAct::Retry,
         _ => LoginAct::Start,
     })
@@ -250,15 +289,26 @@ fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     let x = card.x + 24.0 * u;
     text.draw(pm, "SoWorker", x, card.y + 44.0 * u, 24.0 * u, INK, 0.0);
     text.draw(pm, "A lightweight client for your SoWork office", x, card.y + 68.0 * u, 13.0 * u, INK_MUTED, 0.0);
+    let phone = cfg!(target_os = "android");
     let (lines, label): (Vec<(String, Rgb)>, &str) = match &st.login {
+        Some(LoginPhase::Waiting) if phone => (vec![("Finish signing in on SoWork's page…".into(), INK)], "Cancel"),
         Some(LoginPhase::Waiting) => (
             vec![("Waiting for you to sign in in the browser window…".into(), INK), ("It closes by itself once you are in.".into(), INK_MUTED)],
             "Cancel",
         ),
+        Some(LoginPhase::Scanning) => (vec![("Point the camera at the code on your computer:".into(), INK), ("in SoWorker there, Profile, then Sign in a phone.".into(), INK_MUTED)], "Cancel"),
         Some(LoginPhase::Failed(e)) => (vec![(e.clone(), DANGER)], "Try again"),
         Some(LoginPhase::Offline) => (
             vec![("No connection.".into(), DANGER), ("Your sign-in is saved; check your network and retry.".into(), INK_MUTED)],
             "Retry",
+        ),
+        _ if phone => (
+            vec![
+                ("Email and password: sign in on SoWork's page.".into(), INK),
+                ("Google account: scan the code shown by".into(), INK_MUTED),
+                ("SoWorker on your computer.".into(), INK_MUTED),
+            ],
+            "Sign in with SoWork",
         ),
         _ => (
             vec![
@@ -268,10 +318,27 @@ fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
             "Sign in with SoWork",
         ),
     };
+    let room = card.w - 48.0 * u;
     for (i, (l, col)) in lines.iter().enumerate() {
-        text.draw(pm, l, x, card.y + 108.0 * u + i as f32 * 20.0 * u, 13.0 * u, *col, 0.0);
+        let l = crate::gui::sidebar::fit(text, l, 13.0 * u, room);
+        text.draw(pm, &l, x, card.y + 108.0 * u + i as f32 * 20.0 * u, 13.0 * u, *col, 0.0);
     }
-    let waiting = st.login == Some(LoginPhase::Waiting);
+    #[cfg(all(target_os = "android", feature = "calls"))]
+    if st.login == Some(LoginPhase::Scanning) {
+        // the camera picture, fitted between the text and the button
+        let area = crate::gui::meeting_ui::R { x, y: card.y + 150.0 * u, w: room, h: button.y - 12.0 * u - (card.y + 150.0 * u) };
+        if let Some((pw, ph, rgba)) = crate::android_scan::preview().filter(|_| area.h > 0.0) {
+            if let Some(img) = tiny_skia::Pixmap::from_vec(rgba, tiny_skia::IntSize::from_wh(pw, ph).unwrap_or(tiny_skia::IntSize::from_wh(1, 1).unwrap())) {
+                let k = (area.w / pw as f32).min(area.h / ph as f32);
+                let (dx, dy) = (area.x + (area.w - pw as f32 * k) / 2.0, area.y + (area.h - ph as f32 * k) / 2.0);
+                let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+                pm.draw_pixmap(0, 0, img.as_ref(), &paint, Transform::from_row(k, 0.0, 0.0, k, dx, dy), None);
+            }
+        } else {
+            text.draw(pm, "Starting the camera…", area.x + area.w / 2.0, area.y + area.h / 2.0, 13.0 * u, INK_FAINT, 0.5);
+        }
+    }
+    let waiting = matches!(st.login, Some(LoginPhase::Waiting | LoginPhase::Scanning));
     if let Some(p) = crate::gui::icon::rounded_rect(button.x, button.y, button.w, button.h, RADIUS_CARD * u) {
         if !waiting {
             pm.fill_path(&p, &c(BRAND, 255), FillRule::Winding, id, None);
@@ -281,6 +348,12 @@ fn draw_login(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     }
     let tc = if waiting { INK_MUTED } else { ON_BRAND };
     text.draw(pm, label, button.x + button.w / 2.0, button.y + button.h / 2.0 + 5.0 * u, 14.0 * u, tc, 0.5);
+    if let Some(b) = login_second(st, w, h) {
+        if let Some(p) = crate::gui::icon::rounded_rect(b.x, b.y, b.w, b.h, RADIUS_CARD * u) {
+            pm.stroke_path(&p, &c(LINE, 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
+        }
+        text.draw(pm, "Scan a code from your computer", b.x + b.w / 2.0, b.y + b.h / 2.0 + 5.0 * u, 14.0 * u, INK, 0.5);
+    }
 }
 
 /// Screen geometry: the map fills the main panel, the camera centred on me.
@@ -486,6 +559,8 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, cache: &mut Map
         crate::gui::sidebar::draw_hover_card(st, pm, text, now_ms);
         crate::gui::profile_ui::draw(st, pm, text); // settings over everything else
     }
+    #[cfg(not(target_os = "android"))]
+    draw_pair_code(st, pm, text, now_ms as f64 / 1000.0);
     if st.confirm_logout || st.confirm_leave.is_some() {
         let leave = st.confirm_leave.is_some();
         let (title, l1, l2, yes) = if leave {
@@ -510,6 +585,42 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, cache: &mut Map
             text.draw(pm, label, r.x + r.w / 2.0, r.y + r.h / 2.0 + 5.0 * ui, 14.0 * ui, col, 0.5);
         }
     }
+}
+
+/// The phone sign-in code (desktop): what it is, the code, and how long it stays. Any click puts it away.
+#[cfg(not(target_os = "android"))]
+fn draw_pair_code(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, now: f64) {
+    use crate::gui::theme::*;
+    let Some((code, until)) = &st.pair_code else { return };
+    let Some((n, dark)) = crate::pairing::qr(code) else { return };
+    let (w, h, u, id) = (pm.width() as f32, pm.height() as f32, st.ui, Transform::identity());
+    pm.fill_rect(Rect::from_xywh(0.0, 0.0, w, h).unwrap(), &paint(0, 0, 0, 160), id, None);
+    // whole pixels per module, with the 4-module quiet zone the readers need
+    let room = (h - 190.0 * u).min(w - 64.0 * u).min(420.0 * u).max(0.0);
+    let m = (room / (n + 8) as f32).floor().max(2.0);
+    let side = m * (n + 8) as f32;
+    let (cw, ch) = ((side + 40.0 * u).max(420.0 * u), side + 150.0 * u);
+    let card = crate::gui::meeting_ui::R { x: ((w - cw) / 2.0).round(), y: ((h - ch) / 2.0).round(), w: cw, h: ch };
+    if let Some(p) = crate::gui::icon::rounded_rect(card.x, card.y, card.w, card.h, RADIUS_CARD * u) {
+        pm.fill_path(&p, &paint(SURFACE[0], SURFACE[1], SURFACE[2], 255), FillRule::Winding, id, None);
+        pm.stroke_path(&p, &paint(LINE[0], LINE[1], LINE[2], 255), &Stroke { width: 1.0, ..Stroke::default() }, id, None);
+    }
+    let x = card.x + 20.0 * u;
+    text.draw(pm, "Sign in your phone", x, card.y + 32.0 * u, 16.0 * u, INK, 0.0);
+    text.draw(pm, "In SoWorker on the phone, tap \"Scan a code from your computer\".", x, card.y + 56.0 * u, 13.0 * u, INK_MUTED, 0.0);
+    text.draw(pm, "This code is your sign-in: anyone who scans it gets your account.", x, card.y + 76.0 * u, 13.0 * u, DANGER, 0.0);
+    let (qx, qy) = ((card.x + (cw - side) / 2.0).round(), card.y + 92.0 * u);
+    pm.fill_rect(Rect::from_xywh(qx, qy, side, side).unwrap(), &paint(255, 255, 255, 255), id, None);
+    let black = paint(0, 0, 0, 255);
+    for (i, _) in dark.iter().enumerate().filter(|(_, d)| **d) {
+        let (mx, my) = ((i % n) as f32, (i / n) as f32);
+        if let Some(r) = Rect::from_xywh(qx + (mx + 4.0) * m, qy + (my + 4.0) * m, m, m) {
+            pm.fill_rect(r, &black, id, None);
+        }
+    }
+    let left = (until - now).clamp(0.0, crate::pairing::TTL as f64).ceil() as u32;
+    text.draw(pm, &format!("Disappears in {left} s. Click to close."), card.x + cw / 2.0, qy + side + 24.0 * u, 12.0 * u, INK_MUTED, 0.5);
+    text.draw(pm, "Only one of the two devices can be connected at a time.", card.x + cw / 2.0, qy + side + 44.0 * u, 12.0 * u, INK_FAINT, 0.5);
 }
 
 impl crate::app::Frame {

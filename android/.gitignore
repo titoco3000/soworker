@@ -1,0 +1,7 @@
+.gradle/
+build/
+app/build/
+local.properties
+# built by `make android-lib`
+app/src/main/jniLibs/
+app/libs/

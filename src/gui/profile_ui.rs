@@ -36,16 +36,20 @@ pub struct Layout {
     pub lists: Vec<(Kind, R)>,
     pub test: R,
     pub meter: R,
+    /// "Sign in a phone" (desktop only).
+    pub pair: R,
+    /// The low-data mode switch, under the device lists.
+    pub low: R,
     /// The open list: its box and each choice in it.
     pub options: Option<(R, Vec<(Option<String>, String, R)>)>,
 }
 
 pub fn layout(st: &State, p: &Profile, w: f32, h: f32) -> Layout {
     let u = st.ui;
-    let ch = (PAD + AVATAR + 16.0 + CTRL_H + 16.0 + 36.0 + (Kind::ALL.len() - 1) as f32 * ROW + ROW_LAST + PAD) * u;
+    let ch = (PAD + AVATAR + 16.0 + CTRL_H + 16.0 + 36.0 + Kind::ALL.len() as f32 * ROW + ROW_LAST + PAD) * u;
     let f = panels::frame(st, w, h);
     let card = if f.mobile {
-        R { h: f.content.h.max(ch), ..f.content }
+        R { y: f.content.y - p.scroll.clamp(0.0, (ch - f.content.h).max(0.0)), h: f.content.h.max(ch), ..f.content }
     } else {
         R { x: 8.0 * u, y: (f.nav.y - 8.0 * u - ch).max(8.0 * u), w: (W * u).min(w - 16.0 * u), h: ch }
     };
@@ -53,11 +57,18 @@ pub fn layout(st: &State, p: &Profile, w: f32, h: f32) -> Layout {
     let avatar = R { x, y: card.y + PAD * u, w: AVATAR * u, h: AVATAR * u };
     let logout = R { x, y: avatar.y + avatar.h + 16.0 * u, w: SIDE * u, h: CTRL_H * u };
     let term = if cfg!(feature = "tui") { R { x: x + logout.w + 8.0 * u, ..logout } } else { R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 } };
+    let pair = if cfg!(target_os = "android") {
+        R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 }
+    } else {
+        let after = if panels::empty(&term) { logout } else { term };
+        R { x: after.x + after.w + 8.0 * u, w: 132.0 * u, ..logout }
+    };
     let divider = logout.y + logout.h + 16.0 * u;
     let row = |i: usize| divider + 36.0 * u + i as f32 * ROW * u + 18.0 * u;
     let narrow = inner - (SIDE + 8.0) * u;
     // speaker and microphone leave room for their test beside them; the rest span the card
-    let lists: Vec<(Kind, R)> = Kind::ALL.iter().enumerate().map(|(i, &k)| (k, R { x, y: row(i), w: if i < 2 { narrow } else { inner }, h: CTRL_H * u })).collect();
+    let beside = |k: Kind| k == Kind::Output || (k == Kind::Input && !cfg!(target_os = "android"));
+    let lists: Vec<(Kind, R)> = Kind::ALL.iter().enumerate().map(|(i, &k)| (k, R { x, y: row(i), w: if beside(k) { narrow } else { inner }, h: CTRL_H * u })).collect();
     let side = |i: usize| R { x: x + narrow + 8.0 * u, y: row(i), w: SIDE * u, h: CTRL_H * u };
     let options = p.open.and_then(|k| lists.iter().find(|(l, _)| *l == k)).map(|&(k, b)| {
         let opts = p.options(k);
@@ -67,7 +78,23 @@ pub fn layout(st: &State, p: &Profile, w: f32, h: f32) -> Layout {
         let rects = opts.into_iter().enumerate().map(|(i, (id, name))| (id, name, R { x: b.x, y: y0 + 4.0 * u + i as f32 * OPT_H * u, w: b.w, h: OPT_H * u })).collect();
         (R { x: b.x, y: y0, w: b.w, h: total }, rects)
     });
-    Layout { card, avatar, logout, term, divider, lists, test: side(0), meter: side(1), options }
+    let low = R { x, y: row(Kind::ALL.len()), w: inner, h: CTRL_H * u };
+    Layout { card, avatar, logout, term, divider, lists, test: side(0), meter: if cfg!(target_os = "android") { R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 } } else { side(1) }, pair, low, options }
+}
+
+/// Phone layout: scroll the panel by `dy` pixels (positive = towards the top). False when it is not open there.
+pub fn wheel(st: &mut State, dy: f32, w: f32, h: f32) -> bool {
+    let f = panels::frame(st, w, h);
+    let Some(p) = st.profile.as_ref().filter(|_| f.mobile) else { return false };
+    let max = (layout(st, p, w, h).card.h - f.content.h).max(0.0);
+    let s = (p.scroll - dy).clamp(0.0, max);
+    if let Some(p) = st.profile.as_mut() {
+        if s != p.scroll {
+            (p.scroll, p.open) = (s, None);
+            st.dirty = true;
+        }
+    }
+    true
 }
 
 /// What a click at (px, py) does; None = it fell outside the panel (which closes it).
@@ -96,6 +123,12 @@ pub fn hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<Act> {
     }
     if l.test.contains(px, py) {
         return Some(Act::TestSound);
+    }
+    if l.low.contains(px, py) {
+        return Some(Act::LowData);
+    }
+    if !panels::empty(&l.pair) && l.pair.contains(px, py) {
+        return Some(Act::PairPhone);
     }
     Some(l.lists.iter().find(|(_, r)| r.contains(px, py)).map_or(Act::Panel, |(k, _)| Act::Toggle(*k)))
 }
@@ -167,6 +200,10 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
         outline(pm, &l.term, 6.0 * u, LINE);
         centred(text, pm, "Terminal", &l.term, 13.0 * u, INK_MUTED);
     }
+    if !panels::empty(&l.pair) {
+        outline(pm, &l.pair, 6.0 * u, LINE);
+        centred(text, pm, "Sign in a phone", &l.pair, 13.0 * u, INK_MUTED);
+    }
 
     // settings
     fill(pm, &R { x: l.card.x + PAD * u, y: l.divider, w: l.card.w - 2.0 * PAD * u, h: 1.0 }, 0.0, LINE, 255);
@@ -182,6 +219,16 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
         crate::gui::icon::draw(pm, icons::CHEVRON_DOWN, b.x + b.w - s - 8.0 * u, b.y + (b.h - s) / 2.0, s, INK_MUTED);
     }
 
+    // low-data mode: a switch spanning the card
+    text.draw(pm, "Low data mode", l.low.x, l.low.y - 7.0 * u, 12.0 * u, INK_MUTED, 0.0);
+    let on = st.low_data_user;
+    fill(pm, &l.low, 6.0 * u, MUTED, 255);
+    outline(pm, &l.low, 6.0 * u, if on { BRAND } else { LINE });
+    let s = 16.0 * u;
+    crate::gui::icon::draw(pm, if on { icons::WIFI_OFF } else { icons::WIFI }, l.low.x + 10.0 * u, l.low.y + (l.low.h - s) / 2.0, s, if on { BRAND } else { INK_MUTED });
+    let label = fit(text, if on { "On: no camera sent or received" } else { "Off" }, 13.0 * u, l.low.w - 40.0 * u);
+    text.draw(pm, &label, l.low.x + 16.0 * u + s, l.low.y + l.low.h / 2.0 + 4.5 * u, 13.0 * u, INK, 0.0);
+
     // Play sound
     outline(pm, &l.test, 6.0 * u, LINE);
     let s = 15.0 * u;
@@ -190,21 +237,23 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     crate::gui::icon::draw(pm, icons::VOLUME, x0, l.test.y + (l.test.h - s) / 2.0, s, INK_MUTED);
     text.draw(pm, "Play sound", x0 + s + 6.0 * u, l.test.y + l.test.h / 2.0 + 4.5 * u, 12.0 * u, INK_MUTED, 0.0);
 
-    // the microphone level: lit segments, green, then amber and red at the top
-    outline(pm, &l.meter, 6.0 * u, LINE);
-    match p.level() {
-        Some(level) => {
-            const N: usize = 14;
-            let (x, w) = (l.meter.x + 10.0 * u, l.meter.w - 20.0 * u);
-            let (gap, sh) = (2.0 * u, 12.0 * u);
-            let sw = (w - gap * (N - 1) as f32) / N as f32;
-            for i in 0..N {
-                let lit = (i as f32 + 0.5) / N as f32 <= level;
-                let col = if !lit { MUTED } else if i >= N - 2 { DANGER } else if i >= N - 4 { [240, 170, 60] } else { SPEAKING };
-                fill(pm, &R { x: x + i as f32 * (sw + gap), y: l.meter.y + (l.meter.h - sh) / 2.0, w: sw, h: sh }, 1.5 * u, col, 255);
+    // the microphone level: lit segments, green, then amber and red at the top (none on a phone)
+    if !panels::empty(&l.meter) {
+        outline(pm, &l.meter, 6.0 * u, LINE);
+        match p.level() {
+            Some(level) => {
+                const N: usize = 14;
+                let (x, w) = (l.meter.x + 10.0 * u, l.meter.w - 20.0 * u);
+                let (gap, sh) = (2.0 * u, 12.0 * u);
+                let sw = (w - gap * (N - 1) as f32) / N as f32;
+                for i in 0..N {
+                    let lit = (i as f32 + 0.5) / N as f32 <= level;
+                    let col = if !lit { MUTED } else if i >= N - 2 { DANGER } else if i >= N - 4 { [240, 170, 60] } else { SPEAKING };
+                    fill(pm, &R { x: x + i as f32 * (sw + gap), y: l.meter.y + (l.meter.h - sh) / 2.0, w: sw, h: sh }, 1.5 * u, col, 255);
+                }
             }
+            None => centred(text, pm, if p.meter.is_some() { "No signal" } else { "No meter" }, &l.meter, 11.0 * u, INK_FAINT),
         }
-        None => centred(text, pm, if p.meter.is_some() { "No signal" } else { "No meter" }, &l.meter, 11.0 * u, INK_FAINT),
     }
 
     // the open list, over everything else
@@ -238,7 +287,7 @@ mod tests {
             cameras: vec![],
             screens: vec![],
         };
-        st.profile = Some(Profile { devices, chosen: Choice::default(), open: None, meter: None, sel: 0, photo_hover: false });
+        st.profile = Some(Profile { devices, chosen: Choice::default(), open: None, meter: None, sel: 0, photo_hover: false, scroll: 0.0 });
         st
     }
 

@@ -160,7 +160,7 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
         }
     }
 
-    // controls row: noise cancellation, camera, mic, hand, share on the left; chat toggle on the right
+    // controls row: noise cancellation, low data, camera, mic, hand, share on the left; chat toggle on the right
     let bh = 34.0 * u;
     let by = bar.y + 12.0 * u + 1.0 * u;
     let (fs, icon_sz, gp) = (14.0 * u, 14.0 * u, 6.0 * u);
@@ -171,12 +171,26 @@ pub fn layout(st: &State, text: &mut Text, w: f32, h: f32) -> Option<Layout> {
     // the label goes when the row would not fit
     let labelled = 12.0 * u + icon_sz + gp + text_w(text, share_label, fs) + 12.0 * u + 2.0;
     let chat_btn = 18.0 * u + 16.0 * u + 2.0;
-    let share_w = if 24.0 * u + 5.0 * (icon_w + 8.0 * u) + labelled + 8.0 * u + chat_btn > dw { icon_w } else { labelled };
-    for (c, wd) in [(Ctl::NoiseCancel, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Hand, icon_w), (Ctl::Record, icon_w), (Ctl::Share, share_w)] {
+    let share_w = if 24.0 * u + 6.0 * (icon_w + 8.0 * u) + labelled + 8.0 * u + chat_btn > dw { icon_w } else { labelled };
+    // a phone has no screen to share, no recorder (whisper), and no noise cancellation (its own echo canceller and
+    // noise suppression run instead)
+    let row: &[(Ctl, f32)] = if cfg!(target_os = "android") {
+        &[(Ctl::LowData, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Hand, icon_w)]
+    } else {
+        &[(Ctl::NoiseCancel, icon_w), (Ctl::LowData, icon_w), (Ctl::Cam, icon_w), (Ctl::Mic, icon_w), (Ctl::Hand, icon_w), (Ctl::Record, icon_w), (Ctl::Share, share_w)]
+    };
+    for &(c, wd) in row {
         controls.push((c, R { x, y: by, w: wd, h: bh }));
         x += wd + 8.0 * u; // gap-2
     }
-    controls.push((Ctl::Chat, R { x: dx + dw - 12.0 * u - chat_btn, y: bar.y + (bar_h - chat_btn) / 2.0, w: chat_btn, h: chat_btn }));
+    // on a phone the dock covers the map, so the right-hand button takes us back to our desk instead of opening the
+    // chat (the Chat tab has it); at the desk already, or with none here, it leaves the meeting
+    let right = match (f.mobile, st.away_from_desk()) {
+        (false, _) => Ctl::Chat,
+        (true, true) => Ctl::Desk,
+        (true, false) => Ctl::Leave,
+    };
+    controls.push((right, R { x: dx + dw - 12.0 * u - chat_btn, y: bar.y + (bar_h - chat_btn) / 2.0, w: chat_btn, h: chat_btn }));
 
     let (mut send_btn, mut input) = (None, None);
     if let Some(c) = chat_col {
@@ -445,7 +459,8 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
         let isz = 14.0 * u;
         let (shapes, label, rgb, dim): (&[Shape], Option<&str>, Rgb, bool) = match c {
             Ctl::NoiseCancel => (if st.noise_cancel { icons::NOISE_CANCEL } else { icons::NOISE_CANCEL_OFF }, None, if st.noise_cancel { theme::INK } else { theme::INK_MUTED }, false),
-            Ctl::Cam => (if st.call.cam { icons::VIDEO } else { icons::VIDEO_OFF }, None, if st.call.cam { theme::INK } else { theme::INK_MUTED }, !joined),
+            Ctl::LowData => (if st.low_data() { icons::WIFI_OFF } else { icons::WIFI }, None, if st.low_data() { theme::BRAND } else { theme::INK_MUTED }, false),
+            Ctl::Cam => (if st.call.cam { icons::VIDEO } else { icons::VIDEO_OFF }, None, if st.call.cam { theme::INK } else { theme::INK_MUTED }, !joined || (st.low_data() && !st.call.cam)),
             Ctl::Mic => (if st.call.mic { icons::MIC } else { icons::MIC_OFF }, None, if st.call.mic { theme::INK } else { theme::INK_MUTED }, !joined),
             Ctl::Hand => (icons::HAND, None, if st.call.hand.is_some() { theme::BRAND } else { theme::INK_MUTED }, !joined),
             Ctl::Record => (icons::RECORD, None, if st.call.recording.is_some() { theme::DANGER } else { theme::INK_MUTED }, !joined),
@@ -456,6 +471,8 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
                 !joined,
             ),
             Ctl::Chat => (icons::MESSAGE_CIRCLE, None, if st.chat.open { theme::BRAND } else { theme::INK_MUTED }, false),
+            Ctl::Desk => (icons::TABLE, None, theme::INK_MUTED, false),
+            Ctl::Leave => (icons::PHONE_OFF, None, theme::DANGER, false),
             _ => continue,
         };
         stroke_rr(pm, *r, radius, theme::LINE, 1.0);
@@ -466,7 +483,7 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text, w: f32, h: f32)
                 text.draw(pm, t, r.x + 12.0 * u + isz + 6.0 * u + 1.0, r.y + r.h / 2.0 + 5.0 * u, 14.0 * u, col, 0.0);
             }
             None => {
-                let sz = if *c == Ctl::Chat { 18.0 * u } else { isz };
+                let sz = if matches!(c, Ctl::Chat | Ctl::Desk | Ctl::Leave) { 18.0 * u } else { isz };
                 icon::draw(pm, shapes, r.x + (r.w - sz) / 2.0, r.y + (r.h - sz) / 2.0, sz, col);
                 if *c == Ctl::Record && st.call.recording.is_some() {
                     let d = sz * 0.4; // the dot filled in while recording
@@ -592,7 +609,7 @@ pub fn wheel(st: &mut State, text: &mut Text, px: f32, py: f32, w: f32, h: f32, 
         return false;
     }
     if l.side.is_some_and(|s| s.contains(px, py)) {
-        st.dock.scroll = (st.dock.scroll - dy.signum() * 40.0 * st.ui).clamp(0.0, l.max_scroll);
+        st.dock.scroll = (st.dock.scroll - dy).clamp(0.0, l.max_scroll);
         st.dirty = true;
     }
     true

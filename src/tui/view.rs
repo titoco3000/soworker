@@ -108,7 +108,7 @@ const HELP: &[&str] = &[
     "Walk        WASD / arrows, or click the map (Shift+click: teleport)",
     "Zoom        + / -  (or the mouse wheel over the map)",
     "People      Tab to focus, up/down, Enter opens Join / Wave / Message",
-    "Call        m mic   c camera   v share screen   h raise hand   l leave   Space talk   N noise cancellation",
+    "Call        m mic   c camera   v share screen   h raise hand   l leave   Space talk   N noise cancellation   D low data",
     "Record      R start / stop recording the call (video, sound and transcript, in ~/Videos/SoWorker)",
     "Video       n next picture   V open the video window",
     "Chat        t open and type, T close, Tab switches between chats, Esc leaves the input",
@@ -135,6 +135,7 @@ fn header(f: &mut Frame, t: &Tui, r: Rect) {
         let flag = |on: bool, label: &'static str, bad: bool| Span::styled(format!(" {label} "), if on { Style::new().fg(if bad { DANGER } else { OK }).add_modifier(Modifier::BOLD) } else { Style::new().fg(DIM) });
         l.push(flag(st.call.mic, if st.call.mic { "MIC ON" } else { "mic off" }, true));
         l.push(flag(st.noise_cancel, "nc", false));
+        l.push(flag(st.low_data(), "low data", false));
         l.push(flag(st.call.cam, "cam", false));
         l.push(flag(st.call.share, "share", false));
         if st.call.hand.is_some() {
@@ -826,7 +827,7 @@ mod tests {
         use crate::devices::{Device, Devices};
         let mut t = tui();
         let devices = Devices { outputs: vec![Device { id: "sink.a".into(), name: "Speakers".into() }], ..Default::default() };
-        t.st.profile = Some(crate::profile::Profile { devices, chosen: Default::default(), open: None, meter: None, sel: 1, photo_hover: false });
+        t.st.profile = Some(crate::profile::Profile { devices, chosen: Default::default(), open: None, meter: None, sel: 1, photo_hover: false, scroll: 0.0 });
         t.modal = Modal::Profile;
         let s = render(&t, 100, 30);
         for want in ["Profile", "Me", "Log out", "Settings", "Speaker", "System default", "Microphone", "Camera", "play sound", "no meter"] {

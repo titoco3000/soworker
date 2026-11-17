@@ -68,7 +68,7 @@ pub fn wheel(st: &mut State, px: f32, py: f32, w: f32, h: f32, dy: f32) -> bool 
     if panels::empty(&l.panel) || !l.panel.contains(px, py) {
         return false;
     }
-    st.chat.scroll.set((st.chat.scroll.get() + dy.signum() * 40.0 * st.ui).clamp(0.0, st.chat.max_scroll.get()));
+    st.chat.scroll.set((st.chat.scroll.get() + dy).clamp(0.0, st.chat.max_scroll.get()));
     st.dirty = true;
     true
 }

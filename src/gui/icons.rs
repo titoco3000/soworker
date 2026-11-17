@@ -81,6 +81,24 @@ pub const NOISE_CANCEL_OFF: &[Shape] = &[
     Shape::Line(1.0, 1.0, 23.0, 23.0),
 ];
 
+/// Low-data mode off (Feather `wifi`) and on (`wifi-off`).
+pub const WIFI: &[Shape] = &[
+    Shape::Path("M5 12.55a11 11 0 0 1 14.08 0"),
+    Shape::Path("M1.42 9a16 16 0 0 1 21.16 0"),
+    Shape::Path("M8.53 16.11a6 6 0 0 1 6.95 0"),
+    Shape::Line(12.0, 20.0, 12.01, 20.0),
+];
+
+pub const WIFI_OFF: &[Shape] = &[
+    Shape::Line(1.0, 1.0, 23.0, 23.0),
+    Shape::Path("M16.72 11.06A10.94 10.94 0 0 1 19 12.55"),
+    Shape::Path("M5 12.55a10.94 10.94 0 0 1 5.17-2.39"),
+    Shape::Path("M10.71 5.05A16 16 0 0 1 22.58 9"),
+    Shape::Path("M1.42 9a15.91 15.91 0 0 1 4.7-2.88"),
+    Shape::Path("M8.53 16.11a6 6 0 0 1 6.95 0"),
+    Shape::Line(12.0, 20.0, 12.01, 20.0),
+];
+
 /// A ring with a dot: Feather has no record button.
 pub const RECORD: &[Shape] = &[Shape::Circle(12.0, 12.0, 10.0), Shape::Circle(12.0, 12.0, 3.0)];
 

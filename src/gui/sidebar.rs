@@ -183,7 +183,7 @@ pub fn wheel(st: &mut State, px: f32, py: f32, w: f32, h: f32, dy: f32) -> bool 
     if panels::empty(&l.panel) || !l.panel.contains(px, py) {
         return false;
     }
-    st.sidebar.scroll = (st.sidebar.scroll - dy.signum() * 40.0 * st.ui).clamp(0.0, l.max_scroll);
+    st.sidebar.scroll = (st.sidebar.scroll - dy).clamp(0.0, l.max_scroll);
     st.dirty = true;
     true
 }

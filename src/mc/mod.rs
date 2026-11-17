@@ -481,7 +481,7 @@ impl Bridge {
             "mic" => st.toggle_mic(),
             "share" => st.toggle_share(),
             "rec" => st.toggle_record(now),
-            "cam" => st.toggle_cam(),
+            "cam" => st.toggle_cam(now),
             "hand" => st.toggle_hand(now),
             "desk" => {
                 st.go_to_desk(now);

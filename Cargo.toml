@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "android/rust"]
+default-members = ["."]
+
 [package]
 name = "soworker"
 version = "0.1.8"
@@ -10,7 +14,7 @@ default = ["tui", "gui", "calls", "portal"]
 tui = ["dep:ratatui", "dep:unicode-width", "window"]
 # Graphical client: software-rendered window with sidebar, map, chat and meeting dock (`soworker --gui`). With both
 # clients built in, each has a button that hands over to the other.
-gui = ["window", "render", "overlay", "dep:image"]
+gui = ["window", "render", "overlay", "dep:image", "dep:qrcodegen"]
 # A bare window that only shows video frames (the TUI's fallback for camera and screen share).
 window = ["dep:winit", "dep:softbuffer"]
 render = ["dep:tiny-skia", "dep:fontdue"]
@@ -25,7 +29,6 @@ mc = ["dep:image"]
 calls = ["dep:livekit", "dep:tokio", "dep:futures-util", "dep:v4l", "dep:nokhwa", "dep:deep_filter", "dep:ndarray", "dep:cpal"]
 
 [dependencies]
-livekit = { version = "0.9.3", features = ["rustls-tls-native-roots", "glib-main-loop"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 futures-util = { version = "0.3", default-features = false, optional = true }
 # Noise cancellation (DeepFilterNet 3, model built in) for the microphone; vendored, see vendor/deep_filter/README.md
@@ -39,6 +42,8 @@ rmpv = "1"
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd", "png-format"], optional = true }
 fontdue = { version = "0.9", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
+# the "Sign in a phone" code (docs/android-plan.md, 3.2)
+qrcodegen = { version = "1.8", optional = true }
 ureq = { version = "2", features = ["json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "0.26"
@@ -50,6 +55,21 @@ ratatui = { version = "0.29", default-features = false, features = ["crossterm"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+livekit = { version = "0.9.3", features = ["rustls-tls-native-roots", "glib-main-loop"], optional = true }
+
+# Android (see docs/android-plan.md): the app is the `android/rust` crate, built on this library. The system has no
+# certificate store native-certs can read, so LiveKit takes the webpki roots; winit runs inside a GameActivity.
+[target.'cfg(target_os = "android")'.dependencies]
+livekit = { version = "0.9.3", features = ["rustls-tls-webpki-roots"], optional = true }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "android-game-activity"], optional = true }
+jni = "0.21"
+ndk-context = "0.1"
+# the camera (Camera2 + AImageReader; "media" links libmediandk)
+ndk-sys = { version = "0.6", features = ["media"] }
+# reads the sign-in code from the computer's screen
+rqrr = "0.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = { version = "0.14", optional = true }
@@ -75,6 +95,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[dev-dependencies]
+# the pairing test reads back a generated code
+rqrr = "0.9"
+
 [profile.release]
 opt-level = "s"
 lto = "fat"
@@ -97,3 +121,12 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = "s"
+
+# android-activity 0.6.1 builds a slice from a null pointer when the soft keyboard's text is empty (it aborts the app
+# in debug builds); this local copy checks for it. Only the Android build uses the crate.
+[patch.crates-io]
+android-activity = { path = "android/patches/android-activity" }
+# winit 0.30.13 ignores looper wake-ups while the Android activity is paused, so events sent from other threads
+# (a media button on the lock screen, the socket) wait until the app is back on screen; this copy handles them.
+# Only its Android backend differs.
+winit = { path = "android/patches/winit" }

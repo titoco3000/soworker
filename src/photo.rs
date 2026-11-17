@@ -7,7 +7,27 @@ use std::time::Duration;
 /// Side of the square we upload, in pixels: photos are only ever shown small.
 const SIDE: u32 = 256;
 
+/// Asks the user for a picture and reads it. `Ok(None)` = they cancelled.
+#[cfg(not(target_os = "android"))]
+pub fn pick_bytes() -> Result<Option<Vec<u8>>, String> {
+    let Some(path) = pick()? else { return Ok(None) };
+    std::fs::read(&path).map(Some).map_err(|e| format!("cannot read {}: {e}", path.display()))
+}
+
+/// Android: the system photo picker (Kotlin), whose answer comes back through `android::photo_picked`.
+#[cfg(target_os = "android")]
+pub fn pick_bytes() -> Result<Option<Vec<u8>>, String> {
+    let rx = crate::android::photo_wait();
+    crate::android::pick_photo();
+    match rx.recv_timeout(std::time::Duration::from_secs(600)) {
+        Ok(b) if b.is_empty() => Ok(None),
+        Ok(b) => Ok(Some(b)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Asks the user for a picture with the desktop's file picker. `Ok(None)` = they cancelled.
+#[cfg(not(target_os = "android"))]
 pub fn pick() -> Result<Option<std::path::PathBuf>, String> {
     #[cfg(windows)]
     return win::pick();
@@ -74,7 +94,7 @@ fn file_path(uri: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Without a portal: zenity (GNOME and most others), else kdialog (KDE).
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn command_pick() -> Result<Option<std::path::PathBuf>, String> {
     use std::process::Command;
     let attempts: [(&str, &[&str]); 2] = [

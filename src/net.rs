@@ -251,8 +251,7 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
 fn change_photo(token: String, uid: String, group_id: String, tx: Sender<Net>) {
     std::thread::spawn(move || {
         let res = (|| {
-            let Some(path) = crate::photo::pick()? else { return Ok(None) };
-            let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let Some(bytes) = crate::photo::pick_bytes()? else { return Ok(None) };
             let webp = crate::photo::prepare(&bytes)?;
             crate::photo::upload(&token, &uid, &group_id, &webp).map(Some)
         })();

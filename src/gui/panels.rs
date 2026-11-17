@@ -71,8 +71,13 @@ pub fn frame(st: &State, w: f32, h: f32) -> Frame {
         return Frame { main: whole, main_shown: true, content: whole, ..none };
     }
     if st.sidebar.mobile {
-        let header = R { x: 0.0, y: 0.0, w, h: HEADER * u };
-        let footer = R { x: 0.0, y: (h - FOOTER * u).max(header.h), w, h: FOOTER * u };
+        // with the soft keyboard up the tabs go (a phone held sideways keeps only a strip), and the header too when
+        // what is left is too short for it and the message box
+        let keyboard = st.insets.ime > 0.0;
+        let hh = if keyboard && h < 260.0 * u { 0.0 } else { HEADER * u };
+        let fh = if keyboard { 0.0 } else { FOOTER * u };
+        let header = R { x: 0.0, y: 0.0, w, h: hh };
+        let footer = R { x: 0.0, y: (h - fh).max(header.h), w, h: fh };
         let content = R { x: 0.0, y: header.h, w, h: (footer.y - header.h).max(0.0) };
         let pick = |v: View| if st.sidebar.view == v { content } else { NONE };
         return Frame { mobile: true, users: pick(View::Users), chat: pick(View::Chat), main: content, main_shown: st.sidebar.view == View::Main, header, footer, content, ..none };
@@ -121,12 +126,16 @@ struct NavLayout {
 fn nav_layout(st: &State, f: &Frame) -> NavLayout {
     let u = st.ui;
     if f.mobile {
+        if empty(&f.header) && empty(&f.footer) {
+            return NavLayout { gear: NONE, away: NONE, views: vec![] };
+        }
         let s = 36.0 * u;
         let gear = R { x: f.header.w - s - 6.0 * u, y: f.header.y + (f.header.h - s) / 2.0, w: s, h: s };
         let a = 28.0 * u;
         let away = R { x: 10.0 * u, y: f.header.y + (f.header.h - a) / 2.0, w: a, h: a };
         let bw = f.footer.w / 3.0;
-        let views = [View::Users, View::Main, View::Chat].into_iter().enumerate().map(|(i, v)| (v, R { x: i as f32 * bw, y: f.footer.y, w: bw, h: f.footer.h })).collect();
+        let views = if empty(&f.footer) { vec![] } else { [View::Users, View::Main, View::Chat].into_iter().enumerate().map(|(i, v)| (v, R { x: i as f32 * bw, y: f.footer.y, w: bw, h: f.footer.h })).collect() };
+        let (gear, away) = if empty(&f.header) { (NONE, NONE) } else { (gear, away) };
         return NavLayout { gear, away, views };
     }
     if empty(&f.nav) {
@@ -264,11 +273,16 @@ pub fn draw_nav(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     let u = st.ui;
     let l = nav_layout(st, &f);
     if f.mobile {
-        fill(pm, &f.header, 0.0, SURFACE, 255);
-        fill(pm, &R { y: f.header.y + f.header.h - 1.0, h: 1.0, ..f.header }, 0.0, LINE, 255);
-        text.draw(pm, "SoWorker", f.header.w / 2.0, f.header.y + f.header.h / 2.0 + 5.5 * u, 16.0 * u, INK, 0.5);
-        gear(st, pm, &l.gear);
-        away(st, pm, &l.away);
+        if !empty(&f.header) {
+            fill(pm, &f.header, 0.0, SURFACE, 255);
+            fill(pm, &R { y: f.header.y + f.header.h - 1.0, h: 1.0, ..f.header }, 0.0, LINE, 255);
+            text.draw(pm, "SoWorker", f.header.w / 2.0, f.header.y + f.header.h / 2.0 + 5.5 * u, 16.0 * u, INK, 0.5);
+            gear(st, pm, &l.gear);
+            away(st, pm, &l.away);
+        }
+        if empty(&f.footer) {
+            return;
+        }
         fill(pm, &f.footer, 0.0, SURFACE, 255);
         fill(pm, &R { h: 1.0, ..f.footer }, 0.0, LINE, 255);
         let unread = st.unread_total();
@@ -422,5 +436,28 @@ mod tests {
         }
         st.toggle_profile();
         shot(&mut st, &mut text, 360, 700, "mobile-settings");
+        st.profile = None;
+        st.pair_code = Some((code_for_shots(), f64::MAX));
+        shot(&mut st, &mut text, 1000, 700, "desktop-pair-code");
+    }
+
+    fn code_for_shots() -> String {
+        let p = crate::pairing::Pairing { api_key: "AIza".repeat(10), refresh_token: "AMf-".repeat(70), group: "g1".into(), alias: "office".into() };
+        crate::pairing::encode(&p, 1_000_000)
+    }
+
+    /// The sign-in code as drawn in the window reads back with a QR reader (as the phone's camera would).
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn the_drawn_phone_code_scans() {
+        let mut st = state();
+        st.ui = 1.0;
+        let code = code_for_shots();
+        st.pair_code = Some((code.clone(), f64::MAX));
+        let (w, h) = (1000u32, 700u32);
+        let mut pm = tiny_skia::Pixmap::new(w, h).unwrap();
+        crate::gui::render::draw(&st, &mut pm.as_mut(), &mut Text::new(), &mut crate::gui::render::MapCache::default());
+        let luma: Vec<u8> = pm.data().chunks_exact(4).map(|p| ((p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10) as u8).collect();
+        assert_eq!(crate::pairing::read_qr(&luma, w as usize, h as usize).as_deref(), Some(code.as_str()));
     }
 }

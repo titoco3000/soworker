@@ -19,8 +19,11 @@ pub enum Kind {
 impl Kind {
     #[cfg(windows)]
     pub const ALL: [Kind; 4] = [Kind::Output, Kind::Input, Kind::Camera, Kind::Screen];
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "android")))]
     pub const ALL: [Kind; 3] = [Kind::Output, Kind::Input, Kind::Camera];
+    /// A phone: where the call's sound goes (the microphone follows it), and which camera.
+    #[cfg(target_os = "android")]
+    pub const ALL: [Kind; 2] = [Kind::Output, Kind::Camera];
 
     fn key(self) -> &'static str {
         match self {
@@ -33,6 +36,7 @@ impl Kind {
 
     pub fn label(self) -> &'static str {
         match self {
+            Kind::Output if cfg!(target_os = "android") => "Audio output",
             Kind::Output => "Speaker",
             Kind::Input => "Microphone",
             Kind::Camera => "Camera",
@@ -120,7 +124,44 @@ pub fn choose(k: Kind, id: Option<String>) {
     if let Ok(mut g) = CHOICE.write() {
         *g = Some(c);
     }
+    #[cfg(all(target_os = "android", feature = "gui"))]
+    if k == Kind::Output {
+        crate::android::set_audio_route(id.as_deref().unwrap_or("auto"));
+    }
     crate::calls::save_setting(k.key(), id.map_or(serde_json::Value::Null, Into::into));
+}
+
+/// Android: the outputs the phone has now (`Native.audioRoutes`); no choice = automatic (Bluetooth, else a wired
+/// headset, else the speaker).
+#[cfg(target_os = "android")]
+fn outputs() -> Vec<Device> {
+    #[cfg(feature = "gui")]
+    let routes = crate::android::audio_routes();
+    #[cfg(not(feature = "gui"))]
+    let routes: Vec<String> = vec![];
+    routes
+        .into_iter()
+        .map(|id| {
+            let name = match id.as_str() {
+                "speaker" => "Speaker",
+                "earpiece" => "Phone earpiece",
+                "headset" => "Wired headset",
+                "bluetooth" => "Bluetooth",
+                other => other,
+            };
+            Device { name: name.into(), id }
+        })
+        .collect()
+}
+
+#[cfg(target_os = "android")]
+fn inputs() -> Vec<Device> {
+    vec![]
+}
+
+#[cfg(target_os = "android")]
+fn cameras() -> Vec<Device> {
+    vec![Device { id: "back".into(), name: "Back camera".into() }] // no choice = the front one
 }
 
 /// Everything that is plugged in right now. Asks the sound server and the kernel, so it takes a moment: call it when
@@ -150,14 +191,14 @@ fn screens() -> Vec<Device> {
 }
 
 /// Speakers and microphones as PulseAudio / PipeWire (`pactl`) sees them; the monitors of outputs are left out.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn pulse(what: &str) -> Vec<Device> {
     use std::process::{Command, Stdio};
     let Ok(out) = Command::new("pactl").args(["-f", "json", "list", what]).stdin(Stdio::null()).stderr(Stdio::null()).output() else { return vec![] };
     parse_pulse(&out.stdout)
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(any(windows, target_os = "android"), allow(dead_code))]
 fn parse_pulse(json: &[u8]) -> Vec<Device> {
     let v: serde_json::Value = serde_json::from_slice(json).unwrap_or_default();
     v.as_array()
@@ -174,18 +215,18 @@ fn parse_pulse(json: &[u8]) -> Vec<Device> {
         .collect()
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn outputs() -> Vec<Device> {
     pulse("sinks")
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn inputs() -> Vec<Device> {
     pulse("sources")
 }
 
 /// Video capture devices. A camera usually has two nodes (pictures and metadata); only the first (`index` 0) is listed.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn cameras() -> Vec<Device> {
     let Ok(dir) = std::fs::read_dir("/sys/class/video4linux") else { return vec![] };
     let mut found: Vec<(u32, Device)> = dir
@@ -270,6 +311,10 @@ pub struct Capture {
 impl Capture {
     pub fn open(device: Option<&str>) -> Result<Self, String> {
         use std::process::{Command, Stdio};
+        if cfg!(target_os = "android") {
+            // WebRTC records the phone's microphone itself; there is no sound server to read it from
+            return Err("no own microphone capture on Android".into());
+        }
         let parec_dev = device.map(|d| format!("--device={d}"));
         let mut parec = vec!["--raw", "--format=s16le", "--rate=48000", "--channels=1", "--latency-msec=20", "--client-name=SoWorker", "--stream-name=Microphone"];
         parec.extend(parec_dev.as_deref());
@@ -424,6 +469,9 @@ impl Meter {
     /// Starts measuring `device` (None = the default microphone). None where this build cannot capture audio itself.
     pub fn start(device: Option<String>) -> Option<Meter> {
         let (level, stop) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicBool::new(false)));
+        if cfg!(target_os = "android") {
+            return None; // no own capture to measure (see Capture::open)
+        }
         #[cfg(any(not(windows), feature = "calls"))]
         {
             let (lv, st) = (level.clone(), stop.clone());

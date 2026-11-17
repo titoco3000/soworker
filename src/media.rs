@@ -2,7 +2,7 @@
 //! audio through the SDK's platform audio (playout, and mic capture + echo cancellation unless noise cancellation is on:
 //! then the mic goes through our own path in `mic.rs`),
 //! remote video decoded by libwebrtc and delivered as small RGBA frames.
-use crate::calls::{ask_to_mute_payload, ask_to_mute_target, hand_raised, participant_meta, raise_hand_payload, raise_hand_signal, MediaCmd, MediaEvent, ASK_TO_MUTE, RAISE_HAND};
+use crate::calls::{VideoPolicy, ask_to_mute_payload, ask_to_mute_target, hand_raised, participant_meta, raise_hand_payload, raise_hand_signal, MediaCmd, MediaEvent, ASK_TO_MUTE, RAISE_HAND};
 use crate::mic;
 use crate::record::{Recorder, Tap};
 use futures_util::StreamExt;
@@ -14,10 +14,12 @@ use livekit::webrtc::audio_source::AudioSourceOptions;
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
 use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
+#[cfg(not(target_os = "android"))]
 use livekit::webrtc::native::yuv_helper;
 use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer, VideoFormatType, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
+#[cfg(not(target_os = "android"))]
 use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
 use std::sync::atomic::{AtomicBool, Ordering};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
@@ -76,6 +78,8 @@ struct Session {
     mic_tap: Option<tokio::task::JoinHandle<()>>,
     /// Our second capture of the microphone, for the recording only, while recording with noise cancellation off.
     rec_mic: Option<mic::Mic>,
+    /// Which video may flow (low-data mode): remote tracks are subscribed to by hand, following it.
+    policy: VideoPolicy,
 }
 
 pub fn spawn(emit: impl Fn(MediaEvent) + Send + Sync + 'static) -> UnboundedSender<MediaCmd> {
@@ -94,6 +98,7 @@ pub fn spawn(emit: impl Fn(MediaEvent) + Send + Sync + 'static) -> UnboundedSend
 async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
     let mut session: Option<Session> = None;
     let mut nc = false;
+    let mut policy = VideoPolicy::default();
     loop {
         tokio::select! {
             cmd = rx.recv() => {
@@ -102,7 +107,7 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                     MediaCmd::Join { url, token, room_id, portrait } => {
                         if session.as_ref().is_some_and(|s| s.room_id == room_id) { continue; }
                         if let Some(s) = session.take() { close(s, &emit).await; }
-                        match join(&url, &token, room_id, portrait, nc, &emit).await {
+                        match join(&url, &token, room_id, portrait, nc, policy, &emit).await {
                             Ok(s) => session = Some(s),
                             Err(e) => { emit(MediaEvent::Error(format!("call failed: {e}"))); emit(MediaEvent::Left); }
                         }
@@ -128,6 +133,10 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                         publish_meta(s).await;
                     },
                     MediaCmd::Record(title) => if let Some(s) = session.as_mut() { set_record(s, title, &emit); },
+                    MediaCmd::VideoPolicy(p) => {
+                        policy = p;
+                        if let Some(s) = session.as_mut() { set_policy(s, p, &emit).await; }
+                    }
                 }
             }
             ev = async { match session.as_mut() { Some(s) => s.events.recv().await, None => std::future::pending().await } } => {
@@ -144,9 +153,11 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
     }
 }
 
-async fn join(url: &str, token: &str, room_id: String, portrait: Option<String>, nc: bool, emit: &Emit) -> Result<Session, String> {
+async fn join(url: &str, token: &str, room_id: String, portrait: Option<String>, nc: bool, policy: VideoPolicy, emit: &Emit) -> Result<Session, String> {
     let mut opts = RoomOptions::default();
-    opts.auto_subscribe = true;
+    // we subscribe ourselves, following the video policy (`subscribe_wanted`): no video arrives that low-data mode
+    // would drop again at once
+    opts.auto_subscribe = false;
     opts.adaptive_stream = true;
     opts.dynacast = true;
     let (room, events) = Room::connect(url, token, opts).await.map_err(|e| e.to_string())?;
@@ -184,7 +195,9 @@ async fn join(url: &str, token: &str, room_id: String, portrait: Option<String>,
         rec: None,
         mic_tap: None,
         rec_mic: None,
+        policy,
     };
+    subscribe_wanted(&s.room, policy);
     apply_devices(&mut s, emit).await;
     // creating the platform audio switched libwebrtc's own mic capture on; with noise cancellation we capture instead
     set_adm_recording(!nc);
@@ -193,6 +206,33 @@ async fn join(url: &str, token: &str, room_id: String, portrait: Option<String>,
     emit_peers(&s.room, &s.tap, emit);
     publish_meta(&s).await; // the official client announces its portrait (and a lowered hand) right after joining
     Ok(s)
+}
+
+/// Whether a remote publication is wanted under the policy (audio always is).
+fn wanted(p: &RemoteTrackPublication, policy: VideoPolicy) -> bool {
+    policy.wants(p.kind() == TrackKind::Video, p.source() == TrackSource::Screenshare)
+}
+
+/// Subscribe to every remote track the policy wants and unsubscribe from the rest. An unsubscribe fires
+/// `TrackUnsubscribed`, which drops the tile (`VideoGone`), so no frozen frame stays on screen.
+fn subscribe_wanted(room: &Room, policy: VideoPolicy) {
+    for p in room.remote_participants().values() {
+        for publication in p.track_publications().values() {
+            let want = wanted(publication, policy);
+            if publication.is_desired() != want {
+                publication.set_subscribed(want);
+            }
+        }
+    }
+}
+
+/// A new video policy during a call: our camera goes off if it may not send, and subscriptions follow.
+async fn set_policy(s: &mut Session, p: VideoPolicy, emit: &Emit) {
+    s.policy = p;
+    if !p.send_camera {
+        set_camera(s, false, emit).await;
+    }
+    subscribe_wanted(&s.room, p);
 }
 
 /// Whether libwebrtc may open the microphone itself (the platform audio's capture). Off while we capture.
@@ -291,7 +331,8 @@ fn pick(devices: impl Iterator<Item = (String, String)>, want: Option<&str>, kin
 async fn apply_devices(s: &mut Session, emit: &Emit) {
     use crate::devices::Kind;
     let want = crate::devices::chosen();
-    if let Some(audio) = &s.audio {
+    // Android routes the call's sound itself (Native.setAudioRoute, from the profile panel's choice)
+    if let Some(audio) = s.audio.as_ref().filter(|_| !cfg!(target_os = "android")) {
         if want.output != s.devices.output {
             match pick(audio.playout_devices().map(|d| (d.id.as_str().to_string(), d.name)), want.get(Kind::Output), Kind::Output) {
                 Some(id) => match audio.switch_playout_device(&PlayoutDeviceId::from_unchecked_guid(&id)) {
@@ -500,6 +541,11 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
                 emit(MediaEvent::HandSetBy { from: from.identity().to_string(), raised });
             }
         }
+        RoomEvent::TrackPublished { publication, .. } => {
+            if wanted(&publication, s.policy) {
+                publication.set_subscribed(true);
+            }
+        }
         RoomEvent::ActiveSpeakersChanged { speakers } => {
             let ids: Vec<String> = speakers.iter().map(|p| p.identity().to_string()).collect();
             let me = s.room.local_participant().identity().to_string();
@@ -627,7 +673,7 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
 }
 
 
-// ---- camera: V4L2 (YUYV) on Linux, Media Foundation (NV12, YUYV or MJPEG) on Windows -> I420 -> NativeVideoSource,
+// ---- camera: V4L2 (YUYV) on Linux, Media Foundation (NV12, YUYV or MJPEG) on Windows, Camera2 on Android -> I420 -> NativeVideoSource,
 // published as the camera track
 
 fn now_us() -> i64 {
@@ -635,6 +681,7 @@ fn now_us() -> i64 {
 }
 
 /// Packed YUYV 4:2:2 to planar I420 (chroma averaged over row pairs).
+#[cfg(not(target_os = "android"))]
 fn yuyv_to_i420(src: &[u8], w: usize, h: usize, dst: &mut I420Buffer) {
     let (sy, su, sv) = dst.strides();
     let (dy, du, dv) = dst.data_mut();
@@ -663,6 +710,88 @@ fn thumbnail(buf: &mut I420Buffer, max_w: u32) -> (u32, u32, Vec<u8>) {
     let mut rgba = vec![0u8; (w * h * 4) as usize];
     scaled.to_argb(VideoFormatType::ABGR, &mut rgba, w * 4, w as i32, h as i32);
     (w, h, rgba)
+}
+
+/// How far to turn the sensor's picture (clockwise, degrees) so that it is upright on a phone whose screen is turned
+/// `display` degrees (Display.getRotation × 90). Front cameras are not mirrored here: others see us as we are.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn upright(sensor: u32, display: u32, front: bool) -> u32 {
+    if front {
+        (sensor + display) % 360
+    } else {
+        (sensor + 360 - display % 360) % 360
+    }
+}
+
+/// One plane of a picture (`row` bytes per line, `px` bytes per sample: 2 for Android's interleaved chroma), turned
+/// `rot` degrees clockwise into `dst` (`drow` bytes per line). The turned plane is `h` x `w` for 90 and 270.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rotate_plane(src: &[u8], row: usize, px: usize, w: usize, h: usize, rot: u32, dst: &mut [u8], drow: usize) {
+    let (dw, dh) = if rot % 180 == 90 { (h, w) } else { (w, h) };
+    for dy in 0..dh {
+        let line = &mut dst[dy * drow..dy * drow + dw];
+        for (dx, d) in line.iter_mut().enumerate() {
+            let (sx, sy) = match rot {
+                90 => (dy, h - 1 - dx),
+                180 => (w - 1 - dx, h - 1 - dy),
+                270 => (w - 1 - dy, dx),
+                _ => (dx, dy),
+            };
+            *d = src.get(sy * row + sx * px).copied().unwrap_or(0);
+        }
+    }
+}
+
+/// The phone camera (NDK Camera2): the chosen one (front unless "back"), turned upright for how the phone is held.
+#[cfg(target_os = "android")]
+fn camera_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, tap: Arc<Tap>, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
+    let front = crate::devices::chosen().camera.as_deref() != Some("back");
+    let mut cam = match crate::android_camera::Camera::open(front, 640, 480) {
+        Ok(c) => c,
+        Err(e) => return drop(ready.send(Err(e))),
+    };
+    let _ = ready.send(Ok(()));
+    let display = || {
+        #[cfg(feature = "gui")]
+        return crate::android::display_rotation();
+        #[cfg(not(feature = "gui"))]
+        0
+    };
+    let (mut rot, mut rot_at) = (upright(cam.sensor, display(), cam.front), Instant::now());
+    let mut last_preview = Instant::now() - Duration::from_secs(1);
+    while !stop.load(Ordering::Relaxed) && !cam.lost() {
+        if rot_at.elapsed() >= Duration::from_secs(1) {
+            (rot, rot_at) = (upright(cam.sensor, display(), cam.front), Instant::now()); // the phone may have turned
+        }
+        let frame = cam.latest(|p| {
+            let (w, h) = if rot % 180 == 90 { (p.h, p.w) } else { (p.w, p.h) };
+            let mut i420 = I420Buffer::new(w as u32, h as u32);
+            let (sy, su, sv) = i420.strides();
+            let (dy, du, dv) = i420.data_mut();
+            rotate_plane(p.y, p.y_row, 1, p.w, p.h, rot, dy, sy as usize);
+            rotate_plane(p.u, p.uv_row, p.uv_pixel, p.w / 2, p.h / 2, rot, du, su as usize);
+            rotate_plane(p.v, p.uv_row, p.uv_pixel, p.w / 2, p.h / 2, rot, dv, sv as usize);
+            i420
+        });
+        let Some(mut i420) = frame else {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        };
+        if last_preview.elapsed() >= Duration::from_millis(25) {
+            last_preview = Instant::now();
+            let (pw, ph, rgba) = if crate::calls::wants_video("me") { thumbnail(&mut i420, 480) } else { (0, 0, vec![]) };
+            emit(MediaEvent::Video { key: "me".into(), name: "you".into(), w: pw, h: ph, rgba });
+        }
+        if tap.wants_pic("me") {
+            tap.pic("me", &mut i420, false);
+        }
+        source.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: now_us(), frame_metadata: None, buffer: i420 });
+    }
+    if cam.lost() {
+        emit(MediaEvent::Error("the camera was taken by another app".into()));
+        emit(MediaEvent::CameraState(false));
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -794,6 +923,7 @@ fn frame_to_i420(fmt: nokhwa::utils::FrameFormat, data: &[u8], w: usize, h: usiz
 }
 
 async fn set_camera(s: &mut Session, on: bool, emit: &Emit) {
+    let on = on && s.policy.send_camera; // low-data mode: the camera stays off
     let running = s.cam.as_ref().is_some_and(|c| c.run.as_ref().is_some_and(|(stop, _)| !stop.load(Ordering::Relaxed)));
     if on && !running {
         let source = s.cam.as_ref().map_or_else(|| NativeVideoSource::new(VideoResolution { width: 640, height: 480 }, false), |c| c.source.clone());
@@ -863,6 +993,13 @@ async fn announce_share(s: &Session, start: bool, sid: Option<&TrackSid>) {
     let _ = lp.publish_data(DataPacket { payload, topic: Some("screenshare".into()), reliable: true, ..Default::default() }).await;
 }
 
+/// Android has no desktop capturer (sharing would need MediaProjection): the share button is hidden there.
+#[cfg(target_os = "android")]
+fn screen_thread(_source: NativeVideoSource, _stop: Arc<AtomicBool>, _emit: Emit, _tap: Arc<Tap>, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
+    let _ = ready.send(Err("screen sharing is not available on Android".into()));
+}
+
+#[cfg(not(target_os = "android"))]
 fn screen_thread(source: NativeVideoSource, stop: Arc<AtomicBool>, emit: Emit, tap: Arc<Tap>, ready: tokio::sync::oneshot::Sender<Result<(), String>>) {
     // Linux: the portal (or X11) lets the user pick. Windows has no picker: share the screen chosen in the profile, else the first.
     #[cfg(not(windows))]
@@ -974,4 +1111,39 @@ async fn set_share(s: &mut Session, on: bool, emit: &Emit) {
         }
     }
     emit(MediaEvent::ShareState(s.share.is_some()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_plane_turns_the_right_way() {
+        // 3 x 2, with a padded row stride of 4
+        let src = [1, 2, 3, 0, 4, 5, 6, 0];
+        let turn = |rot| {
+            let mut dst = [0u8; 6];
+            let drow = if rot % 180 == 90 { 2 } else { 3 };
+            rotate_plane(&src, 4, 1, 3, 2, rot, &mut dst, drow);
+            dst
+        };
+        assert_eq!(turn(0), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(turn(90), [4, 1, 5, 2, 6, 3], "clockwise: the left column becomes the top row");
+        assert_eq!(turn(180), [6, 5, 4, 3, 2, 1]);
+        assert_eq!(turn(270), [3, 6, 2, 5, 1, 4]);
+        // interleaved chroma (pixel stride 2): every other byte
+        let mut dst = [0u8; 2];
+        rotate_plane(&[7, 9, 8, 9], 4, 2, 2, 1, 0, &mut dst, 2);
+        assert_eq!(dst, [7, 8]);
+    }
+
+    #[test]
+    fn the_camera_picture_is_turned_upright() {
+        // a typical phone: back sensor at 90°, front at 270°
+        assert_eq!(upright(90, 0, false), 90, "held upright, the back camera's picture turns a quarter clockwise");
+        assert_eq!(upright(90, 90, false), 0, "turned left, it is already upright");
+        assert_eq!(upright(270, 0, true), 270);
+        assert_eq!(upright(270, 90, true), 0);
+        assert_eq!(upright(270, 270, true), 180);
+    }
 }
