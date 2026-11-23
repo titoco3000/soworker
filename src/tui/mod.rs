@@ -518,6 +518,13 @@ impl Tui {
                 self.modal = Modal::Logout;
             }
             (KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('t'), Line::Device(crate::devices::Kind::Output)) => self.st.profile_act(Act::TestSound, now),
+            (KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l'), Line::Noise) => {
+                let step = if matches!(k.code, KeyCode::Left | KeyCode::Char('h')) { -0.05 } else { 0.05 };
+                let s = ((self.st.noise_strength + step) * 20.0).round() / 20.0;
+                self.st.profile_act(Act::Strength(s.clamp(0.0, 1.0)), now);
+                self.st.end_slide(); // a key press is a whole change: save it
+            }
+            (KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('t'), Line::Noise) => self.st.profile_act(Act::TestMic, now),
             (KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' '), Line::Device(kind)) => {
                 let id = p.cycle(kind, !matches!(k.code, KeyCode::Left | KeyCode::Char('h')));
                 self.st.profile_act(Act::Pick(kind, id), now);
@@ -971,7 +978,7 @@ mod tests {
     #[test]
     fn the_profile_dialog_leads_to_the_logout_question() {
         let mut t = Tui::for_test();
-        t.st.profile = Some(crate::profile::Profile { devices: Default::default(), chosen: Default::default(), open: None, meter: None, sel: 1, photo_hover: false, scroll: 0.0 });
+        t.st.profile = Some(crate::profile::Profile::with(Default::default()));
         t.modal = Modal::Profile;
         t.key(press(KeyCode::Up));
         assert_eq!(t.st.profile.as_ref().unwrap().sel, 0, "the first line is Log out");

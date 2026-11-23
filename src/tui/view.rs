@@ -710,9 +710,36 @@ fn profile(f: &mut Frame, t: &Tui, r: Rect) {
         }
         lines.push(Line::from(v));
     }
+    lines.push(noise_line(st, p, on(L::Noise), label_w, field));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(fit(&format!("  {}", profile_hint(p.sel)), w), Style::new().fg(DIM))));
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Noise cancellation: the strength as a bar between arrows (or "off"), then the microphone test.
+fn noise_line(st: &crate::app::State, p: &crate::profile::Profile, picked: bool, label_w: usize, field: usize) -> Line<'static> {
+    use crate::calls::MicTest;
+    let s = st.noise_strength;
+    let word = if st.noise_cancel { crate::calls::noise_strength_label(s) } else { "off" };
+    let bar_w = field.saturating_sub(4 + 1 + word.len()).clamp(4, 12);
+    let lit = (s * bar_w as f32).round() as usize;
+    let inner = format!("{}{} {word}", "█".repeat(lit), "░".repeat(bar_w - lit));
+    let dev = format!("‹ {} ›", fit(&inner, field.saturating_sub(4)));
+    let pad = field.saturating_sub(dev.width());
+    let (test, busy) = match p.mic_test() {
+        Some(MicTest::Preparing) => ("starting…".to_string(), true),
+        Some(MicTest::Recording(n)) => (format!("talk… {n}"), true),
+        Some(MicTest::Playing) => ("playing…".to_string(), true),
+        Some(MicTest::Failed) => ("test failed".to_string(), false),
+        _ => ("t: test mic".to_string(), false),
+    };
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{:<label_w$}", "Noise cancel"), Style::new().fg(MUTED)),
+        Span::styled(dev, if picked { Style::new().fg(Color::Black).bg(BRAND) } else { Style::new().fg(if st.noise_cancel { Color::White } else { DIM }) }),
+        Span::raw(" ".repeat(pad + 1)),
+        Span::styled(test, Style::new().fg(if busy || picked { BRAND } else { DIM })),
+    ])
 }
 
 /// The profile dialog's keys for the selected line: Enter logs out on Log out, plays a sound on the speaker, and is not shown elsewhere.
@@ -722,6 +749,7 @@ fn profile_hint(sel: usize) -> &'static str {
     match LINES.get(sel) {
         Some(L::Logout) => "↑↓ select · Enter log out · Esc close",
         Some(L::Device(Kind::Output)) => "↑↓ select · ←→ change · Enter play sound · Esc close",
+        Some(L::Noise) => "↑↓ select · ←→ strength · Enter record and play back · Esc close",
         _ => "↑↓ select · ←→ change · Esc close",
     }
 }
@@ -827,10 +855,10 @@ mod tests {
         use crate::devices::{Device, Devices};
         let mut t = tui();
         let devices = Devices { outputs: vec![Device { id: "sink.a".into(), name: "Speakers".into() }], ..Default::default() };
-        t.st.profile = Some(crate::profile::Profile { devices, chosen: Default::default(), open: None, meter: None, sel: 1, photo_hover: false, scroll: 0.0 });
+        t.st.profile = Some(crate::profile::Profile::with(devices));
         t.modal = Modal::Profile;
         let s = render(&t, 100, 30);
-        for want in ["Profile", "Me", "Log out", "Settings", "Speaker", "System default", "Microphone", "Camera", "play sound", "no meter"] {
+        for want in ["Profile", "Me", "Log out", "Settings", "Speaker", "System default", "Microphone", "Camera", "play sound", "no meter", "Noise cancel", "test mic"] {
             assert!(s.contains(want), "{want}\n{s}");
         }
     }

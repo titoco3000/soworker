@@ -193,6 +193,8 @@ pub struct State {
     pub media_out: Vec<MediaCmd>,
     /// Noise cancellation on the microphone (the `noiseCancellation` setting); the media thread is told at start.
     pub noise_cancel: bool,
+    /// How hard noise cancellation works, 0..=1 (the `noiseStrength` setting).
+    pub noise_strength: f32,
     /// Low-data mode as the user set it (the `lowDataMode` setting): no camera sent, none received.
     pub low_data_user: bool,
     /// The window is on screen (Android: between `resumed` and `suspended`). Not visible forces low-data mode.
@@ -251,6 +253,8 @@ pub struct State {
 impl State {
     pub fn new(me_id: &str, dry: bool) -> Self {
         let noise_cancel = crate::calls::noise_cancel_setting();
+        let noise_strength = crate::calls::noise_strength_setting();
+        crate::calls::set_noise_strength(noise_strength);
         let low_data_user = crate::calls::low_data_setting();
         let policy = Self::policy_for(low_data_user, true);
         State {
@@ -290,6 +294,7 @@ impl State {
             outbox: vec![],
             media_out: vec![MediaCmd::NoiseCancel(noise_cancel), MediaCmd::VideoPolicy(policy)],
             noise_cancel,
+            noise_strength,
             low_data_user,
             visible: true,
             locked: false,
@@ -829,6 +834,14 @@ impl State {
         self.dirty = true;
     }
 
+    /// The noise cancellation slider was let go: remember where.
+    pub fn end_slide(&mut self) {
+        if let Some(p) = self.profile.as_mut().filter(|p| p.sliding) {
+            p.sliding = false;
+            crate::calls::save_noise_strength(self.noise_strength);
+        }
+    }
+
     /// Something in the profile panel was clicked or chosen.
     pub fn profile_act(&mut self, act: crate::profile::Act, now: f64) {
         use crate::devices::{self, Kind};
@@ -858,6 +871,19 @@ impl State {
                 }
             }
             Act::TestSound => self.sounds.push(crate::sound::Sound::ReceiveWave),
+            Act::Strength(s) => {
+                p.sliding = true; // until the button is let go (`end_slide`)
+                self.noise_strength = s;
+                crate::calls::set_noise_strength(s);
+                if !self.noise_cancel {
+                    self.toggle_noise_cancel(now); // setting a strength means wanting it
+                }
+            }
+            Act::TestMic => {
+                if !p.testing() {
+                    p.mic_test = crate::calls::start_mic_test(self.noise_cancel);
+                }
+            }
             Act::LowData => {} // handled above
             Act::ChangePhoto => {
                 p.photo_hover = false;

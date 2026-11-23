@@ -1,7 +1,8 @@
 //! The settings panel, over everything else: a card that opens above the gear in the sidebar's nav (or fills the space
 //! between header and footer of a narrow window). A big user icon and the name, log out and terminal buttons, then
 //! the devices: speaker (with a test sound), microphone (with a level meter) and camera, each a
-//! drop-down list of the devices that are plugged in.
+//! drop-down list of the devices that are plugged in, low-data mode, and the noise cancellation strength (a slider,
+//! with a button that records you and plays it back).
 use crate::app::State;
 use crate::devices::Kind;
 use crate::gui::icons;
@@ -24,6 +25,8 @@ const ROW: f32 = 58.0;
 /// The last row has no gap under it.
 const ROW_LAST: f32 = ROW - 10.0;
 const OPT_H: f32 = 28.0;
+/// The noise cancellation row (not on a phone: it has no capture of ours, see `media::own_capture`).
+const NOISE_ROW: bool = !cfg!(target_os = "android");
 
 pub struct Layout {
     pub card: R,
@@ -40,13 +43,17 @@ pub struct Layout {
     pub pair: R,
     /// The low-data mode switch, under the device lists.
     pub low: R,
+    /// The noise cancellation slider (its whole hit box) and the test button beside it (empty on a phone).
+    pub noise: R,
+    pub mic_test: R,
     /// The open list: its box and each choice in it.
     pub options: Option<(R, Vec<(Option<String>, String, R)>)>,
 }
 
 pub fn layout(st: &State, p: &Profile, w: f32, h: f32) -> Layout {
     let u = st.ui;
-    let ch = (PAD + AVATAR + 16.0 + CTRL_H + 16.0 + 36.0 + Kind::ALL.len() as f32 * ROW + ROW_LAST + PAD) * u;
+    let rows = Kind::ALL.len() + 1 + NOISE_ROW as usize; // the devices, low data, noise cancellation
+    let ch = (PAD + AVATAR + 16.0 + CTRL_H + 16.0 + 36.0 + (rows - 1) as f32 * ROW + ROW_LAST + PAD) * u;
     let f = panels::frame(st, w, h);
     let card = if f.mobile {
         R { y: f.content.y - p.scroll.clamp(0.0, (ch - f.content.h).max(0.0)), h: f.content.h.max(ch), ..f.content }
@@ -79,7 +86,27 @@ pub fn layout(st: &State, p: &Profile, w: f32, h: f32) -> Layout {
         (R { x: b.x, y: y0, w: b.w, h: total }, rects)
     });
     let low = R { x, y: row(Kind::ALL.len()), w: inner, h: CTRL_H * u };
-    Layout { card, avatar, logout, term, divider, lists, test: side(0), meter: if cfg!(target_os = "android") { R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 } } else { side(1) }, pair, low, options }
+    let none = R { x: -1.0, y: -1.0, w: 0.0, h: 0.0 };
+    let (noise, mic_test) = if NOISE_ROW { (R { x, y: row(Kind::ALL.len() + 1), w: narrow, h: CTRL_H * u }, side(Kind::ALL.len() + 1)) } else { (none, none) };
+    Layout { card, avatar, logout, term, divider, lists, test: side(0), meter: if cfg!(target_os = "android") { none } else { side(1) }, pair, low, noise, mic_test, options }
+}
+
+/// The slider's track inside its hit box: inset so the knob stays inside at both ends.
+fn track(l: &Layout, u: f32) -> (f32, f32) {
+    let inset = 10.0 * u;
+    (l.noise.x + inset, l.noise.w - 2.0 * inset)
+}
+
+/// The strength under a pointer at `px` (clamped to the track).
+fn strength_at(l: &Layout, px: f32, u: f32) -> f32 {
+    let (x, w) = track(l, u);
+    ((px - x) / w.max(1.0)).clamp(0.0, 1.0)
+}
+
+/// While the slider is dragged: the strength at the pointer.
+pub fn slide(st: &State, px: f32, w: f32, h: f32) -> Option<f32> {
+    let p = st.profile.as_ref().filter(|p| p.sliding)?;
+    Some(strength_at(&layout(st, p, w, h), px, st.ui))
 }
 
 /// Phone layout: scroll the panel by `dy` pixels (positive = towards the top). False when it is not open there.
@@ -126,6 +153,12 @@ pub fn hit(st: &State, px: f32, py: f32, w: f32, h: f32) -> Option<Act> {
     }
     if l.low.contains(px, py) {
         return Some(Act::LowData);
+    }
+    if !panels::empty(&l.noise) && l.noise.contains(px, py) {
+        return Some(Act::Strength(strength_at(&l, px, st.ui)));
+    }
+    if !panels::empty(&l.mic_test) && l.mic_test.contains(px, py) {
+        return Some(Act::TestMic);
     }
     if !panels::empty(&l.pair) && l.pair.contains(px, py) {
         return Some(Act::PairPhone);
@@ -229,6 +262,40 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
     let label = fit(text, if on { "On: no camera sent or received" } else { "Off" }, 13.0 * u, l.low.w - 40.0 * u);
     text.draw(pm, &label, l.low.x + 16.0 * u + s, l.low.y + l.low.h / 2.0 + 4.5 * u, 13.0 * u, INK, 0.0);
 
+    // noise cancellation: a slider (dimmed while it is off) and the test beside it
+    if !panels::empty(&l.noise) {
+        let s = st.noise_strength;
+        let label = if st.noise_cancel { format!("Noise cancellation · {}", crate::calls::noise_strength_label(s)) } else { "Noise cancellation · off".into() };
+        text.draw(pm, &label, l.noise.x, l.noise.y - 7.0 * u, 12.0 * u, INK_MUTED, 0.0);
+        let (tx, tw) = track(&l, u);
+        let (ty, th) = (l.noise.y + l.noise.h / 2.0 - 2.0 * u, 4.0 * u);
+        let on = if st.noise_cancel { BRAND } else { INK_FAINT };
+        fill(pm, &R { x: tx, y: ty, w: tw, h: th }, 2.0 * u, MUTED, 255);
+        fill(pm, &R { x: tx, y: ty, w: tw * s, h: th }, 2.0 * u, on, 255);
+        let (kx, ky, kr) = (tx + tw * s, l.noise.y + l.noise.h / 2.0, 8.0 * u);
+        if let Some(c) = PathBuilder::from_circle(kx, ky, kr) {
+            pm.fill_path(&c, &paint(SURFACE[0], SURFACE[1], SURFACE[2], 255), FillRule::Winding, id, None);
+            let stroke = tiny_skia::Stroke { width: 2.0 * u, ..Default::default() };
+            pm.stroke_path(&c, &paint(on[0], on[1], on[2], 255), &stroke, id, None);
+        }
+
+        use crate::calls::MicTest;
+        let (busy, label) = match p.mic_test() {
+            Some(MicTest::Preparing) => (true, "Starting…".to_string()),
+            Some(MicTest::Recording(n)) => (true, format!("Talk… {n}")),
+            Some(MicTest::Playing) => (true, "Playing…".to_string()),
+            Some(MicTest::Failed) => (false, "Test failed".to_string()),
+            _ => (false, "Test mic".to_string()),
+        };
+        outline(pm, &l.mic_test, 6.0 * u, if busy { BRAND } else { LINE });
+        let ic = 15.0 * u;
+        let lw = text.width(&label, 12.0 * u);
+        let x0 = l.mic_test.x + (l.mic_test.w - ic - 6.0 * u - lw) / 2.0;
+        let col = if busy { BRAND } else { INK_MUTED };
+        crate::gui::icon::draw(pm, icons::MIC, x0, l.mic_test.y + (l.mic_test.h - ic) / 2.0, ic, col);
+        text.draw(pm, &label, x0 + ic + 6.0 * u, l.mic_test.y + l.mic_test.h / 2.0 + 4.5 * u, 12.0 * u, col, 0.0);
+    }
+
     // Play sound
     outline(pm, &l.test, 6.0 * u, LINE);
     let s = 15.0 * u;
@@ -276,7 +343,7 @@ pub fn draw(st: &State, pm: &mut PixmapMut<'_>, text: &mut Text) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::{Choice, Device, Devices};
+    use crate::devices::{Device, Devices};
 
     fn state() -> State {
         let mut st = State::new("me", true);
@@ -287,7 +354,7 @@ mod tests {
             cameras: vec![],
             screens: vec![],
         };
-        st.profile = Some(Profile { devices, chosen: Choice::default(), open: None, meter: None, sel: 0, photo_hover: false, scroll: 0.0 });
+        st.profile = Some(Profile { sel: 0, ..Profile::with(devices) });
         st
     }
 

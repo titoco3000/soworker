@@ -206,6 +206,48 @@ pub fn play(s: Sound) {
     });
 }
 
+/// Plays a whole 16-bit WAV file on the chosen speaker and returns when it is done (the microphone test). Linux and
+/// macOS: through a file in the runtime directory, like `play`.
+#[cfg(all(feature = "calls", not(any(windows, target_os = "android"))))]
+pub fn play_wav(wav: &[u8]) {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("soworker");
+    let path = dir.join("mic-test.wav");
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, wav)) {
+        return eprintln!("sound: cannot write {}: {e}", path.display());
+    }
+    let device = crate::devices::chosen().output;
+    let pa_dev = device.as_ref().map(|d| format!("--device={d}"));
+    let (mut pw, mut pa) = (vec![], vec![]);
+    if let (Some(d), Some(pd)) = (&device, &pa_dev) {
+        pw.extend(["--target", d.as_str()]);
+        pa.push(pd.as_str());
+    }
+    let attempts: [(&str, Vec<&str>); 3] = [("pw-play", pw), ("paplay", pa), ("aplay", vec!["-q"])];
+    for (cmd, args) in attempts {
+        if Command::new(cmd).args(args).arg(&path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|st| st.success()) {
+            break;
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(all(feature = "calls", windows))]
+pub fn play_wav(wav: &[u8]) {
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT};
+    if let Some(d) = &crate::devices::chosen().output {
+        match play_on(wav, 1.0, d) {
+            Ok(()) => return,
+            Err(e) => eprintln!("sound: cannot play on {d}: {e}"),
+        }
+    }
+    // SAFETY: as in `play`: a whole WAV file in memory, played synchronously while `wav` is borrowed.
+    unsafe { PlaySoundW(wav.as_ptr().cast(), std::ptr::null_mut(), SND_MEMORY | SND_NODEFAULT) };
+}
+
+/// No own microphone capture on Android, so no test to play.
+#[cfg(all(feature = "calls", target_os = "android"))]
+pub fn play_wav(_: &[u8]) {}
+
 /// Android: the volume is baked into the clip, then Kotlin plays it as a notification sound (it does not duck the
 /// call). Without the window client there is nothing to play it with.
 #[cfg(target_os = "android")]

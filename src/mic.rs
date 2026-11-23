@@ -19,7 +19,7 @@ use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::native::apm::AudioProcessingModule;
 use ndarray::Array2;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 type Emit = Arc<dyn Fn(MediaEvent) + Send + Sync>;
@@ -90,6 +90,36 @@ fn load_model() -> Result<DfTract, String> {
     Ok(m)
 }
 
+/// The noise cancellation strength (0..=1, as f32 bits) every capture follows, changed live from the settings.
+static STRENGTH: AtomicU32 = AtomicU32::new(0);
+
+pub fn set_strength(s: f32) {
+    STRENGTH.store(s.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+}
+
+fn strength() -> f32 {
+    f32::from_bits(STRENGTH.load(Ordering::Relaxed))
+}
+
+/// Keeps the model's attenuation limit on the current strength (cheap to call every frame).
+struct Limit(f32);
+
+impl Limit {
+    fn new() -> Limit {
+        Limit(f32::NAN)
+    }
+
+    fn apply(&mut self, model: &mut DfTract) {
+        let s = strength();
+        if s != self.0 {
+            self.0 = s;
+            let db = crate::calls::noise_limit_db(s);
+            model.set_atten_lim(db);
+            eprintln!("mic: noise cancellation strength {s:.2} ({})", if db >= 100.0 { "no limit".to_string() } else { format!("at most {db:.0} dB") });
+        }
+    }
+}
+
 /// Where a capture's audio goes: published (into the track's source), or only into the recording
 /// (noise cancellation off: libwebrtc captures what is sent itself and gives no copy, so we capture a second time,
 /// with WebRTC's own noise suppression instead of DeepFilterNet).
@@ -151,6 +181,7 @@ fn run(sink: &Sink, denoise: bool, far: &Far, stop: &AtomicBool, want: &AtomicBo
     let mut apm = AudioProcessingModule::new(true, true, true, model.is_none());
     let (mut near, mut rev) = ([0i16; FRAME], [0i16; FRAME]);
     let (mut noisy, mut clean) = (Array2::<f32>::zeros((1, FRAME)), Array2::<f32>::zeros((1, FRAME)));
+    let mut limit = Limit::new();
     while !stop.load(Ordering::Relaxed) {
         if !want.load(Ordering::Relaxed) {
             if cap.take().is_some() {
@@ -185,13 +216,9 @@ fn run(sink: &Sink, denoise: bool, far: &Far, stop: &AtomicBool, want: &AtomicBo
                 continue;
             }
         };
-        for (n, s) in noisy.iter_mut().zip(near) {
-            *n = s as f32 / 32768.0;
-        }
-        if model.as_mut().is_some_and(|m| m.process(noisy.view(), clean.view_mut()).is_ok()) {
-            for (s, c) in near.iter_mut().zip(clean.iter()) {
-                *s = (c * 32767.0).clamp(-32768.0, 32767.0) as i16;
-            }
+        if let Some(m) = model.as_mut() {
+            limit.apply(m);
+            denoise_frame(m, &mut near, &mut noisy, &mut clean);
         }
         // no queue on the source: a 10 ms frame goes straight through, the future is ready at once
         let frame = AudioFrame { data: near[..].into(), sample_rate: RATE, num_channels: 1, samples_per_channel: FRAME as u32 };
@@ -200,9 +227,106 @@ fn run(sink: &Sink, denoise: bool, far: &Far, stop: &AtomicBool, want: &AtomicBo
     Ok(())
 }
 
+/// One 10 ms frame through DeepFilterNet, in place.
+fn denoise_frame(model: &mut DfTract, near: &mut [i16; FRAME], noisy: &mut Array2<f32>, clean: &mut Array2<f32>) {
+    for (n, s) in noisy.iter_mut().zip(near.iter()) {
+        *n = *s as f32 / 32768.0;
+    }
+    if model.process(noisy.view(), clean.view_mut()).is_ok() {
+        for (s, c) in near.iter_mut().zip(clean.iter()) {
+            *s = (c * 32767.0).clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+}
+
+/// How long a microphone test records.
+const TEST_SECS: u8 = 5;
+
+/// A microphone test (see `calls::start_mic_test`): records `TEST_SECS` through the call's processing, without echo
+/// cancellation (nothing plays meanwhile), then plays the result on the chosen speaker. The strength may change while
+/// it records; the model follows it as in a call.
+pub fn test(denoise: bool) -> Arc<AtomicU8> {
+    use crate::calls::MicTest;
+    let phase = Arc::new(AtomicU8::new(MicTest::Preparing.code()));
+    let out = phase.clone();
+    let set = move |p: MicTest| out.store(p.code(), Ordering::Relaxed);
+    let spawned = std::thread::Builder::new().name("mic test".into()).spawn({
+        let set = set.clone();
+        move || match record_test(denoise, &set) {
+            Ok(samples) => {
+                set(MicTest::Playing);
+                crate::sound::play_wav(&wav(&samples));
+                set(MicTest::Done);
+            }
+            Err(e) => {
+                eprintln!("mic test: {e}");
+                set(MicTest::Failed);
+            }
+        }
+    });
+    if spawned.is_err() {
+        set(MicTest::Failed);
+    }
+    phase
+}
+
+fn record_test(denoise: bool, set: &impl Fn(crate::calls::MicTest)) -> Result<Vec<i16>, String> {
+    let mut model = if denoise { Some(load_model()?) } else { None };
+    let mut cap = Capture::open(devices::chosen().input.as_deref())?;
+    let mut apm = AudioProcessingModule::new(false, true, true, model.is_none());
+    let (mut near, mut noisy, mut clean) = ([0i16; FRAME], Array2::<f32>::zeros((1, FRAME)), Array2::<f32>::zeros((1, FRAME)));
+    let mut limit = Limit::new();
+    let frames = TEST_SECS as usize * 100;
+    let mut out = Vec::with_capacity(frames * FRAME);
+    for i in 0..frames {
+        if i % 100 == 0 {
+            set(crate::calls::MicTest::Recording(TEST_SECS - (i / 100) as u8));
+        }
+        cap.read(&mut near).map_err(|e| format!("microphone: {e}"))?;
+        let _ = apm.process_stream(&mut near, RATE as i32, 1);
+        if let Some(m) = model.as_mut() {
+            limit.apply(m);
+            denoise_frame(m, &mut near, &mut noisy, &mut clean);
+        }
+        out.extend_from_slice(&near);
+    }
+    Ok(out)
+}
+
+/// 16-bit mono WAV at `RATE`.
+fn wav(samples: &[i16]) -> Vec<u8> {
+    let data = (samples.len() * 2) as u32;
+    let mut w = Vec::with_capacity(44 + data as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&1u16.to_le_bytes()); // mono
+    w.extend_from_slice(&RATE.to_le_bytes());
+    w.extend_from_slice(&(RATE * 2).to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data.to_le_bytes());
+    for s in samples {
+        w.extend_from_slice(&s.to_le_bytes());
+    }
+    w
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_test_recording_is_a_wav_file() {
+        let w = wav(&[1, -2, 3]);
+        assert_eq!(w.len(), 44 + 6);
+        assert!(w.starts_with(b"RIFF") && &w[8..16] == b"WAVEfmt " && &w[36..40] == b"data");
+        assert_eq!(u32::from_le_bytes(w[24..28].try_into().unwrap()), RATE);
+        assert_eq!(i16::from_le_bytes([w[46], w[47]]), -2);
+    }
 
     #[test]
     fn far_mixes_and_caps() {

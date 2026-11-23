@@ -204,7 +204,13 @@ impl App {
         let (w, h) = self.size();
         if let Some(win) = &self.window {
             let c = self.cursor;
-            if self.st.sidebar.split_drag.is_some() {
+            if let Some(s) = profile_ui::slide(&self.st, c.0, w, h) {
+                if s != self.st.noise_strength {
+                    let now = self.now();
+                    self.st.profile_act(crate::profile::Act::Strength(s), now);
+                    self.st.dirty = true;
+                }
+            } else if self.st.sidebar.split_drag.is_some() {
                 panels::drag_split(&mut self.st, c.1, w, h);
             } else if self.st.dock.drag.is_some() {
                 meeting_ui::drag_to(&mut self.st, c.0, c.1);
@@ -234,6 +240,7 @@ impl App {
 
     /// The left button (or a finger) let go.
     fn release(&mut self) {
+        self.st.end_slide();
         panels::end_split(&mut self.st);
         if self.window.is_some() {
             let (w, h) = self.size();

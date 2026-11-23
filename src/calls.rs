@@ -160,6 +160,91 @@ pub fn save_noise_cancel(on: bool) {
     save_setting("noiseCancellation", on.into());
 }
 
+/// How hard noise cancellation works, 0 (light) ..= 1 (everything it can): the `noiseStrength` setting of settings.json.
+pub const NOISE_STRENGTH: f32 = 0.35;
+
+pub fn noise_strength_setting() -> f32 {
+    setting("noiseStrength").as_f64().map_or(NOISE_STRENGTH, |v| v as f32).clamp(0.0, 1.0)
+}
+
+pub fn save_noise_strength(s: f32) {
+    save_setting("noiseStrength", ((s * 100.0).round() / 100.0).into());
+}
+
+/// The most DeepFilterNet may take away (dB) at a strength: 6 dB at the light end, 40 dB near the strong end, and no
+/// limit at all at 1. Unlimited, it also eats quiet ends of words and makes the voice sound underwater.
+pub fn noise_limit_db(strength: f32) -> f32 {
+    if strength >= 0.995 {
+        100.0
+    } else {
+        6.0 + 34.0 * strength.clamp(0.0, 1.0)
+    }
+}
+
+/// A word for the strength, shown next to its slider.
+pub fn noise_strength_label(strength: f32) -> &'static str {
+    match strength {
+        s if s >= 0.995 => "Maximum",
+        s if s >= 0.6 => "Strong",
+        s if s >= 0.25 => "Medium",
+        _ => "Light",
+    }
+}
+
+/// Tells the microphone (in a call or a test) the strength now. Nothing to tell without calls.
+pub fn set_noise_strength(s: f32) {
+    #[cfg(feature = "calls")]
+    crate::mic::set_strength(s);
+    #[cfg(not(feature = "calls"))]
+    let _ = s;
+}
+
+/// Where a microphone test is: see `start_mic_test`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MicTest {
+    /// Loading the model / opening the microphone.
+    Preparing,
+    /// Recording; the seconds left.
+    Recording(u8),
+    Playing,
+    Done,
+    Failed,
+}
+
+impl MicTest {
+    pub fn from_code(c: u8) -> MicTest {
+        match c {
+            0 => MicTest::Preparing,
+            1..=99 => MicTest::Recording(c),
+            100 => MicTest::Playing,
+            101 => MicTest::Done,
+            _ => MicTest::Failed,
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            MicTest::Preparing => 0,
+            MicTest::Recording(s) => s.clamp(1, 99),
+            MicTest::Playing => 100,
+            MicTest::Done => 101,
+            MicTest::Failed => 102,
+        }
+    }
+}
+
+/// Records a few seconds of the microphone through the same processing a call sends (noise cancelled at the current
+/// strength if `denoise`), then plays it back. The returned cell holds the `MicTest` code. None without calls.
+pub fn start_mic_test(denoise: bool) -> Option<std::sync::Arc<std::sync::atomic::AtomicU8>> {
+    #[cfg(feature = "calls")]
+    return Some(crate::mic::test(denoise));
+    #[cfg(not(feature = "calls"))]
+    {
+        let _ = denoise;
+        None
+    }
+}
+
 /// Sender for media commands. Without the `calls` feature it is a stub, so the UI code compiles either way.
 #[cfg(feature = "calls")]
 pub type MediaTx = tokio::sync::mpsc::UnboundedSender<MediaCmd>;
@@ -265,6 +350,16 @@ mod tests {
         let hidden = VideoPolicy { recv_screen: false, ..low };
         assert!(!hidden.wants(true, true) && hidden.wants(false, false));
         assert!(VideoPolicy::default().wants(true, false));
+    }
+
+    #[test]
+    fn the_strength_limits_the_noise_removed() {
+        assert_eq!(noise_limit_db(0.0), 6.0);
+        assert!((noise_limit_db(NOISE_STRENGTH) - 17.9).abs() < 0.1, "the default leaves some background");
+        assert_eq!(noise_limit_db(1.0), 100.0, "the strong end is unlimited, as before");
+        assert!(noise_limit_db(0.9) < noise_limit_db(0.95));
+        assert_eq!(MicTest::from_code(MicTest::Recording(3).code()), MicTest::Recording(3));
+        assert_eq!(MicTest::from_code(MicTest::Done.code()), MicTest::Done);
     }
 
     #[test]
