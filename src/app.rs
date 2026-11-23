@@ -573,7 +573,16 @@ impl State {
     /// We have a desk in this room and are not standing at it (the desk button is worth showing).
     pub fn away_from_desk(&self) -> bool {
         match (self.my_desk(), self.me()) {
-            (Some(d), Some(me)) => (d.0 - me.x).hypot(d.1 - me.y) > T,
+            (Some(d), Some(me)) => !self.at_desk(d, (me.x, me.y)),
+            _ => false,
+        }
+    }
+
+    /// Standing at the desk: anywhere in the meeting zone its spot is in (the table around it). A desk outside every
+    /// zone is never reached.
+    fn at_desk(&self, desk: (f32, f32), here: (f32, f32)) -> bool {
+        match (self.world.zone_at(desk.0, desk.1), self.world.zone_at(here.0, here.1)) {
+            (Some(a), Some(b)) => a.id == b.id,
             _ => false,
         }
     }
@@ -626,7 +635,7 @@ impl State {
             self.desk_at_start = false; // our desk is in another room
             return;
         };
-        if (desk.0 - here.0).hypot(desk.1 - here.1) <= T {
+        if self.at_desk(desk, here) {
             eprintln!("[{now:6.1}] desk: already at it");
             self.desk_at_start = false;
             return;
@@ -1501,6 +1510,22 @@ mod tests {
         assert!(st.path.is_none(), "arrived instead of shuttling around the target");
         let me = st.me().unwrap();
         assert!((me.x - goal.0).abs() < 12.0 && (me.y - goal.1).abs() < 12.0, "at {:?}", (me.x, me.y));
+    }
+
+    #[test]
+    fn anywhere_in_the_desks_zone_counts_as_at_the_desk() {
+        // as in the office: the desk's spot near a corner of its table zone, more than a tile from the zone's far side
+        let mut st = open_floor((7.5 * T, 7.5 * T));
+        st.desk_at_start = false;
+        st.world.zones.push(crate::world::Zone { id: "z".into(), x: 6.5 * T, y: 6.5 * T, sx: 1.5 * T / 1.1, sy: 1.5 * T / 1.1, meeting: true, name: None });
+        st.apply(Net::Desks { definition: "R1".into(), desks: vec![("d1".into(), 5.5 * T, 5.5 * T)] }, 0.0);
+        st.apply(Net::DeskOwners(vec![Desk { room: "R1".into(), desk: "d1".into(), owner: "me".into() }]), 0.0);
+        assert!(!st.away_from_desk(), "in the desk's zone, two tiles from its spot");
+        st.users.get_mut("me").unwrap().x = 4.5 * T;
+        st.users.get_mut("me").unwrap().y = 5.5 * T;
+        assert!(st.away_from_desk(), "a tile from its spot, but outside the zone");
+        st.users.get_mut("me").unwrap().x = 9.5 * T;
+        assert!(st.away_from_desk(), "outside the zone");
     }
 
     #[test]

@@ -558,8 +558,10 @@ mod tests {
         assert!(panels::empty(&map_desk(&st, 360.0, 700.0)), "not over the people list");
         st.sidebar.mobile = false;
         let me = st.users.get_mut("me").unwrap();
-        (me.x, me.y) = (5000.0, 5000.0);
-        assert!(panels::empty(&map_desk(&st, W, 700.0)), "already at our desk");
+        (me.x, me.y) = (5300.0, 5300.0);
+        assert!(!panels::empty(&map_desk(&st, W, 700.0)), "near the desk, but it is in no zone");
+        st.world.zones.push(crate::world::Zone { id: "z".into(), x: 5200.0, y: 5200.0, sx: 300.0, sy: 300.0, meeting: true, name: None });
+        assert!(panels::empty(&map_desk(&st, W, 700.0)), "in our desk's zone");
     }
 
     #[test]

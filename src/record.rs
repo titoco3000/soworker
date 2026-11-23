@@ -388,6 +388,7 @@ fn finish(base: PathBuf, wav: Wav, enc: Option<Encoder>, emit: Emit) {
         eprintln!("record: quitting, no transcript (run soworker --transcribe \"{}\")", saved.display());
         return;
     }
+    crate::desktop::reveal(&saved);
     // not tracked by `shutdown`: a transcript can take minutes, and is easy to make again
     std::thread::spawn(move || {
         // the MP4 has the sound; without whisper, `soworker --transcribe` reads it from there later

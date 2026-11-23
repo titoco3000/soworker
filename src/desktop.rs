@@ -52,6 +52,12 @@ pub fn ensure() {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn uris_escape_spaces_and_accents() {
+        assert_eq!(super::file_uri(std::path::Path::new("/r/Escritório 1.mp4")), "file:///r/Escrit%C3%B3rio%201.mp4");
+    }
+
     #[test]
     fn entry_points_at_the_binary_and_matches_the_app_id() {
         let e = entry_for("/home/me/soworker/target/release/soworker", "/home/me/.local/share/icons/soworker.png");
@@ -59,4 +65,61 @@ mod tests {
         assert!(e.contains("Icon=/home/me/.local/share/icons/soworker.png\n") && e.contains("StartupWMClass=soworker"));
         assert!(entry_for("/a b/soworker", "/i.png").contains("Exec=\"/a b/soworker\"\n"));
     }
+}
+
+/// Opens the file manager on the folder holding `path`, with `path` selected (a finished recording). Best effort, in
+/// the background: the freedesktop FileManager1 interface (Nautilus, Dolphin, Nemo, Thunar...), else the folder alone
+/// through `xdg-open`; Explorer on Windows. Nothing on Android or in tests.
+pub fn reveal(path: &std::path::Path) {
+    if cfg!(any(test, target_os = "android")) {
+        return;
+    }
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        {
+            let mut arg = std::ffi::OsString::from("/select,");
+            arg.push(&path);
+            let _ = std::process::Command::new("explorer").arg(arg).spawn();
+        }
+        #[cfg(not(windows))]
+        {
+            if let Err(e) = show_items(&path) {
+                eprintln!("reveal: {e}; opening the folder instead");
+                if let Some(dir) = path.parent() {
+                    let _ = std::process::Command::new("xdg-open").arg(dir).stdin(std::process::Stdio::null()).spawn();
+                }
+            }
+        }
+    });
+}
+
+#[cfg(all(not(windows), feature = "portal"))]
+fn show_items(path: &std::path::Path) -> Result<(), String> {
+    let es = |e: zbus::Error| e.to_string();
+    let conn = zbus::blocking::Connection::session().map_err(es)?;
+    let uri = file_uri(&path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+    conn.call_method(Some("org.freedesktop.FileManager1"), "/org/freedesktop/FileManager1", Some("org.freedesktop.FileManager1"), "ShowItems", &(vec![uri.as_str()], ""))
+        .map_err(es)?;
+    Ok(())
+}
+
+#[cfg(all(not(windows), not(feature = "portal")))]
+fn show_items(_path: &std::path::Path) -> Result<(), String> {
+    Err("built without D-Bus".into())
+}
+
+/// `file://` URI of an absolute path, bytes outside the unreserved set percent-encoded.
+#[cfg(unix)]
+pub fn file_uri(path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut s = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            s.push(b as char);
+        } else {
+            s.push_str(&format!("%{b:02X}"));
+        }
+    }
+    s
 }
