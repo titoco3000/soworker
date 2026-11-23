@@ -78,6 +78,10 @@ pub struct CallUi {
     /// Since when we record the call, while we do; and the elapsed seconds last drawn (the clock repaints once a second).
     pub recording: Option<std::time::Instant>,
     pub rec_shown: u64,
+    /// The call dropped without us asking (network, LiveKit ended it, the join failed) while the server still has us in
+    /// that meeting: when to try again (`now` seconds), and how many tries in a row so far (for the back-off).
+    pub rejoin_at: Option<f64>,
+    pub drops: u32,
 }
 
 /// A walk out of the meeting area waiting for the user's yes: the click target and whether it was a teleport.
@@ -360,6 +364,8 @@ impl State {
                 eprintln!("[{now:6.1}] net: replaced by another session of this account");
                 self.status = "SoWork was opened somewhere else".into();
                 self.say("SoWork was opened somewhere else: this one is disconnected", now);
+                self.call.want = None; // on purpose: no rejoin
+                self.call.rejoin_at = None;
                 self.media_out.push(MediaCmd::Leave);
             }
             Net::Error(e) => {
@@ -479,7 +485,11 @@ impl State {
                 self.clusters_seen += 1;
                 eprintln!("[{now:6.1}] gaia cluster event: {}", match &c {
                     None => "none (left / alone)".to_string(),
-                    Some(c) => format!("{} user(s), token: {}", c.users.len(), if c.token.is_some() { "livekit" } else { c.unsupported.as_deref().unwrap_or("missing") }),
+                    Some(c) => format!("conversation {}, {} user(s), token: {}", c.conversation_id, c.users.len(), match (&c.token, &c.unsupported) {
+                        (Some(t), _) => format!("livekit room {}", t.room_id),
+                        (None, Some(p)) => p.clone(),
+                        (None, None) => "missing (asking over REST)".into(),
+                    }),
                 });
                 let before = self.cluster.as_ref().map(|c| c.conversation_id.clone());
                 self.cluster = c;
@@ -707,6 +717,11 @@ impl State {
             }
             _ => {}
         }
+        if self.cluster.as_ref().and_then(|c| c.token.as_ref()).is_none() {
+            // no meeting (or no way in) any more: nothing to rejoin, and the next drop starts the back-off afresh
+            self.call.rejoin_at = None;
+            self.call.drops = 0;
+        }
     }
 
     /// Ask for a "Press F1 to talk" notification, unless we are unmuted or just showed one.
@@ -858,6 +873,7 @@ impl State {
     fn leave_meeting(&mut self) {
         self.call.ignore_room = self.call.want.clone().or_else(|| self.call.joined.clone());
         self.call.want = None;
+        self.call.rejoin_at = None;
         self.media_out.push(MediaCmd::Leave);
         if self.cur_zone_id.is_some() {
             self.left_zone = self.cur_zone_id.clone();
@@ -1073,7 +1089,17 @@ impl State {
                 }
             }
             MediaEvent::Left => {
-                eprintln!("[{now:6.1}] livekit left");
+                // we still want a room and this is not the old one closing for a switch: the call dropped by itself (or
+                // the join failed). Forget it was joined, so the next `sync_call` joins again, and retry shortly.
+                let dropped = self.call.want.is_some() && (self.call.joined.is_none() || self.call.joined == self.call.want);
+                eprintln!("[{now:6.1}] livekit left{}", if dropped { " without being asked" } else { "" });
+                if dropped {
+                    let wait = (2.0 * 2f64.powi(self.call.drops.min(4) as i32)).min(30.0);
+                    self.call.drops += 1;
+                    self.call.want = None;
+                    self.call.rejoin_at = Some(now + wait);
+                    eprintln!("[{now:6.1}] call dropped (try {}): joining again in {wait:.0}s", self.call.drops);
+                }
                 self.call.joined = None;
                 self.call.mic = false;
                 self.call.cam = false;
@@ -1286,12 +1312,18 @@ impl State {
             || self.path.is_some()
             || self.profile.as_ref().is_some_and(|p| p.meter.is_some()) // the level meter moves
             || (self.call.hand.is_some() && self.call.talking_since.is_some()) // the hand may go down in a moment
+            || self.call.rejoin_at.is_some() // a dropped call is joined again in a moment
             || k.up || k.down || k.left || k.right
             || self.users.values().any(|u| u.id != self.me_id && (u.tx - u.x).hypot(u.ty - u.y) > 0.5)
     }
 
     /// Advance the simulation. Returns true if the screen needs a redraw (movement or events).
     pub fn update(&mut self, dt: f32, now: f64) -> bool {
+        if self.call.rejoin_at.is_some_and(|t| now >= t) {
+            self.call.rejoin_at = None;
+            eprintln!("[{now:6.1}] rejoining the call");
+            self.sync_call();
+        }
         if self.world.rebuild_if_dirty() {
             self.check_spawn();
             self.dirty = true;
@@ -1614,6 +1646,60 @@ mod tests {
         st.set_visible(true, 5.0);
         assert_eq!(policies(&mut st), vec![VideoPolicy { send_camera: false, recv_camera: false, recv_screen: true }]);
         assert!(st.low_data());
+    }
+
+    #[test]
+    fn a_dropped_call_is_joined_again() {
+        use crate::proto::{ClusterInfo, LkToken};
+        let cluster = |room: &str| Net::Cluster(Some(ClusterInfo {
+            id: "c".into(),
+            conversation_id: format!("conv-{room}"),
+            users: vec![("me".into(), "Me".into()), ("ana".into(), "Ana".into())],
+            token: Some(LkToken { token: "t".into(), api_host: "lk.example".into(), room_id: room.into() }),
+            unsupported: None,
+        }));
+        let joins = |st: &mut State| st.media_out.drain(..).filter(|c| matches!(c, MediaCmd::Join { .. })).count();
+        let mut st = State::new("me", true);
+        st.media_out.clear();
+        st.apply(cluster("RM"), 0.0);
+        assert_eq!(joins(&mut st), 1);
+        st.apply_media(MediaEvent::Joined("RM".into()), 1.0);
+
+        // LiveKit ends the call by itself; gaia still has us at the table
+        st.apply_media(MediaEvent::Left, 10.0);
+        assert!(st.call.want.is_none() && crate::meeting::visible(&st), "the dock stays up while we get back in");
+        assert!(st.is_active());
+        st.update(0.0, 11.0);
+        assert_eq!(joins(&mut st), 0, "not at once");
+        st.update(0.0, 12.0);
+        assert_eq!(joins(&mut st), 1, "two seconds later");
+        // the join fails: back off longer
+        st.apply_media(MediaEvent::Left, 12.5);
+        st.update(0.0, 15.0);
+        assert_eq!(joins(&mut st), 0);
+        st.update(0.0, 16.5);
+        assert_eq!(joins(&mut st), 1, "four seconds later");
+        st.apply_media(MediaEvent::Joined("RM".into()), 17.0);
+
+        // walking out and back in also joins again, even into the same room
+        st.apply_media(MediaEvent::Left, 20.0);
+        st.apply(Net::Cluster(None), 20.5);
+        assert!(st.call.rejoin_at.is_none() && st.call.drops == 0);
+        st.apply(cluster("RM"), 21.0);
+        assert_eq!(joins(&mut st), 1);
+
+        // the old room closing for a switch is not a drop
+        st.apply_media(MediaEvent::Joined("RM".into()), 22.0);
+        st.apply(cluster("RM2"), 23.0);
+        st.apply_media(MediaEvent::Left, 23.1);
+        assert_eq!(st.call.want.as_deref(), Some("RM2"));
+        assert!(st.call.rejoin_at.is_none());
+
+        // leaving on purpose is not one either
+        st.apply_media(MediaEvent::Joined("RM2".into()), 24.0);
+        st.leave_meeting();
+        st.apply_media(MediaEvent::Left, 24.5);
+        assert!(st.call.rejoin_at.is_none());
     }
 
     #[test]

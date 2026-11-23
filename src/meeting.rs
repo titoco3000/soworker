@@ -106,7 +106,7 @@ pub struct TileSpec {
 }
 
 pub fn visible(st: &State) -> bool {
-    st.call.joined.is_some() || st.call.want.is_some()
+    st.call.joined.is_some() || st.call.want.is_some() || st.call.rejoin_at.is_some()
 }
 
 pub fn status_label(st: &State) -> &'static str {

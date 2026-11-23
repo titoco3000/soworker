@@ -89,8 +89,11 @@ fn main() {
     let res = frontend(&args);
     #[cfg(feature = "calls")]
     record::shutdown(); // a recording still running is written out before we go
-    if let Err(e) = res {
+    if let Err(e) = &res {
         eprintln!("error: {e}");
+    }
+    mode::flush_log();
+    if res.is_err() {
         std::process::exit(1);
     }
 }
@@ -115,6 +118,7 @@ fn frontend(args: &[String]) -> Result<(), String> {
     mode::remember(m);
     if m == UiMode::Gui {
         mode::drop_console();
+        mode::log_gui();
     }
     match m {
         #[cfg(feature = "gui")]

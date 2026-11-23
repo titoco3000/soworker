@@ -132,17 +132,165 @@ pub fn adopt_console() {
 #[cfg(unix)]
 #[cfg_attr(not(feature = "tui"), allow(dead_code))]
 pub fn log_to_file() {
-    use std::os::fd::AsRawFd;
+    log_to(false);
+}
+
+/// The window client: stderr always goes to the log file too, so a call that broke can be looked into afterwards (from
+/// a launcher icon stderr is /dev/null). Run from a terminal, the lines still show there as well.
+#[cfg(unix)]
+pub fn log_gui() {
+    use std::io::IsTerminal;
+    log_to(std::io::stderr().is_terminal());
+}
+
+#[cfg(windows)]
+pub fn log_gui() {
+    log_to_file();
+}
+
+#[cfg(unix)]
+static LOG: std::sync::OnceLock<Logger> = std::sync::OnceLock::new();
+
+#[cfg(unix)]
+struct Logger {
+    file: std::sync::Mutex<std::fs::File>,
+    /// The terminal stderr pointed at before (a duplicate), when lines go there too.
+    tee: Option<std::sync::Mutex<std::fs::File>>,
+    /// The thread that copies the pipe now behind fd 2 into the file, and the pipe's write end to close at exit.
+    pump: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+/// `$XDG_STATE_HOME/soworker/soworker.log` (`~/.local/state/...`). Only ever appended to: old runs stay in it.
+#[cfg(unix)]
+pub fn log_path() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/state")));
-    let dir = base.map_or_else(|| std::path::PathBuf::from("/nonexistent"), |b| b.join("soworker"));
-    let _ = std::fs::create_dir_all(&dir);
-    // no writable log: drop the noise rather than let it scribble over the screen
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("soworker.log")).or_else(|_| std::fs::OpenOptions::new().write(true).open("/dev/null"));
-    if let Ok(f) = file {
-        // SAFETY: both descriptors are open; dup2 just points fd 2 at the file.
-        unsafe { libc::dup2(f.as_raw_fd(), 2) };
+    base.map_or_else(|| std::path::PathBuf::from("/nonexistent"), |b| b.join("soworker")).join("soworker.log")
+}
+
+/// Local wall-clock time, `2026-11-19 09:36:58.123`, for the start of every log line.
+#[cfg(unix)]
+fn stamp() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let secs = now.as_secs() as libc::time_t;
+    // SAFETY: localtime_r only writes the struct we hand it.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, now.subsec_millis())
+}
+
+/// Write text straight to the log (and the terminal, when teeing), each line stamped. Used for what must not wait for
+/// the pump thread: a panic may end the process right after.
+#[cfg(unix)]
+fn log_direct(text: &str) {
+    use std::io::Write;
+    let Some(l) = LOG.get() else { return eprint!("{text}") };
+    let st = stamp();
+    let stamped: String = text.lines().map(|line| format!("{st} {line}\n")).collect();
+    if let Ok(mut f) = l.file.lock() {
+        let _ = f.write_all(stamped.as_bytes());
+    }
+    if let Some(Ok(mut t)) = l.tee.as_ref().map(|t| t.lock()) {
+        let _ = t.write_all(text.as_bytes());
+        if !text.ends_with('\n') {
+            let _ = t.write_all(b"\n");
+        }
     }
 }
+
+/// Point fd 2 at a pipe whose lines a thread stamps with the time and appends to the log file (and, with `tee`, copies
+/// to the terminal stderr was). Native code (libwebrtc) writing to fd 2 lands there too. Panics are logged with a
+/// backtrace.
+#[cfg(unix)]
+fn log_to(tee: bool) {
+    use std::io::{BufRead, Write};
+    use std::os::fd::FromRawFd;
+    if LOG.get().is_some() {
+        return;
+    }
+    let path = log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
+        // no writable log: drop the noise rather than let it scribble over the screen
+        if !tee {
+            if let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
+                // SAFETY: both descriptors are open; dup2 just points fd 2 at /dev/null.
+                unsafe { libc::dup2(std::os::fd::AsRawFd::as_raw_fd(&null), 2) };
+            }
+        }
+        return;
+    };
+    let mut fds = [0; 2];
+    // SAFETY: pipe fills the two descriptors; dup(2) duplicates our current stderr for the terminal copy.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return;
+    }
+    let term = tee.then(|| unsafe { libc::dup(2) }).filter(|fd| *fd >= 0).map(|fd| unsafe { std::fs::File::from_raw_fd(fd) });
+    let reader = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+    let logger = Logger { file: std::sync::Mutex::new(file), tee: term.map(std::sync::Mutex::new), pump: std::sync::Mutex::new(None) };
+    if LOG.set(logger).is_err() {
+        return;
+    }
+    let pump = std::thread::Builder::new().name("log".into()).spawn(move || {
+        let Some(l) = LOG.get() else { return };
+        let mut lines = std::io::BufReader::new(reader);
+        let mut buf = Vec::new();
+        while lines.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+            let text = String::from_utf8_lossy(&buf);
+            if let Ok(mut f) = l.file.lock() {
+                let _ = write!(f, "{} {}", stamp(), text);
+                if !text.ends_with('\n') {
+                    let _ = f.write_all(b"\n");
+                }
+            }
+            if let Some(Ok(mut t)) = l.tee.as_ref().map(|t| t.lock()) {
+                let _ = t.write_all(&buf);
+            }
+            buf.clear();
+        }
+    });
+    if let (Ok(h), Ok(mut slot)) = (pump, LOG.get().unwrap().pump.lock()) {
+        *slot = Some(h);
+    }
+    // SAFETY: fds[1] is the pipe's open write end; after dup2 fd 2 is a second reference to it.
+    unsafe {
+        libc::dup2(fds[1], 2);
+        libc::close(fds[1]);
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    log_direct(&format!("==== soworker {} started (pid {}, args {:?})\n", env!("CARGO_PKG_VERSION"), std::process::id(), args));
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+        log_direct(&format!("PANIC in thread '{thread}': {info}\n{}\n", std::backtrace::Backtrace::force_capture()));
+        if LOG.get().is_some_and(|l| l.tee.is_none()) {
+            return; // already in the file; the default hook would only repeat it there
+        }
+        default(info);
+    }));
+}
+
+/// Before the process ends: let the pump write out what is still in the pipe.
+#[cfg(unix)]
+pub fn flush_log() {
+    let Some(l) = LOG.get() else { return };
+    if let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
+        // SAFETY: both descriptors are open; this drops fd 2's reference to the pipe, so the pump sees its end.
+        unsafe { libc::dup2(std::os::fd::AsRawFd::as_raw_fd(&null), 2) };
+    }
+    let handle = l.pump.lock().ok().and_then(|mut h| h.take());
+    if let Some(h) = handle {
+        // children (the browser for signing in) may hold the pipe open too: do not wait for them
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while !h.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn flush_log() {}
 
 /// Windows: `%LOCALAPPDATA%\soworker\soworker.log`. Rust's stderr looks the standard handle up on every write.
 #[cfg(windows)]

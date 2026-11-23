@@ -105,7 +105,8 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                 let Some(cmd) = cmd else { break };
                 match cmd {
                     MediaCmd::Join { url, token, room_id, portrait } => {
-                        if session.as_ref().is_some_and(|s| s.room_id == room_id) { continue; }
+                        if session.as_ref().is_some_and(|s| s.room_id == room_id) { eprintln!("livekit: already in {room_id}"); continue; }
+                        eprintln!("livekit: joining {room_id} on {url}");
                         if let Some(s) = session.take() { close(s, &emit).await; }
                         match join(&url, &token, room_id, portrait, nc, policy, &emit).await {
                             Ok(s) => session = Some(s),
@@ -146,7 +147,7 @@ async fn run(mut rx: UnboundedReceiver<MediaCmd>, emit: Emit) {
                             if on_room_event(s, ev, &emit) { if let Some(s) = session.take() { close(s, &emit).await; } }
                         }
                     }
-                    None => if let Some(s) = session.take() { close(s, &emit).await; },
+                    None => if let Some(s) = session.take() { eprintln!("livekit: the room's event stream ended"); close(s, &emit).await; },
                 }
             }
         }
@@ -643,9 +644,28 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
             s.tap.forget_pic(&key);
             emit(MediaEvent::VideoGone(key));
         }
-        RoomEvent::ParticipantConnected(_) => emit_peers(&s.room, &s.tap, emit),
+        RoomEvent::ParticipantConnected(p) => {
+            eprintln!("livekit: {} ({}) connected", p.identity(), p.name());
+            emit_peers(&s.room, &s.tap, emit)
+        }
         RoomEvent::ParticipantMetadataChanged { participant: Participant::Remote(_), .. } => emit_peers(&s.room, &s.tap, emit),
+        RoomEvent::Reconnecting => eprintln!("livekit: connection lost, reconnecting"),
+        RoomEvent::Reconnected => eprintln!("livekit: reconnected ({} other(s) in the room)", s.room.remote_participants().len()),
+        RoomEvent::ConnectionStateChanged(c) => eprintln!("livekit: connection state {c:?}"),
+        RoomEvent::TrackSubscriptionFailed { participant, error, track_sid } => eprintln!("livekit: subscribing to {track_sid} of {} failed: {error}", participant.identity()),
+        RoomEvent::LocalTrackRepublished { previous_sid, publication, .. } => {
+            // a full reconnect publishes our tracks again under new ids: keep ours current, or a later unpublish (noise
+            // cancellation switch, stopping a share) would aim at a track that is gone
+            eprintln!("livekit: our track {previous_sid} republished as {}", publication.sid());
+            if let Some((_, sid)) = s.mic.as_mut().filter(|(_, sid)| *sid == previous_sid) {
+                *sid = publication.sid();
+            }
+            if let Some(c) = s.share.as_mut().filter(|c| c.sid == previous_sid) {
+                c.sid = publication.sid();
+            }
+        }
         RoomEvent::ParticipantDisconnected(p) => {
+            eprintln!("livekit: {} ({}) disconnected: {:?}", p.identity(), p.name(), p.disconnect_reason());
             emit_peers(&s.room, &s.tap, emit);
             let prefix = format!("{}:", p.identity());
             for key in s.audio_tasks.keys().filter(|k| k.starts_with(&prefix)).cloned().collect::<Vec<_>>() {
@@ -664,6 +684,7 @@ fn on_room_event(s: &mut Session, ev: RoomEvent, emit: &Emit) -> bool {
             }
         }
         RoomEvent::Disconnected { reason } => {
+            eprintln!("livekit: disconnected from {}: {reason:?}", s.room_id);
             emit(MediaEvent::Error(format!("call ended: {reason:?}")));
             return true;
         }
