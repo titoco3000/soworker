@@ -1,6 +1,6 @@
 //! Calls on the official LiveKit Rust SDK: join with the token from gaia's `cluster` event,
-//! audio through the SDK's platform audio (playout, and mic capture + echo cancellation unless noise cancellation is on:
-//! then the mic goes through our own path in `mic.rs`),
+//! audio through the SDK's platform audio (playout; the mic goes through our own path in `mic.rs` on the desktop, and
+//! through libwebrtc's capture on Android unless noise cancellation is on),
 //! remote video decoded by libwebrtc and delivered as small RGBA frames.
 use crate::calls::{VideoPolicy, ask_to_mute_payload, ask_to_mute_target, hand_raised, participant_meta, raise_hand_payload, raise_hand_signal, MediaCmd, MediaEvent, ASK_TO_MUTE, RAISE_HAND};
 use crate::mic;
@@ -50,9 +50,10 @@ struct Session {
     room: Room,
     events: UnboundedReceiver<RoomEvent>,
     audio: Option<PlatformAudio>,
-    /// The published microphone track and its sid (republished when noise cancellation is switched).
+    /// The published microphone track and its sid (republished when noise cancellation is switched on Android only).
     mic: Option<(LocalAudioTrack, TrackSid)>,
-    /// Noise cancellation: the mic comes from `mic.rs` into `mic_src` instead of libwebrtc's own capture.
+    /// Noise cancellation: DeepFilterNet on our own capture (see `own_capture` for when the mic comes from `mic.rs`
+    /// into `mic_src` instead of libwebrtc's own capture).
     nc: bool,
     mic_src: Option<NativeAudioSource>,
     /// Our capture thread, while noise cancellation is on.
@@ -200,8 +201,8 @@ async fn join(url: &str, token: &str, room_id: String, portrait: Option<String>,
     };
     subscribe_wanted(&s.room, policy);
     apply_devices(&mut s, emit).await;
-    // creating the platform audio switched libwebrtc's own mic capture on; with noise cancellation we capture instead
-    set_adm_recording(!nc);
+    // creating the platform audio switched libwebrtc's own mic capture on; when we capture ourselves it must stay off
+    set_adm_recording(!own_capture(nc));
     keep_mic_open(&mut s, false, emit);
     emit(MediaEvent::Joined(room_id));
     emit_peers(&s.room, &s.tap, emit);
@@ -236,6 +237,13 @@ async fn set_policy(s: &mut Session, p: VideoPolicy, emit: &Emit) {
     subscribe_wanted(&s.room, p);
 }
 
+/// Whether the mic goes through our own capture (`mic.rs`) rather than libwebrtc's: always on the desktop, so that
+/// switching noise cancellation never republishes the track (see `mic.rs` for the crash that caused), and on Android
+/// (which has no capture of ours to fall back on) only with noise cancellation.
+fn own_capture(nc: bool) -> bool {
+    nc || !cfg!(target_os = "android")
+}
+
 /// Whether libwebrtc may open the microphone itself (the platform audio's capture). Off while we capture.
 fn set_adm_recording(on: bool) {
     LkRuntime::instance().pc_factory().set_adm_recording_enabled(on);
@@ -244,10 +252,10 @@ fn set_adm_recording(on: bool) {
 /// Opens or closes the capture to match the mic: open while it is on, or all meeting long for a Bluetooth headset
 /// (see `join`). With noise cancellation that is our capture thread; otherwise libwebrtc's.
 fn keep_mic_open(s: &mut Session, mic_on: bool, emit: &Emit) {
-    if s.nc {
+    if own_capture(s.nc) {
         let src = s.mic_src.get_or_insert_with(|| NativeAudioSource::new(AudioSourceOptions::default(), mic::RATE, 1, 0)).clone();
-        let (far, emit) = (s.far.clone(), emit.clone());
-        s.mic_run.get_or_insert_with(|| mic::Mic::start(mic::Sink::Source(src), far, emit)).capture(mic_on || s.keep_capture);
+        let (far, emit, nc) = (s.far.clone(), emit.clone(), s.nc);
+        s.mic_run.get_or_insert_with(|| mic::Mic::start(mic::Sink::Source(src), nc, far, emit)).capture(mic_on || s.keep_capture);
     } else if let Some(audio) = s.audio.as_ref().filter(|_| s.keep_capture) {
         // a muted track makes libwebrtc stop capturing; start it again so the device stays open
         match audio.start_recording() {
@@ -409,22 +417,22 @@ fn set_record(s: &mut Session, title: Option<String>, emit: &Emit) {
 /// With noise cancellation off, our own capture feeds the recording while we record and the mic is on (see
 /// `mic::Sink::Record`); otherwise there is none.
 fn sync_rec_mic(s: &mut Session, emit: &Emit) {
-    if s.rec.is_none() || s.nc {
+    if s.rec.is_none() || own_capture(s.nc) {
         s.rec_mic = None;
         return;
     }
     let on = s.mic.as_ref().is_some_and(|(t, _)| !t.is_muted());
     let (tap, far, emit) = (s.tap.clone(), s.far.clone(), emit.clone());
-    s.rec_mic.get_or_insert_with(|| mic::Mic::start(mic::Sink::Record(tap), far, emit)).capture(on);
+    s.rec_mic.get_or_insert_with(|| mic::Mic::start(mic::Sink::Record(tap), false, far, emit)).capture(on);
 }
 
-/// Reads our published microphone track into the recording's tap. That only works for the noise-cancelled track,
-/// which we feed ourselves: libwebrtc's own capture hands its sinks nothing (see `sync_rec_mic` for that case).
+/// Reads our published microphone track into the recording's tap. That only works for a track we feed ourselves:
+/// libwebrtc's own capture hands its sinks nothing (see `sync_rec_mic` for that case).
 fn tap_mic(s: &mut Session) {
     if let Some(old) = s.mic_tap.take() {
         old.abort();
     }
-    let Some((track, _)) = s.mic.as_ref().filter(|_| s.nc) else { return };
+    let Some((track, _)) = s.mic.as_ref().filter(|_| own_capture(s.nc)) else { return };
     let (rtc, tap) = (track.rtc_track(), s.tap.clone());
     s.mic_tap = Some(tokio::spawn(async move {
         let mut stream = NativeAudioStream::new(rtc, mic::RATE as i32, 1);
@@ -470,7 +478,7 @@ async fn close(mut s: Session, emit: &Emit) {
 
 async fn set_mic(s: &mut Session, on: bool, emit: &Emit) {
     if on && s.mic.is_none() {
-        let source = if s.nc {
+        let source = if own_capture(s.nc) {
             RtcAudioSource::Native(s.mic_src.get_or_insert_with(|| NativeAudioSource::new(AudioSourceOptions::default(), mic::RATE, 1, 0)).clone())
         } else {
             let Some(audio) = &s.audio else { return emit(MediaEvent::Error("no audio device".into())) };
@@ -494,13 +502,21 @@ async fn set_mic(s: &mut Session, on: bool, emit: &Emit) {
     emit(MediaEvent::MicState(on && s.mic.is_some()));
 }
 
-/// Switch between libwebrtc's mic capture and ours (noise cancelled): the track is republished from the other source,
-/// muted or not as it was.
+/// Switch noise cancellation. With our own capture either way (the desktop) only the capture thread is restarted, with
+/// or without the model: the track and its source stay. Otherwise (Android) the track is republished from the other
+/// source, muted or not as it was.
 async fn set_noise_cancel(s: &mut Session, on: bool, emit: &Emit) {
     if s.nc == on {
         return;
     }
     eprintln!("audio: noise cancellation {}", if on { "on" } else { "off" });
+    if own_capture(s.nc) && own_capture(on) {
+        s.nc = on;
+        s.mic_run = None;
+        let mic_on = s.mic.as_ref().is_some_and(|(t, _)| !t.is_muted());
+        keep_mic_open(s, mic_on, emit);
+        return;
+    }
     let was_on = s.mic.as_ref().is_some_and(|(t, _)| !t.is_muted());
     if let Some((_, sid)) = s.mic.take() {
         let _ = s.room.local_participant().unpublish_track(&sid).await;
@@ -511,7 +527,7 @@ async fn set_noise_cancel(s: &mut Session, on: bool, emit: &Emit) {
     s.mic_run = None;
     s.mic_src = None;
     s.nc = on;
-    set_adm_recording(!on);
+    set_adm_recording(!own_capture(on));
     if was_on {
         set_mic(s, true, emit).await;
     } else {

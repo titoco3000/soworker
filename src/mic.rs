@@ -1,7 +1,12 @@
-//! Our own microphone path, used while noise cancellation is on. libwebrtc's platform audio gives no way to process the
-//! mic before it is sent, so we capture it ourselves (`devices::Capture`: `parec` / `pw-record` on Linux, WASAPI on Windows),
-//! run WebRTC's audio processing on it (echo cancellation against what we play, gain control, no noise suppression),
-//! then DeepFilterNet 3, and push the result into a `NativeAudioSource`. Playout stays with the platform audio.
+//! Our own microphone path, used on the desktop whether noise cancellation is on or off. We capture the mic ourselves
+//! (`devices::Capture`: `parec` / `pw-record` on Linux, WASAPI on Windows), run WebRTC's audio processing on it (echo
+//! cancellation against what we play, gain control, and its own noise suppression only without the model), then
+//! DeepFilterNet 3 when denoising, and push the result into a `NativeAudioSource`. Playout stays with the platform audio.
+//!
+//! libwebrtc's own capture is never started on the desktop: its capture thread hands every frame to each audio send
+//! stream libwebrtc still lists, and after a mic track was unpublished and republished (switching noise cancellation
+//! mid-call) that list kept a freed stream, so the next call that opened the mic crashed (SIGSEGV in
+//! `AudioTransportImpl::SendProcessedData`).
 //!
 //! Echo cancellation needs what the speakers play: every remote audio track is also read here (`Far`), mixed, and fed
 //! to the processing as its reverse stream, 10 ms for every 10 ms of microphone.
@@ -85,7 +90,7 @@ fn load_model() -> Result<DfTract, String> {
     Ok(m)
 }
 
-/// Where a capture's audio goes: published (noise cancelled, into the track's source), or only into the recording
+/// Where a capture's audio goes: published (into the track's source), or only into the recording
 /// (noise cancellation off: libwebrtc captures what is sent itself and gives no copy, so we capture a second time,
 /// with WebRTC's own noise suppression instead of DeepFilterNet).
 pub enum Sink {
@@ -93,7 +98,7 @@ pub enum Sink {
     Record(Arc<crate::record::Tap>),
 }
 
-/// The noise-cancelled microphone of one call: a thread that holds the model (loaded once, it takes a moment) and
+/// The microphone of one call: a thread that holds the model when denoising (loaded once, it takes a moment) and
 /// opens the device while `capture` is on. Dropping it stops the thread and closes the device.
 pub struct Mic {
     stop: Arc<AtomicBool>,
@@ -101,17 +106,19 @@ pub struct Mic {
 }
 
 impl Mic {
-    /// Starts the thread (the device stays closed until `capture(true)`); cleaned audio goes into `sink`.
-    pub fn start(sink: Sink, far: Arc<Far>, emit: Emit) -> Mic {
+    /// Starts the thread (the device stays closed until `capture(true)`); processed audio goes into `sink`, through
+    /// DeepFilterNet if `denoise` (only for `Sink::Source`).
+    pub fn start(sink: Sink, denoise: bool, far: Arc<Far>, emit: Emit) -> Mic {
         let (stop, want) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let (stop2, want2) = (stop.clone(), want.clone());
         std::thread::Builder::new()
             .name("mic".into())
             .spawn(move || {
-                if let Err(e) = run(&sink, &far, &stop2, &want2) {
+                if let Err(e) = run(&sink, denoise, &far, &stop2, &want2) {
                     eprintln!("mic: {e}");
                     emit(MediaEvent::Error(match sink {
-                        Sink::Source(_) => format!("noise cancellation: {e} (turn it off to use the plain microphone)"),
+                        Sink::Source(_) if denoise => format!("noise cancellation: {e}"),
+                        Sink::Source(_) => format!("microphone: {e}"),
                         Sink::Record(_) => format!("your microphone is not in the recording: {e}"),
                     }));
                 }
@@ -133,10 +140,10 @@ impl Drop for Mic {
     }
 }
 
-fn run(sink: &Sink, far: &Far, stop: &AtomicBool, want: &AtomicBool) -> Result<(), String> {
+fn run(sink: &Sink, denoise: bool, far: &Far, stop: &AtomicBool, want: &AtomicBool) -> Result<(), String> {
     let mut model = match sink {
-        Sink::Source(_) => Some(load_model()?),
-        Sink::Record(_) => None,
+        Sink::Source(_) if denoise => Some(load_model()?),
+        _ => None,
     };
     let mut cap: Option<Capture> = None;
     // the microphone chosen in the profile panel; a new choice reopens the capture
