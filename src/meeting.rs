@@ -60,12 +60,16 @@ impl Default for Dock {
 pub enum Ctl {
     Leave,
     NoiseCancel,
+    /// Low-data mode: no camera sent or received.
+    LowData,
     Cam,
     Mic,
     Hand,
     Record,
     Share,
     Chat,
+    /// Walk back to our desk (on a phone, in place of the chat toggle: the dock covers the map there).
+    Desk,
     FullToggle,
     Send,
 }
@@ -102,7 +106,7 @@ pub struct TileSpec {
 }
 
 pub fn visible(st: &State) -> bool {
-    st.call.joined.is_some() || st.call.want.is_some()
+    st.call.joined.is_some() || st.call.want.is_some() || st.call.rejoin_at.is_some()
 }
 
 pub fn status_label(st: &State) -> &'static str {

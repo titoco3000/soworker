@@ -497,7 +497,8 @@ impl Tui {
     }
 
     fn close_profile(&mut self) {
-        self.st.profile_act(crate::profile::Act::Close);
+        let now = self.now();
+        self.st.profile_act(crate::profile::Act::Close, now);
         self.modal = Modal::None;
         self.st.dirty = true;
     }
@@ -505,6 +506,7 @@ impl Tui {
     /// Keys in the profile dialog: up / down pick a line, left / right change the device on it, Enter runs it.
     fn profile_key(&mut self, k: KeyEvent) {
         use crate::profile::{Act, Line, LINES};
+        let now = self.now();
         let Some(p) = self.st.profile.as_mut() else { return self.close_profile() };
         let line = LINES[p.sel.min(LINES.len() - 1)];
         match (k.code, line) {
@@ -515,12 +517,12 @@ impl Tui {
                 self.close_profile();
                 self.modal = Modal::Logout;
             }
-            (KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('t'), Line::Device(crate::devices::Kind::Output)) => self.st.profile_act(Act::TestSound),
+            (KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('t'), Line::Device(crate::devices::Kind::Output)) => self.st.profile_act(Act::TestSound, now),
             (KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' '), Line::Device(kind)) => {
                 let id = p.cycle(kind, !matches!(k.code, KeyCode::Left | KeyCode::Char('h')));
-                self.st.profile_act(Act::Pick(kind, id));
+                self.st.profile_act(Act::Pick(kind, id), now);
             }
-            (KeyCode::Char('t'), _) => self.st.profile_act(Act::TestSound),
+            (KeyCode::Char('t'), _) => self.st.profile_act(Act::TestSound, now),
             _ => {}
         }
         self.st.dirty = true;
@@ -562,10 +564,11 @@ impl Tui {
                 'q' => self.quit = true,
                 'm' => st.toggle_mic(),
                 'N' => st.toggle_noise_cancel(now),
+                'D' => st.toggle_low_data(now),
                 'h' | 'H' => st.toggle_hand(now),
                 'R' => st.toggle_record(now),
                 ' ' => st.talk(crate::talk::TalkAct::Toggle, now),
-                'c' => st.toggle_cam(),
+                'c' => st.toggle_cam(now),
                 'v' => st.toggle_share(),
                 'l' => st.dock_press(crate::meeting::Hit::Ctl(Ctl::Leave), now),
                 'b' => {
@@ -968,7 +971,7 @@ mod tests {
     #[test]
     fn the_profile_dialog_leads_to_the_logout_question() {
         let mut t = Tui::for_test();
-        t.st.profile = Some(crate::profile::Profile { devices: Default::default(), chosen: Default::default(), open: None, meter: None, sel: 1, photo_hover: false });
+        t.st.profile = Some(crate::profile::Profile { devices: Default::default(), chosen: Default::default(), open: None, meter: None, sel: 1, photo_hover: false, scroll: 0.0 });
         t.modal = Modal::Profile;
         t.key(press(KeyCode::Up));
         assert_eq!(t.st.profile.as_ref().unwrap().sel, 0, "the first line is Log out");

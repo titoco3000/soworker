@@ -1,49 +1,4 @@
-mod app;
-mod backend;
-mod calls;
-mod chat;
-mod chatstate;
-mod desks;
-mod desktop;
-mod devices;
-mod directory;
-mod login;
-mod mapobj;
-mod meeting;
-mod mode;
-mod net;
-mod notify;
-mod overlay;
-mod profile;
-mod proto;
-mod roster;
-mod session;
-mod sound;
-mod talk;
-mod transcribe;
-mod waves;
-mod world;
-#[cfg(feature = "gui")]
-mod avatars;
-#[cfg(feature = "gui")]
-mod gui;
-#[cfg(feature = "gui")]
-mod photo;
-#[cfg(feature = "calls")]
-mod media;
-#[cfg(feature = "calls")]
-mod mic;
-#[cfg(feature = "calls")]
-mod record;
-#[cfg(feature = "mc")]
-mod mc;
-#[cfg(feature = "tui")]
-mod tui;
-#[cfg(feature = "tui")]
-mod videowin;
-
-#[cfg(not(any(feature = "tui", feature = "gui", feature = "mc")))]
-compile_error!("enable a frontend: feature `tui`, `gui` and/or `mc`");
+use soworker::*;
 
 #[cfg(feature = "gui")]
 fn icon_sheet(out: &str) {
@@ -134,8 +89,11 @@ fn main() {
     let res = frontend(&args);
     #[cfg(feature = "calls")]
     record::shutdown(); // a recording still running is written out before we go
-    if let Err(e) = res {
+    if let Err(e) = &res {
         eprintln!("error: {e}");
+    }
+    mode::flush_log();
+    if res.is_err() {
         std::process::exit(1);
     }
 }
@@ -160,6 +118,7 @@ fn frontend(args: &[String]) -> Result<(), String> {
     mode::remember(m);
     if m == UiMode::Gui {
         mode::drop_console();
+        mode::log_gui();
     }
     match m {
         #[cfg(feature = "gui")]

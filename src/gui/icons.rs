@@ -81,6 +81,24 @@ pub const NOISE_CANCEL_OFF: &[Shape] = &[
     Shape::Line(1.0, 1.0, 23.0, 23.0),
 ];
 
+/// Low-data mode off (Feather `wifi`) and on (`wifi-off`).
+pub const WIFI: &[Shape] = &[
+    Shape::Path("M5 12.55a11 11 0 0 1 14.08 0"),
+    Shape::Path("M1.42 9a16 16 0 0 1 21.16 0"),
+    Shape::Path("M8.53 16.11a6 6 0 0 1 6.95 0"),
+    Shape::Line(12.0, 20.0, 12.01, 20.0),
+];
+
+pub const WIFI_OFF: &[Shape] = &[
+    Shape::Line(1.0, 1.0, 23.0, 23.0),
+    Shape::Path("M16.72 11.06A10.94 10.94 0 0 1 19 12.55"),
+    Shape::Path("M5 12.55a10.94 10.94 0 0 1 5.17-2.39"),
+    Shape::Path("M10.71 5.05A16 16 0 0 1 22.58 9"),
+    Shape::Path("M1.42 9a15.91 15.91 0 0 1 4.7-2.88"),
+    Shape::Path("M8.53 16.11a6 6 0 0 1 6.95 0"),
+    Shape::Line(12.0, 20.0, 12.01, 20.0),
+];
+
 /// A ring with a dot: Feather has no record button.
 pub const RECORD: &[Shape] = &[Shape::Circle(12.0, 12.0, 10.0), Shape::Circle(12.0, 12.0, 3.0)];
 
@@ -110,4 +128,29 @@ pub const CHEVRON_RIGHT: &[Shape] = &[Shape::Path("M9 18l6-6-6-6")];
 pub const VOLUME: &[Shape] = &[
     Shape::Poly("11 5 6 9 2 9 2 15 6 15 11 19 11 5 z"),
     Shape::Path("M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"),
+];
+
+pub const SETTINGS: &[Shape] = &[
+    Shape::Circle(12.0, 12.0, 3.0),
+    Shape::Path("M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"),
+];
+
+pub const USERS: &[Shape] = &[
+    Shape::Path("M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"),
+    Shape::Circle(9.0, 7.0, 4.0),
+    Shape::Path("M23 21v-2a4 4 0 0 0-3-3.87"),
+    Shape::Path("M16 3.13a4 4 0 0 1 0 7.75"),
+];
+
+pub const MAP: &[Shape] = &[
+    Shape::Poly("1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6 z"),
+    Shape::Line(8.0, 2.0, 8.0, 18.0),
+    Shape::Line(16.0, 6.0, 16.0, 22.0),
+];
+
+/// Not a Feather icon: a table seen from the side (top and two legs), drawn in the same style.
+pub const TABLE: &[Shape] = &[
+    Shape::Rect { x: 2.0, y: 6.0, w: 20.0, h: 4.0, rx: 1.0 },
+    Shape::Line(5.0, 10.0, 5.0, 20.0),
+    Shape::Line(19.0, 10.0, 19.0, 20.0),
 ];

@@ -2,7 +2,7 @@
 //! no audio library is linked, so the binary stays small. The wave sounds are SoWork's own (`sendWave-*.mp3`, `receiveWave-*.mp3` from
 //! app.sowork.com/static/media, played at volume 0.2 by its client; we play the receive sound louder), converted to 32 kHz mono WAV.
 //! So is the raised-hand chime (`raiseHand-*.mp3`).
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 use std::process::{Command, Stdio};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -18,7 +18,7 @@ const RECEIVE_WAVE: &[u8] = include_bytes!("../assets/sounds/receiveWave.wav");
 const RAISE_HAND: &[u8] = include_bytes!("../assets/sounds/raiseHand.wav");
 
 impl Sound {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "android")))]
     fn name(self) -> &'static str {
         match self {
             Sound::SendWave => "sendWave",
@@ -47,7 +47,7 @@ impl Sound {
 }
 
 /// The clip with its samples scaled by `vol` (16-bit PCM, clipped), for players that take no volume.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "android", test)), allow(dead_code))]
 fn scaled(wav: &[u8], vol: f32) -> Vec<u8> {
     let mut out = wav.to_vec();
     // RIFF header (12 bytes), then chunks: 4-byte id, 4-byte little-endian size, body (padded to even)
@@ -169,7 +169,7 @@ fn play_on(wav: &[u8], vol: f32, want: &str) -> Result<(), String> {
 }
 
 /// The sound as a file on disk (players want a path), written once per run into the private runtime directory.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn file(s: Sound) -> Option<std::path::PathBuf> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("soworker");
     std::fs::create_dir_all(&dir).ok()?;
@@ -182,7 +182,7 @@ fn file(s: Sound) -> Option<std::path::PathBuf> {
 
 /// Fire and forget; a missing player or audio device is not an error worth showing. Plays on the speaker chosen in
 /// the profile panel (`aplay`, the last resort, only knows the default).
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 pub fn play(s: Sound) {
     let Some(path) = file(s) else { return };
     let device = crate::devices::chosen().output;
@@ -204,6 +204,19 @@ pub fn play(s: Sound) {
             }
         }
     });
+}
+
+/// Android: the volume is baked into the clip, then Kotlin plays it as a notification sound (it does not duck the
+/// call). Without the window client there is nothing to play it with.
+#[cfg(target_os = "android")]
+pub fn play(s: Sound) {
+    #[cfg(feature = "gui")]
+    {
+        let wav = scaled(s.bytes(), s.volume());
+        std::thread::spawn(move || crate::android::play_sound(&wav));
+    }
+    #[cfg(not(feature = "gui"))]
+    let _ = s;
 }
 
 #[cfg(test)]

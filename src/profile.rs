@@ -12,8 +12,14 @@ pub enum Act {
     /// Use this device (`None` = the system default).
     Pick(Kind, Option<String>),
     TestSound,
+    /// Low-data mode on or off.
+    LowData,
     /// Pick a new profile photo.
     ChangePhoto,
+    /// Move to the terminal client.
+    Terminal,
+    /// Show the QR code that signs a phone in to this account (desktop window client).
+    PairPhone,
     Close,
     /// A click on the panel itself: nothing to do.
     Panel,
@@ -32,6 +38,9 @@ pub struct Profile {
     /// The pointer is over our picture (window client): it shows a pencil.
     #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     pub photo_hover: bool,
+    /// How far the panel is scrolled down, in pixels (window client, phone layout: it can be taller than the screen).
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+    pub scroll: f32,
 }
 
 /// The terminal client's lines, top to bottom.
@@ -52,17 +61,19 @@ pub const DEFAULT: &str = "System default";
 
 /// What "no choice" is called in a list: a share with no screen chosen takes the first one.
 fn default_label(k: Kind) -> &'static str {
-    if k == Kind::Screen {
-        "First screen"
-    } else {
-        DEFAULT
+    match k {
+        Kind::Screen => "First screen",
+        // a phone: Bluetooth, else a wired headset, else the speaker; the front camera
+        Kind::Output if cfg!(target_os = "android") => "Automatic",
+        Kind::Camera if cfg!(target_os = "android") => "Front camera",
+        _ => DEFAULT,
     }
 }
 
 impl Profile {
     pub fn new() -> Self {
         let chosen = devices::chosen();
-        Profile { devices: devices::list(), meter: Meter::start(chosen.input.clone()), chosen, open: None, sel: 1, photo_hover: false }
+        Profile { devices: devices::list(), meter: Meter::start(chosen.input.clone()), chosen, open: None, sel: 1, photo_hover: false, scroll: 0.0 }
     }
 
     /// The choices of a list: the system default, then every device that is there.

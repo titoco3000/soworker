@@ -131,3 +131,47 @@ release:
 	git tag "$$tag"; tagged=1; \
 	git push origin HEAD "$$tag"; pushed=1; \
 	gh release create "$$tag" "$$asset" $$win "$$jar" --title "$$tag" --generate-notes $${notes:+--notes "$$notes"}
+
+# Android (docs/android-plan.md): the native library for arm64 phones, then the APK (Gradle, android/). Needs the NDK
+# (ANDROID_NDK_HOME, default the newest under ~/Android/Sdk/ndk) and the Android libwebrtc prebuilt in
+# third_party/libwebrtc-android-arm64: github.com/livekit/rust-sdks release webrtc-89d790b,
+# webrtc-android-arm64-release.zip, sha256 81880a4cda27474497ac5277e841ae110ede73e81d0e767606de4bdace8ac82c.
+ANDROID_HOME ?= $(HOME)/Android/Sdk
+ANDROID_NDK_HOME ?= $(lastword $(sort $(wildcard $(ANDROID_HOME)/ndk/*)))
+ANDROID_API := 26
+# debug builds much faster (no fat LTO); the copy in the APK is stripped either way
+ANDROID_PROFILE ?= debug
+ANDROID_TC := $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin
+ANDROID_PKG := dev.soworker.app
+ANDROID_LIB = target/aarch64-linux-android/$(ANDROID_PROFILE)/libsoworker_android.so
+ANDROID_ENV := env -u LK_CUSTOM_WEBRTC -u CC -u CXX \
+	LK_CUSTOM_WEBRTC=$(CURDIR)/third_party/libwebrtc-android-arm64 \
+	ANDROID_NDK_HOME=$(ANDROID_NDK_HOME) ANDROID_HOME=$(ANDROID_HOME) \
+	CC_aarch64_linux_android=$(ANDROID_TC)/aarch64-linux-android$(ANDROID_API)-clang \
+	CXX_aarch64_linux_android=$(ANDROID_TC)/aarch64-linux-android$(ANDROID_API)-clang++ \
+	AR_aarch64_linux_android=$(ANDROID_TC)/llvm-ar \
+	CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$(ANDROID_TC)/aarch64-linux-android$(ANDROID_API)-clang \
+	CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
+
+.PHONY: android-lib android android-run android-release
+android-lib:
+	$(ANDROID_ENV) cargo build -p soworker-android --target aarch64-linux-android $(if $(filter release,$(ANDROID_PROFILE)),--release)
+	@mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/libs
+	$(ANDROID_TC)/llvm-strip --strip-debug -o android/app/src/main/jniLibs/arm64-v8a/libsoworker_android.so $(ANDROID_LIB)
+	cp third_party/libwebrtc-android-arm64/libwebrtc.jar android/app/libs/
+
+android: android-lib
+	cd android && ANDROID_HOME=$(ANDROID_HOME) ./gradlew assembleDebug
+
+# install, start, and follow the app's log (stderr goes to logcat under the tag "soworker")
+android-run: android
+	adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+	adb shell am start -n $(ANDROID_PKG)/.MainActivity
+	adb logcat -v color --pid=$$(sleep 1; adb shell pidof -s $(ANDROID_PKG))
+
+# a signed APK next to the desktop builds: needs SOWORKER_KEYSTORE, SOWORKER_KEYSTORE_PASS, SOWORKER_KEY_ALIAS,
+# SOWORKER_KEY_PASS (keep the keystore outside the repo and back it up: every update must be signed with it)
+android-release:
+	$(MAKE) --no-print-directory android-lib ANDROID_PROFILE=release
+	cd android && ANDROID_HOME=$(ANDROID_HOME) ./gradlew assembleRelease
+	cp android/app/build/outputs/apk/release/app-release.apk target/soworker-$$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-android-arm64.apk

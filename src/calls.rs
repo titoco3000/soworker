@@ -21,6 +21,38 @@ pub enum MediaCmd {
     Devices,
     /// Start recording the call (`Some(title)`, which names the files) or stop (`None`). See `record.rs`.
     Record(Option<String>),
+    /// Which video may flow (low-data mode, see `State::low_data`): sent at start and whenever it changes; the media
+    /// thread keeps it for the next calls too.
+    VideoPolicy(VideoPolicy),
+}
+
+/// What video the call sends and receives. Audio always flows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoPolicy {
+    /// Our camera may be on (off = the capture stops, no frames leave).
+    pub send_camera: bool,
+    /// Subscribe to the others' cameras (off = unsubscribed: the SFU stops forwarding them, nothing is downloaded).
+    pub recv_camera: bool,
+    /// Subscribe to screen shares.
+    pub recv_screen: bool,
+}
+
+impl Default for VideoPolicy {
+    fn default() -> Self {
+        VideoPolicy { send_camera: true, recv_camera: true, recv_screen: true }
+    }
+}
+
+impl VideoPolicy {
+    /// Whether a remote track from this source should be subscribed to (`screen` = a screen share, `video` = any
+    /// video; everything else is audio, always wanted).
+    pub fn wants(&self, video: bool, screen: bool) -> bool {
+        match (video, screen) {
+            (false, _) => true,
+            (true, true) => self.recv_screen,
+            (true, false) => self.recv_camera,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -97,6 +129,9 @@ pub fn setting(key: &str) -> serde_json::Value {
 
 /// Sets one value in settings.json (`Null` removes it), keeping everything else in the file.
 pub fn save_setting(key: &str, value: serde_json::Value) {
+    if cfg!(test) {
+        return; // unit tests must not change the user's settings
+    }
     let path = settings_path();
     let mut v = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).filter(|v| v.is_object()).unwrap_or_else(|| serde_json::json!({}));
     match (value, v.as_object_mut()) {
@@ -111,7 +146,13 @@ pub fn save_setting(key: &str, value: serde_json::Value) {
 
 /// The `noiseCancellation` setting of settings.json (on unless set to false).
 pub fn noise_cancel_setting() -> bool {
-    setting("noiseCancellation").as_bool().unwrap_or(true)
+    // Android: the phone's own echo canceller and noise suppression; RNNoise on top costs battery for little
+    !cfg!(target_os = "android") && setting("noiseCancellation").as_bool().unwrap_or(true)
+}
+
+/// The `lowDataMode` setting of settings.json (off unless set).
+pub fn low_data_setting() -> bool {
+    setting("lowDataMode").as_bool().unwrap_or(false)
 }
 
 /// Remembers the noise cancellation choice in settings.json.
@@ -213,6 +254,18 @@ mod tests {
         assert!(!hand_raised(r#"{"raisedHandAt":null}"#) && !hand_raised("") && !hand_raised("not json"));
     }
 
+
+    #[test]
+    fn the_policy_never_drops_audio() {
+        let low = VideoPolicy { send_camera: false, recv_camera: false, recv_screen: true };
+        assert!(low.wants(false, false), "microphone audio");
+        assert!(low.wants(false, true), "screen share audio");
+        assert!(!low.wants(true, false), "a camera");
+        assert!(low.wants(true, true), "a screen share");
+        let hidden = VideoPolicy { recv_screen: false, ..low };
+        assert!(!hidden.wants(true, true) && hidden.wants(false, false));
+        assert!(VideoPolicy::default().wants(true, false));
+    }
 
     #[test]
     fn payload_round_trips() {

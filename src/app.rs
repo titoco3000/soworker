@@ -78,11 +78,26 @@ pub struct CallUi {
     /// Since when we record the call, while we do; and the elapsed seconds last drawn (the clock repaints once a second).
     pub recording: Option<std::time::Instant>,
     pub rec_shown: u64,
+    /// The call dropped without us asking (network, LiveKit ended it, the join failed) while the server still has us in
+    /// that meeting: when to try again (`now` seconds), and how many tries in a row so far (for the back-off).
+    pub rejoin_at: Option<f64>,
+    pub drops: u32,
 }
 
 /// A walk out of the meeting area waiting for the user's yes: the click target and whether it was a teleport.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LeaveAsk(pub Option<(f32, f32, bool)>);
+
+/// What the system draws over the window's edges (window pixels): status bar, navigation bar, display cutout, and the
+/// soft keyboard (`ime`, from the bottom). Zero on the desktop.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub struct Insets {
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
+    pub ime: f32,
+}
 
 #[derive(Default, Clone, Copy)]
 pub struct Keys {
@@ -99,6 +114,8 @@ pub enum LoginPhase {
     Failed(String),
     /// The saved sign-in could not be checked because there is no connection; retrying may well work.
     Offline,
+    /// The camera looks for the desktop's sign-in code (Android).
+    Scanning,
 }
 
 impl LoginPhase {
@@ -131,6 +148,8 @@ pub enum LoginAct {
     Cancel,
     /// Check the saved sign-in again (after it could not be checked offline).
     Retry,
+    /// Read the sign-in code shown by the desktop app with the camera (Android).
+    Scan,
 }
 
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
@@ -174,6 +193,16 @@ pub struct State {
     pub media_out: Vec<MediaCmd>,
     /// Noise cancellation on the microphone (the `noiseCancellation` setting); the media thread is told at start.
     pub noise_cancel: bool,
+    /// Low-data mode as the user set it (the `lowDataMode` setting): no camera sent, none received.
+    pub low_data_user: bool,
+    /// The window is on screen (Android: between `resumed` and `suspended`). Not visible forces low-data mode.
+    pub visible: bool,
+    /// The screen is locked (Android reports it), for the message only.
+    pub locked: bool,
+    /// Our camera was on when low-data mode turned it off: say it stayed off once the mode ends.
+    cam_paused: bool,
+    /// The video policy the media thread was last told.
+    policy_sent: crate::calls::VideoPolicy,
     pub call: CallUi,
     pub dock: Dock,
     /// Circle-masked avatar pictures by user id, and what we already asked the loader for.
@@ -190,6 +219,10 @@ pub struct State {
     pub profile: Option<crate::profile::Profile>,
     /// Logout flow: the confirmation dialog, then the request the window acts on.
     pub confirm_logout: bool,
+    /// The phone sign-in code on screen (desktop window client): its text and until when it shows (Unix seconds).
+    pub pair_code: Option<(String, f64)>,
+    /// "Sign in a phone" was pressed: the window client makes the code from the saved session.
+    pub pair_wanted: bool,
     /// Asked to confirm walking out of the meeting area while in a call; holds where a click was heading (None = arrow keys).
     pub confirm_leave: Option<LeaveAsk>,
     pub logout_requested: bool,
@@ -201,6 +234,8 @@ pub struct State {
     pub clusters_seen: u32,
     /// Display scale factor (HiDPI): multiplies zoom and UI text sizes.
     pub ui: f32,
+    /// The system bars and the soft keyboard over the window (Android).
+    pub insets: Insets,
     moving: bool,
     last_send: f64,
     stuck: f32,
@@ -216,6 +251,8 @@ pub struct State {
 impl State {
     pub fn new(me_id: &str, dry: bool) -> Self {
         let noise_cancel = crate::calls::noise_cancel_setting();
+        let low_data_user = crate::calls::low_data_setting();
+        let policy = Self::policy_for(low_data_user, true);
         State {
             world: World::default(),
             me_id: me_id.into(),
@@ -226,7 +263,11 @@ impl State {
             desk_owners: None,
             users: HashMap::new(),
             roster: vec![],
-            sidebar: crate::directory::Ui { collapsed: crate::calls::setting("sidebarCollapsed").as_bool().unwrap_or(false), ..Default::default() },
+            sidebar: crate::directory::Ui {
+                collapsed: crate::calls::setting("sidebarCollapsed").as_bool().unwrap_or(false),
+                split: crate::calls::setting("sidebarSplit").as_f64().unwrap_or(0.0) as f32,
+                ..Default::default()
+            },
             waves: vec![],
             chat: Default::default(),
             chat_out: vec![],
@@ -247,8 +288,13 @@ impl State {
             toast: None,
             transcript: None,
             outbox: vec![],
-            media_out: vec![MediaCmd::NoiseCancel(noise_cancel)],
+            media_out: vec![MediaCmd::NoiseCancel(noise_cancel), MediaCmd::VideoPolicy(policy)],
             noise_cancel,
+            low_data_user,
+            visible: true,
+            locked: false,
+            cam_paused: false,
+            policy_sent: policy,
             call: CallUi::default(),
             dock: Dock::default(),
             pics: HashMap::new(),
@@ -260,6 +306,8 @@ impl State {
             switch: None,
             profile: None,
             confirm_logout: false,
+            pair_code: None,
+            pair_wanted: false,
             confirm_leave: None,
             logout_requested: false,
             login: None,
@@ -267,6 +315,7 @@ impl State {
             zone_sent: 0,
             clusters_seen: 0,
             ui: 1.0,
+            insets: Insets::default(),
             moving: false,
             last_send: 0.0,
             stuck: 0.0,
@@ -315,6 +364,8 @@ impl State {
                 eprintln!("[{now:6.1}] net: replaced by another session of this account");
                 self.status = "SoWork was opened somewhere else".into();
                 self.say("SoWork was opened somewhere else: this one is disconnected", now);
+                self.call.want = None; // on purpose: no rejoin
+                self.call.rejoin_at = None;
                 self.media_out.push(MediaCmd::Leave);
             }
             Net::Error(e) => {
@@ -434,7 +485,11 @@ impl State {
                 self.clusters_seen += 1;
                 eprintln!("[{now:6.1}] gaia cluster event: {}", match &c {
                     None => "none (left / alone)".to_string(),
-                    Some(c) => format!("{} user(s), token: {}", c.users.len(), if c.token.is_some() { "livekit" } else { c.unsupported.as_deref().unwrap_or("missing") }),
+                    Some(c) => format!("conversation {}, {} user(s), token: {}", c.conversation_id, c.users.len(), match (&c.token, &c.unsupported) {
+                        (Some(t), _) => format!("livekit room {}", t.room_id),
+                        (None, Some(p)) => p.clone(),
+                        (None, None) => "missing (asking over REST)".into(),
+                    }),
                 });
                 let before = self.cluster.as_ref().map(|c| c.conversation_id.clone());
                 self.cluster = c;
@@ -507,6 +562,20 @@ impl State {
             None => {}
         }
         self.dirty = true;
+    }
+
+    /// Where our desk in this room is, once the desks and who owns them are known.
+    pub fn my_desk(&self) -> Option<(f32, f32)> {
+        let owners = self.desk_owners.as_ref()?;
+        owners.iter().find(|d| d.owner == self.me_id && d.room == self.room_def).and_then(|d| self.desks.get(&d.desk)).copied()
+    }
+
+    /// We have a desk in this room and are not standing at it (the desk button is worth showing).
+    pub fn away_from_desk(&self) -> bool {
+        match (self.my_desk(), self.me()) {
+            (Some(d), Some(me)) => (d.0 - me.x).hypot(d.1 - me.y) > T,
+            _ => false,
+        }
     }
 
     /// Walk to the desk assigned to us in this room (Ctrl+D), the way SoWork's own client does: an ordinary walk.
@@ -648,6 +717,11 @@ impl State {
             }
             _ => {}
         }
+        if self.cluster.as_ref().and_then(|c| c.token.as_ref()).is_none() {
+            // no meeting (or no way in) any more: nothing to rejoin, and the next drop starts the back-off afresh
+            self.call.rejoin_at = None;
+            self.call.drops = 0;
+        }
     }
 
     /// Ask for a "Press F1 to talk" notification, unless we are unmuted or just showed one.
@@ -705,11 +779,13 @@ impl State {
         self.dirty = true;
         match hit {
             Hit::Ctl(Ctl::FullToggle) => self.dock.full = !self.dock.full,
-            Hit::Ctl(Ctl::Chat) => self.toggle_chat(),
+            Hit::Ctl(Ctl::Chat) => self.reveal_chat(),
+            Hit::Ctl(Ctl::Desk) => self.go_to_desk(now),
             Hit::Ctl(Ctl::Mic) => self.toggle_mic(),
-            Hit::Ctl(Ctl::Cam) => self.toggle_cam(),
+            Hit::Ctl(Ctl::Cam) => self.toggle_cam(now),
             Hit::Ctl(Ctl::Share) => self.toggle_share(),
             Hit::Ctl(Ctl::NoiseCancel) => self.toggle_noise_cancel(now),
+            Hit::Ctl(Ctl::LowData) => self.toggle_low_data(now),
             Hit::Ctl(Ctl::Hand) => self.toggle_hand(now),
             Hit::Ctl(Ctl::Record) => self.toggle_record(now),
             Hit::Ctl(Ctl::Leave) => self.leave_meeting(),
@@ -745,9 +821,12 @@ impl State {
     }
 
     /// Something in the profile panel was clicked or chosen.
-    pub fn profile_act(&mut self, act: crate::profile::Act) {
+    pub fn profile_act(&mut self, act: crate::profile::Act, now: f64) {
         use crate::devices::{self, Kind};
         use crate::profile::Act;
+        if act == Act::LowData && self.profile.is_some() {
+            return self.toggle_low_data(now);
+        }
         let Some(p) = self.profile.as_mut() else { return };
         match act {
             Act::Logout => {
@@ -770,10 +849,19 @@ impl State {
                 }
             }
             Act::TestSound => self.sounds.push(crate::sound::Sound::ReceiveWave),
+            Act::LowData => {} // handled above
             Act::ChangePhoto => {
                 p.photo_hover = false;
                 self.outbox.push(Cmd::ChangePhoto);
                 self.toast = Some(("Choose a picture for your profile…".into(), f64::MAX)); // until the upload answers
+            }
+            Act::Terminal => {
+                self.profile = None;
+                self.switch = Some(crate::mode::UiMode::Tui);
+            }
+            Act::PairPhone => {
+                self.profile = None;
+                self.pair_wanted = true;
             }
             Act::Close => self.profile = None,
             Act::Panel => p.open = None,
@@ -785,6 +873,7 @@ impl State {
     fn leave_meeting(&mut self) {
         self.call.ignore_room = self.call.want.clone().or_else(|| self.call.joined.clone());
         self.call.want = None;
+        self.call.rejoin_at = None;
         self.media_out.push(MediaCmd::Leave);
         if self.cur_zone_id.is_some() {
             self.left_zone = self.cur_zone_id.clone();
@@ -831,10 +920,74 @@ impl State {
         self.dirty = true;
     }
 
-    pub fn toggle_cam(&mut self) {
-        if self.call.joined.is_some() {
-            self.media_out.push(MediaCmd::Camera(!self.call.cam));
+    pub fn toggle_cam(&mut self, now: f64) {
+        if self.call.joined.is_none() {
+            return;
         }
+        if !self.call.cam && self.low_data() {
+            return self.say(if self.visible { "Low data mode: the camera stays off" } else { "Video is paused while the app is hidden" }, now);
+        }
+        self.cam_paused = false;
+        self.media_out.push(MediaCmd::Camera(!self.call.cam));
+    }
+
+    /// Low-data mode in effect: chosen by the user, or forced while the app is not on screen.
+    pub fn low_data(&self) -> bool {
+        self.low_data_user || !self.visible
+    }
+
+    fn policy_for(user_low: bool, visible: bool) -> crate::calls::VideoPolicy {
+        let low = user_low || !visible;
+        // screen shares keep coming in user-chosen low-data mode (people join a meeting for the shared screen), but
+        // not while nothing is on screen
+        crate::calls::VideoPolicy { send_camera: !low, recv_camera: !low, recv_screen: visible }
+    }
+
+    /// Low-data mode on or off (the dock button, settings, the terminal client's D), remembered in settings.json.
+    pub fn toggle_low_data(&mut self, now: f64) {
+        self.low_data_user = !self.low_data_user;
+        crate::calls::save_setting("lowDataMode", self.low_data_user.into());
+        if !self.update_policy(now, true) {
+            // nothing changed in effect (the app is hidden): still say what the switch is now
+            self.say(if self.low_data_user { "Low data mode on" } else { "Low data mode off" }, now);
+        }
+    }
+
+    /// The app came on screen or went away (Android: resumed / suspended). `locked` says whether the screen is locked.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn set_visible(&mut self, visible: bool, now: f64) {
+        if visible != self.visible {
+            self.visible = visible;
+            let in_call = self.call.joined.is_some();
+            let _ = self.update_policy(now, in_call); // outside a call, going to the background is not news
+        }
+    }
+
+    /// Tell the media thread when the effective policy changed, turn our camera off for it, and say what happened.
+    /// False when the policy stayed the same.
+    fn update_policy(&mut self, now: f64, announce: bool) -> bool {
+        let p = Self::policy_for(self.low_data_user, self.visible);
+        if p == self.policy_sent {
+            return false;
+        }
+        let was_low = !self.policy_sent.recv_camera;
+        self.policy_sent = p;
+        self.media_out.push(MediaCmd::VideoPolicy(p));
+        self.dirty = true;
+        if !p.send_camera && self.call.cam {
+            self.cam_paused = true; // the media thread turns it off and reports CameraState(false)
+        }
+        let low = self.low_data();
+        if !announce {
+            self.cam_paused &= low;
+        } else if low && !was_low {
+            let msg = if !self.visible && self.locked { "Screen locked: video paused" } else { "Low data mode: video paused" };
+            self.say(msg, now);
+        } else if !low && was_low {
+            let msg = if std::mem::take(&mut self.cam_paused) { "Video back on. Camera stayed off: tap to turn it on" } else { "Video back on" };
+            self.say(msg, now);
+        }
+        true
     }
 
     pub fn toggle_share(&mut self) {
@@ -855,13 +1008,8 @@ impl State {
     pub fn sidebar_press(&mut self, hit: crate::directory::Hit, now: f64) {
         use crate::directory::{join_target, Hit};
         match hit {
-            Hit::Away => {
-                let a = !self.available;
-                self.set_available(a);
-            }
             Hit::Collapse => self.toggle_sidebar(),
-            Hit::Profile => self.toggle_profile(),
-            Hit::Terminal => self.switch = Some(crate::mode::UiMode::Tui),
+            Hit::Desk => self.go_to_desk(now),
             // a row of the narrow sidebar has no room for its menu: widen the sidebar first
             Hit::Row(key) if self.sidebar.collapsed => {
                 self.toggle_sidebar();
@@ -874,6 +1022,7 @@ impl State {
                     Some(((x, y), name)) => {
                         self.say(format!("Walking to {name}"), now);
                         self.click(x, y, false, now);
+                        self.sidebar.view = crate::directory::View::Main; // a narrow window shows the walk
                     }
                     None => self.say("Cannot find where to walk to", now),
                 }
@@ -898,14 +1047,21 @@ impl State {
             }
             Hit::Message(key) => {
                 self.sidebar.open = None;
-                self.open_dm(&key);
+                if key.starts_with("zone:") {
+                    self.select_tab(crate::chatstate::Tab::Area); // the meeting we are in: its area chat
+                    self.chat.focus = true;
+                } else {
+                    self.open_dm(&key);
+                }
+                self.reveal_chat();
             }
-            Hit::Chat => self.toggle_chat(),
+            Hit::Chat => self.reveal_chat(),
             Hit::WaveAccept(from) => {
                 // accepting a wave means going to the person, as the official client does
                 if let Some(((x, y), name)) = join_target(self, &from) {
                     self.say(format!("Walking to {name}"), now);
                     self.click(x, y, false, now);
+                    self.sidebar.view = crate::directory::View::Main;
                 } else {
                     self.say("Cannot find where they are", now);
                 }
@@ -933,7 +1089,17 @@ impl State {
                 }
             }
             MediaEvent::Left => {
-                eprintln!("[{now:6.1}] livekit left");
+                // we still want a room and this is not the old one closing for a switch: the call dropped by itself (or
+                // the join failed). Forget it was joined, so the next `sync_call` joins again, and retry shortly.
+                let dropped = self.call.want.is_some() && (self.call.joined.is_none() || self.call.joined == self.call.want);
+                eprintln!("[{now:6.1}] livekit left{}", if dropped { " without being asked" } else { "" });
+                if dropped {
+                    let wait = (2.0 * 2f64.powi(self.call.drops.min(4) as i32)).min(30.0);
+                    self.call.drops += 1;
+                    self.call.want = None;
+                    self.call.rejoin_at = Some(now + wait);
+                    eprintln!("[{now:6.1}] call dropped (try {}): joining again in {wait:.0}s", self.call.drops);
+                }
                 self.call.joined = None;
                 self.call.mic = false;
                 self.call.cam = false;
@@ -946,6 +1112,7 @@ impl State {
                 self.call.talking_since = None;
                 self.call.recording = None;
                 self.call.peers = None;
+                self.cam_paused = false;
                 self.dock.pinned = None;
                 self.dock.tile_full = false;
                 self.dock.last_auto = None;
@@ -1061,11 +1228,59 @@ impl State {
         }
     }
 
+    /// One step of the mouse wheel: 10% in or out, remembered.
     #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     pub fn zoom(&mut self, up: bool) {
-        self.scale = (self.scale * if up { 1.1 } else { 1.0 / 1.1 }).clamp(0.08, 1.5);
+        self.set_zoom(self.scale * if up { 1.1 } else { 1.0 / 1.1 });
+        self.save_zoom();
+    }
+
+    /// Set the map's zoom, within its bounds, without saving it (a pinch calls this on every move).
+    pub fn set_zoom(&mut self, s: f32) {
+        let s = if s.is_finite() { s.clamp(0.08, 1.5) } else { self.scale };
+        if s != self.scale {
+            self.scale = s;
+            self.dirty = true;
+        }
+    }
+
+    /// Remember the zoom (`guiZoom`), once a wheel step or a pinch is over.
+    pub fn save_zoom(&self) {
         crate::calls::save_setting("guiZoom", self.scale.into());
+    }
+
+    /// Back (Android's back button or gesture): close the innermost thing open. False when nothing was open, and
+    /// the app should go to the background.
+    pub fn back(&mut self, now: f64) -> bool {
+        use crate::directory::View;
         self.dirty = true;
+        if matches!(self.login, Some(LoginPhase::Scanning)) {
+            self.login_act = Some(LoginAct::Cancel); // back stops the camera
+        } else if self.pair_code.is_some() {
+            self.pair_code = None;
+        } else if self.confirm_logout {
+            self.logout_choice(false);
+        } else if self.confirm_leave.is_some() {
+            self.leave_choice(false, now);
+        } else if self.profile.as_ref().is_some_and(|p| p.open.is_some()) {
+            self.profile_act(crate::profile::Act::Panel, now);
+        } else if self.profile.is_some() {
+            self.profile_act(crate::profile::Act::Close, now);
+        } else if self.chat.focus {
+            self.chat.focus = false;
+        } else if self.sidebar.open.is_some() {
+            self.sidebar.open = None;
+        } else if self.dock.tile_full {
+            self.dock.tile_full = false;
+        } else if self.dock.full && !self.sidebar.mobile {
+            self.dock.full = false;
+        } else if self.sidebar.mobile && self.sidebar.view != View::Main {
+            self.sidebar.view = View::Main;
+        } else {
+            self.dirty = false;
+            return false;
+        }
+        true
     }
 
     /// The window's zoom as it was last left (`guiZoom` in settings.json).
@@ -1074,6 +1289,13 @@ impl State {
         if let Some(s) = crate::calls::setting("guiZoom").as_f64() {
             self.scale = (s as f32).clamp(0.08, 1.5);
         }
+    }
+
+    /// Flip between available and away (the availability button, Ctrl+B), and say which one we are now.
+    pub fn toggle_available(&mut self, now: f64) {
+        let a = !self.available;
+        self.set_available(a);
+        self.say(if a { "You are now available" } else { "You are now away" }, now);
     }
 
     pub fn set_available(&mut self, a: bool) {
@@ -1090,12 +1312,18 @@ impl State {
             || self.path.is_some()
             || self.profile.as_ref().is_some_and(|p| p.meter.is_some()) // the level meter moves
             || (self.call.hand.is_some() && self.call.talking_since.is_some()) // the hand may go down in a moment
+            || self.call.rejoin_at.is_some() // a dropped call is joined again in a moment
             || k.up || k.down || k.left || k.right
             || self.users.values().any(|u| u.id != self.me_id && (u.tx - u.x).hypot(u.ty - u.y) > 0.5)
     }
 
     /// Advance the simulation. Returns true if the screen needs a redraw (movement or events).
     pub fn update(&mut self, dt: f32, now: f64) -> bool {
+        if self.call.rejoin_at.is_some_and(|t| now >= t) {
+            self.call.rejoin_at = None;
+            eprintln!("[{now:6.1}] rejoining the call");
+            self.sync_call();
+        }
         if self.world.rebuild_if_dirty() {
             self.check_spawn();
             self.dirty = true;
@@ -1108,6 +1336,13 @@ impl State {
         }
         if self.toast.as_ref().is_some_and(|(_, until)| now > *until) {
             self.toast = None;
+            self.dirty = true;
+        }
+        if let Some((_, until)) = &self.pair_code {
+            // the sign-in code does not stay on screen; until then its countdown moves
+            if crate::pairing::unix_secs() > *until {
+                self.pair_code = None;
+            }
             self.dirty = true;
         }
         if self.transcript.as_ref().is_some_and(|(s, at)| matches!(s, crate::transcribe::Status::Done(_)) && now - at > 15.0) {
@@ -1312,6 +1547,159 @@ mod tests {
         st.apply(Net::DeskOwners(vec![desk("R1", "me")]), 0.0);
         st.update(0.016, 0.0);
         assert!(!st.desk_at_start && st.path_goal.0 < 5.0 * T, "we were already walking somewhere: no hijack");
+    }
+
+    /// In a call with our camera on, low-data mode off, whatever settings.json says.
+    fn in_call_with_camera() -> State {
+        let mut st = State::new("me", true);
+        st.low_data_user = false;
+        st.policy_sent = State::policy_for(false, true);
+        st.apply_media(MediaEvent::Joined("room".into()), 0.0);
+        st.apply_media(MediaEvent::CameraState(true), 0.0);
+        st.media_out.clear();
+        st
+    }
+
+    fn policies(st: &mut State) -> Vec<crate::calls::VideoPolicy> {
+        st.media_out.drain(..).filter_map(|c| if let MediaCmd::VideoPolicy(p) = c { Some(p) } else { None }).collect()
+    }
+
+    #[test]
+    fn the_zoom_stays_in_bounds() {
+        let mut st = State::new("me", true);
+        st.set_zoom(10.0);
+        assert_eq!(st.scale, 1.5);
+        st.set_zoom(0.0);
+        assert_eq!(st.scale, 0.08);
+        st.set_zoom(f32::NAN);
+        assert_eq!(st.scale, 0.08);
+        st.set_zoom(0.5);
+        st.zoom(true);
+        assert!((st.scale - 0.55).abs() < 1e-5);
+    }
+
+    #[test]
+    fn back_closes_the_innermost_thing_first() {
+        use crate::directory::View;
+        let mut st = State::new("me", true);
+        st.sidebar.mobile = true;
+        st.sidebar.view = View::Chat;
+        st.sidebar.open = Some("ana".into());
+        st.chat.focus = true;
+        st.dock.tile_full = true;
+        st.toggle_profile();
+        st.profile.as_mut().unwrap().open = Some(crate::devices::Kind::Output);
+        st.confirm_logout = true;
+        assert!(st.back(0.0) && !st.confirm_logout, "the logout question");
+        assert!(st.back(0.0) && st.profile.as_ref().is_some_and(|p| p.open.is_none()), "the open list");
+        assert!(st.back(0.0) && st.profile.is_none(), "settings");
+        assert!(st.back(0.0) && !st.chat.focus, "the keyboard");
+        assert!(st.back(0.0) && st.sidebar.open.is_none(), "a people-list menu");
+        assert!(st.back(0.0) && !st.dock.tile_full, "a fullscreen tile");
+        assert!(st.back(0.0) && st.sidebar.view == View::Main, "back to the office");
+        assert!(!st.back(0.0), "nothing left: the app goes to the background");
+        st.confirm_leave = Some(LeaveAsk(None));
+        assert!(st.back(0.0) && st.confirm_leave.is_none(), "the leave question");
+    }
+
+    #[test]
+    fn low_data_mode_stops_video_and_never_restarts_our_camera() {
+        use crate::calls::VideoPolicy;
+        let mut st = in_call_with_camera();
+        st.toggle_low_data(1.0);
+        assert!(st.low_data());
+        assert_eq!(policies(&mut st), vec![VideoPolicy { send_camera: false, recv_camera: false, recv_screen: true }], "screen shares keep coming");
+        assert_eq!(st.toast.as_ref().unwrap().0, "Low data mode: video paused");
+        st.apply_media(MediaEvent::CameraState(false), 1.1); // the media thread turned it off
+        st.toggle_cam(1.2);
+        assert!(st.media_out.is_empty(), "the camera stays off while low");
+        assert!(st.toast.as_ref().unwrap().0.contains("camera stays off"));
+        st.toggle_low_data(2.0);
+        assert_eq!(policies(&mut st), vec![VideoPolicy::default()]);
+        assert!(!st.call.cam, "our camera does not come back by itself");
+        assert_eq!(st.toast.as_ref().unwrap().0, "Video back on. Camera stayed off: tap to turn it on");
+        st.toggle_cam(3.0);
+        assert!(matches!(st.media_out.as_slice(), [MediaCmd::Camera(true)]));
+    }
+
+    #[test]
+    fn hiding_the_app_forces_low_data_and_showing_it_restores_the_choice() {
+        use crate::calls::VideoPolicy;
+        let mut st = in_call_with_camera();
+        st.locked = true;
+        st.set_visible(false, 1.0);
+        assert!(st.low_data() && !st.low_data_user);
+        assert_eq!(policies(&mut st), vec![VideoPolicy { send_camera: false, recv_camera: false, recv_screen: false }], "nothing on screen: no video at all");
+        assert_eq!(st.toast.as_ref().unwrap().0, "Screen locked: video paused");
+        st.apply_media(MediaEvent::CameraState(false), 1.1);
+        st.set_visible(false, 1.2);
+        assert!(policies(&mut st).is_empty(), "no change, nothing sent");
+        st.locked = false;
+        st.set_visible(true, 2.0);
+        assert_eq!(policies(&mut st), vec![VideoPolicy::default()]);
+        assert!(!st.call.cam && st.toast.as_ref().unwrap().0.contains("Camera stayed off"));
+
+        // chosen low data stays low on screen, but screen shares come back
+        st.toggle_low_data(3.0);
+        st.set_visible(false, 4.0);
+        assert_eq!(policies(&mut st).last().copied(), Some(VideoPolicy { send_camera: false, recv_camera: false, recv_screen: false }));
+        st.set_visible(true, 5.0);
+        assert_eq!(policies(&mut st), vec![VideoPolicy { send_camera: false, recv_camera: false, recv_screen: true }]);
+        assert!(st.low_data());
+    }
+
+    #[test]
+    fn a_dropped_call_is_joined_again() {
+        use crate::proto::{ClusterInfo, LkToken};
+        let cluster = |room: &str| Net::Cluster(Some(ClusterInfo {
+            id: "c".into(),
+            conversation_id: format!("conv-{room}"),
+            users: vec![("me".into(), "Me".into()), ("ana".into(), "Ana".into())],
+            token: Some(LkToken { token: "t".into(), api_host: "lk.example".into(), room_id: room.into() }),
+            unsupported: None,
+        }));
+        let joins = |st: &mut State| st.media_out.drain(..).filter(|c| matches!(c, MediaCmd::Join { .. })).count();
+        let mut st = State::new("me", true);
+        st.media_out.clear();
+        st.apply(cluster("RM"), 0.0);
+        assert_eq!(joins(&mut st), 1);
+        st.apply_media(MediaEvent::Joined("RM".into()), 1.0);
+
+        // LiveKit ends the call by itself; gaia still has us at the table
+        st.apply_media(MediaEvent::Left, 10.0);
+        assert!(st.call.want.is_none() && crate::meeting::visible(&st), "the dock stays up while we get back in");
+        assert!(st.is_active());
+        st.update(0.0, 11.0);
+        assert_eq!(joins(&mut st), 0, "not at once");
+        st.update(0.0, 12.0);
+        assert_eq!(joins(&mut st), 1, "two seconds later");
+        // the join fails: back off longer
+        st.apply_media(MediaEvent::Left, 12.5);
+        st.update(0.0, 15.0);
+        assert_eq!(joins(&mut st), 0);
+        st.update(0.0, 16.5);
+        assert_eq!(joins(&mut st), 1, "four seconds later");
+        st.apply_media(MediaEvent::Joined("RM".into()), 17.0);
+
+        // walking out and back in also joins again, even into the same room
+        st.apply_media(MediaEvent::Left, 20.0);
+        st.apply(Net::Cluster(None), 20.5);
+        assert!(st.call.rejoin_at.is_none() && st.call.drops == 0);
+        st.apply(cluster("RM"), 21.0);
+        assert_eq!(joins(&mut st), 1);
+
+        // the old room closing for a switch is not a drop
+        st.apply_media(MediaEvent::Joined("RM".into()), 22.0);
+        st.apply(cluster("RM2"), 23.0);
+        st.apply_media(MediaEvent::Left, 23.1);
+        assert_eq!(st.call.want.as_deref(), Some("RM2"));
+        assert!(st.call.rejoin_at.is_none());
+
+        // leaving on purpose is not one either
+        st.apply_media(MediaEvent::Joined("RM2".into()), 24.0);
+        st.leave_meeting();
+        st.apply_media(MediaEvent::Left, 24.5);
+        assert!(st.call.rejoin_at.is_none());
     }
 
     #[test]

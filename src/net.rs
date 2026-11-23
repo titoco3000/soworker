@@ -147,11 +147,17 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
                         }
                         for e in events(&name, &payload) {
                             if let (Net::Room { users, .. }, true) = (&e, !dry) {
-                                // be available for calls once we are in the room; remember our server-side position
+                                // reaffirm our availability once we are in the room (start-up, log-in, reconnect), on gaia
+                                // and on the REST presence, so an away set by another instance does not stick; remember
+                                // our server-side position
                                 if let Some(me) = users.iter().find(|u| u.id == auth.uid) {
                                     link.pos.get_or_insert((me.x, me.y));
                                 }
                                 ws.send(Message::Binary(cmd_packet(&Cmd::Available(link.available)))).map_err(|e| e.to_string())?;
+                                if let Ok(token) = auth.id_token() {
+                                    let (uid, away) = (auth.uid.clone(), !link.available);
+                                    std::thread::spawn(move || rest_presence(&token, &uid, away));
+                                }
                             }
                             if let Net::Cluster(Some(c)) = &e {
                                 if c.token.is_none() && c.unsupported.is_none() {
@@ -245,8 +251,7 @@ fn session(auth: &mut Auth, link: &mut Link, emit: &dyn Fn(Net), cmds: &Receiver
 fn change_photo(token: String, uid: String, group_id: String, tx: Sender<Net>) {
     std::thread::spawn(move || {
         let res = (|| {
-            let Some(path) = crate::photo::pick()? else { return Ok(None) };
-            let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let Some(bytes) = crate::photo::pick_bytes()? else { return Ok(None) };
             let webp = crate::photo::prepare(&bytes)?;
             crate::photo::upload(&token, &uid, &group_id, &webp).map(Some)
         })();

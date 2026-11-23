@@ -13,6 +13,23 @@ pub struct Ui {
     pub collapsed: bool,
     /// Where the mouse is over the collapsed sidebar: the row under it gets a card with its details.
     pub hover: Option<(f32, f32)>,
+    /// Height of the people list above the chat in the wide sidebar, in logical pixels (0 = the default split).
+    pub split: f32,
+    /// The line between the people list and the chat is being dragged: where it was grabbed, relative to the line.
+    pub split_drag: Option<f32>,
+    /// The window is narrower than a phone (window client): one panel at a time, picked in the footer.
+    pub mobile: bool,
+    /// The panel shown in the narrow (mobile) layout.
+    pub view: View,
+}
+
+/// What fills a narrow (mobile) window between its header and footer. Settings opens over whichever it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum View {
+    Users,
+    #[default]
+    Main,
+    Chat,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,7 +54,7 @@ pub enum MenuBtn {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {
     Section(String),
-    Group { key: String, title: String, count: usize },
+    Group { key: String, title: String, count: usize, unread: usize },
     Person { p: Person, indent: bool },
     /// The buttons under the open row.
     Menu { key: String, buttons: Vec<MenuBtn> },
@@ -47,13 +64,11 @@ pub enum Row {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
-    Away,
+    /// Walk back to our desk.
+    Desk,
     /// The collapse / expand button.
     Collapse,
-    /// The user icon: opens the profile panel.
-    Profile,
-    /// Move to the terminal client.
-    Terminal,
+    /// Show the chat (the unread counter of the collapsed sidebar).
     Chat,
     Row(String),
     Join(String),
@@ -160,8 +175,14 @@ pub fn rows(st: &State) -> Vec<Row> {
         out.push(Row::Section(format!("IN MEETINGS · {}", groups.iter().map(|g| g.1.len()).sum::<usize>())));
         for (z, ps) in groups {
             let key = zone_key(&z);
-            out.push(Row::Group { key: key.clone(), title: zone_title(st, &z), count: ps.len() });
-            menu(&mut out, &key, vec![MenuBtn::Join { enabled: join_target(st, &key).is_some() }, MenuBtn::Wave]);
+            let unread = if st.cur_zone_id.as_deref() == Some(z.as_str()) { area_unread(st) } else { 0 };
+            out.push(Row::Group { key: key.clone(), title: zone_title(st, &z), count: ps.len(), unread });
+            // the area chat is only reachable for the meeting we are in
+            let mut buttons = vec![MenuBtn::Join { enabled: join_target(st, &key).is_some() }, MenuBtn::Wave];
+            if st.cur_zone_id.as_deref() == Some(z.as_str()) && st.conversation().is_some() {
+                buttons.push(MenuBtn::Message);
+            }
+            menu(&mut out, &key, buttons);
             for p in ps {
                 let key = p.id.clone();
                 let buttons = person_menu(&p);
@@ -188,6 +209,52 @@ pub fn rows(st: &State) -> Vec<Row> {
         }
     }
     out
+}
+
+/// Unread messages in the area chat of the meeting we are in.
+pub fn area_unread(st: &State) -> usize {
+    st.channel_of(&crate::chatstate::Tab::Area).and_then(|c| st.chat.threads.get(&c)).map_or(0, |t| t.unread)
+}
+
+impl State {
+    /// Is the chat panel on screen? The wide sidebar always shows it; the collapsed one never does; a narrow window
+    /// shows it when it is the chosen panel and settings are not open over it.
+    pub fn chat_shown(&self) -> bool {
+        if self.sidebar.mobile {
+            self.sidebar.view == View::Chat && self.profile.is_none()
+        } else {
+            !self.sidebar.collapsed
+        }
+    }
+
+    /// Keep `chat.open` (what marks messages read) in step with what the window shows.
+    pub fn sync_chat_shown(&mut self) {
+        let shown = self.chat_shown();
+        if shown == self.chat.open {
+            return;
+        }
+        if shown {
+            let tab = self.chat.tab.clone();
+            self.select_tab(tab);
+            self.chat.open = true;
+        } else {
+            self.chat.open = false;
+            self.chat.focus = false;
+        }
+        self.dirty = true;
+    }
+
+    /// Bring the chat panel on screen: widen the collapsed sidebar, or switch a narrow window to it.
+    pub fn reveal_chat(&mut self) {
+        if self.sidebar.mobile {
+            self.sidebar.view = View::Chat;
+            self.profile = None;
+        } else if self.sidebar.collapsed {
+            self.toggle_sidebar();
+        }
+        self.sync_chat_shown();
+        self.dirty = true;
+    }
 }
 
 /// Where Join walks to, and what to call it: a meeting's centre, or for a person the centre of the meeting they are
