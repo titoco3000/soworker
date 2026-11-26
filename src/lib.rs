@@ -12,6 +12,7 @@ pub mod chat;
 pub mod chatstate;
 pub mod desks;
 pub mod desktop;
+pub mod bench;
 pub mod devices;
 pub mod directory;
 pub mod login;

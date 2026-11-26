@@ -1,162 +1,72 @@
 # SoWorker
 
-Unofficial native client for [SoWork](https://www.sowork.com): walk around the office, see who is where, wave, chat and
-join calls without a browser tab. Rust, one process, runs in the terminal: the office is drawn with text, and the only
-graphics are the camera and screen-share video. Chrome is only used for the sign-in. A software-rendered window client
-is built in too (`soworker --gui`).
+Unofficial native client for [SoWork](https://www.sowork.com): the office, people, chat and calls, without a browser.
+Runs in Linux and Windows as either in the terminal or as window, in Android as an app, and even as a Minecraft mod.
 
 ## Build and run
 
-Needs a Rust toolchain and `clang` (calls use the LiveKit Rust SDK; the first build downloads libwebrtc, 156 MB).
+Needs Rust and `clang`. The first build downloads libwebrtc (156 MB).
 
 ```
-make build                  # both clients: release binary in target/release/soworker
-make build-tui              # the terminal client only (smaller)
-make build-windows          # cross-compile soworker.exe from Linux (needs cargo-xwin, see the Makefile)
-make install                # install to ~/.cargo/bin (registers the launcher entry on first start)
-make dev                    # rebuild and restart on every source change (needs cargo-watch)
-make test                   # cargo test
-make release [BUMP=minor]   # bump version (patch by default), build, commit, tag, push, publish a GitHub release
+make build      # target/release/soworker
+make install    # installs build into ~/.cargo/bin
+make test
 ```
 
-Run with `soworker --dry-run` (connect and watch, sends nothing) or `soworker` (live).
-`cargo build --release --no-default-features --features tui` gives a small build without calls.
+`soworker` starts the terminal client from a terminal and the window otherwise (`--tui` / `--gui` to choose).
+`--dry-run` connects without sending anything. The first start signs in through Chrome (Edge on Windows).
 
-Cargo features: `tui` (terminal client, default), `gui` (window client, default), `calls` (audio and video through LiveKit,
-default), `portal` (global push-to-talk shortcut through the desktop portal, default). Internal ones: `window` (the
-bare video window), `render` and `overlay` (software drawing, the always-on-top "you are live" pill; both come with `gui`).
+Files: `~/.config/soworker/` (session, `settings.json`), log in `~/.local/state/soworker/soworker.log`. On Windows
+`%APPDATA%\soworker\` and `%LOCALAPPDATA%\soworker\soworker.log`.
 
-**Which client starts:** `--tui` or `--gui` if given; otherwise the terminal client when run from a terminal; started from a
-launcher icon (no terminal) it opens whichever you used last (the window the first time), and the terminal client is then
-opened inside a terminal emulator (`$TERMINAL`, `xdg-terminal-exec`, or the usual ones; set `"terminal": "<your terminal's run-a-command syntax> {}"` in
-`~/.config/soworker/settings.json` to choose). In the terminal, `G` (or the button top right) hands over to the window and
-quits; in the window, the Terminal button in the sidebar footer does the opposite. The last choice is kept in `~/.config/soworker/last-ui`.
+## Shortcuts
 
-On first start there is a sign-in screen: Enter opens Chrome on SoWork's login page, takes the token once you are
-signed in and closes it again. The token is stored in `~/.config/soworker/session.json` (use `--session <file>` for
-another path). Log out (in the profile: `u` in the terminal, the user icon in the window's sidebar footer; `O` also
-works in the terminal) forgets it. Diagnostics go to `~/.local/state/soworker/soworker.log` (set
-`SOWORKER_LOG_STDERR=1` to see them on screen instead).
+`?` from the terminal lists every key. The main ones:
 
-## Windows
+| | |
+|---|---|
+| Walk | WASD / arrows, or click the map |
+| Call | `m` mic, `c` camera, `v` share, `h` hand, `l` leave
+| Record | `R` (needs `ffmpeg`; transcribed with whisper.cpp if installed) |
+| Noise cancellation | `N`; strength and a mic test in the profile |
+| Settings | `u` |
 
-`soworker.exe` is one self-contained file (no installer, no DLLs to ship). Both clients work; from Explorer or the
-Start menu the window client opens (a console flashes up for a moment), from a terminal the terminal client.
+## Performance
 
-- Sign-in uses Chrome if installed, else Edge. Files live in `%APPDATA%\soworker\` (session, `settings.json`,
-  `last-ui`); the log (and any crash message) is `%LOCALAPPDATA%\soworker\soworker.log`.
-- Calls: microphone, speakers, camera (Media Foundation) and screen share work. Screen share shares the first screen,
-  there is no picker.
-- Push to talk: the shortcut (`talkKey`, `Super+'` by default) works whichever window is in front, press and hold.
-- Not there yet: the "you are live" pill and desktop notifications, inline video in the terminal (it opens in a window).
-- Windows "N" editions need the Media Feature Pack, or the program does not start.
+<!-- bench:start -->
+| | Idle CPU | Idle memory | Call CPU (--join) | Call memory (--join) |
+|---|---:|---:|---:|---:|
+| SoWorker (window) | 0.4% | 24 MB | 8.5% | 39 MB |
+| SoWorker (terminal) | 0.3% | 18 MB | 9.2% | 32 MB |
+| SoWork in Chrome | 4.1% | 670 MB | 11.1% | 680 MB |
 
-Build it on Windows with the MSVC build tools: `cargo build --release` (the `.cargo/config.toml` sets the static C
-runtime libwebrtc needs). From Linux: `make build-windows`.
+Tested in *2026-11-26* with 3 run(s) on:
+- AMD Ryzen 7 7435HS
+- Linux 7.2.11-200.fc44.x86_64
+- SoWorker 0.1.9
+- Google Chrome 156.0.8078.47
+<!-- bench:end -->
 
-## Using it
+CPU in % of one core; memory is the PSS of every process the client starts.
 
-- **Walk:** WASD or the arrows, or click the map (Shift+click teleports). `+`/`-` or the wheel zoom, `r` respawns, `Ctrl+D` walks to your desk (done by itself at start, if you have one in this room), `b` available/away.
-- **People:** `Tab` focuses the list, arrows select, Enter opens Join / Wave / Message under a person or a meeting.
-  `p` hides it. A wave shows up there too: Enter walks to the person, `x` dismisses.
-- **Calls:** `m` mic, `c` camera, `v` share screen, `h` raise or lower your hand, `l` leave, `Space` talk (hold it where the terminal reports key
-  releases, otherwise it toggles). `t` opens the chat and starts typing, `Esc` leaves the input, `T` closes it.
-- **Recording:** `R` in the terminal, or the record button (the ring next to the hand) in the window, starts and stops
-  recording the call; the meeting's chat says so to everyone ("<you> started recording this meeting"), and a red
-  `REC 12:34` shows while it runs. The picture is always 1280x800 (16:10) in its own layout (everyone in a grid, or
-  a screen share with a column of people), whatever your window or terminal shows. It needs `ffmpeg`; without it
-  only the sound is recorded (a WAV). Files go to `~/Videos/SoWorker` (`recordingsDir` in `settings.json` to change)
-  as `<date> <time> <meeting area>.mp4`. A recording still running when the call ends or the app quits is written out.
-- **Transcripts:** when a recording stops, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) transcribes it on
-  this machine into `.srt` subtitles next to it, and adds them to the video as its subtitle track. Its model (`whisperModel`, `base` by default; `small` or
-  `medium` are better and slower) is downloaded the first time to `~/.local/share/soworker/models`. On Windows
-  whisper.cpp itself is downloaded too; elsewhere install `whisper-cli`: it is found on the PATH or in a whisper.cpp build
-  (`~/src/whisper.cpp/build/bin`, and the like); `soworker --transcribe` says how, and what is set up. The progress
-  shows on screen until the transcript is saved; if it cannot be made, why (and how to fix it) stays until dismissed. `whisperLanguage` (default `auto`) fixes the language; `whisperCli` points at the program.
-  `soworker --transcribe <file>` transcribes any recording again.
-- **Noise cancellation:** on by default: the microphone goes through [DeepFilterNet 3](https://github.com/Rikorose/DeepFilterNet)
-  (built in) after WebRTC's echo cancellation. `N` in the terminal, or the waveform button left of the camera in the
-  window, switches it (also during a call); the choice is kept as `noiseCancellation` in `settings.json`. While it is
-  on, the mic is captured with `parec` (or `pw-record`) on Linux and WASAPI on Windows; off, libwebrtc captures it
-  itself and uses its own noise suppression.
-- **Profile and devices:** `u` in the terminal (or the `u profile` button top right), the user icon next to the memory
-  use in the window. It shows who is signed in (in the window, click your picture to change it), Log out, and the settings: the speaker (with a test sound), the
-  microphone (with a level meter) and the camera, each the system default or a device picked from what is plugged in
-  (`pactl` and `/dev/video*` on Linux, WASAPI and Media Foundation on Windows). A change applies to a running call too;
-  the choices are kept as `audioOutput`, `audioInput` and `camera` in `settings.json`.
-- **Video:** where the terminal draws kitty graphics (kitty, ghostty, WezTerm, Konsole) the picture is shown inline in
-  the call panel and `n` switches between camera and screen share. Anywhere else (and inside tmux) it opens in a small
-  window of its own, started on demand. Force one with `--video inline|window|off`; `soworker --term-check` says what your terminal supports. COSMIC Terminal draws no inline graphics, so there the window is used. Pictures nobody looks at are not
-  even converted.
-- **Keys:** `?` lists them. Mouse clicks work on the map, the list and the chat.
-- **Push to talk:** `Space` in the terminal, or with the terminal hidden the global shortcut (`Super+'` where the desktop has a shortcut portal) or `soworker --talk` bound to a key (see COSMIC setup below and `docs/push-to-talk.md`).
-- **Useful flags:** `--transcribe [file]` transcribes a recording (or says what transcripts need), `--roster` prints the member list, `--talk` controls a running instance, `--gui` starts the window client.
+**Idle**: 120 s standing in the office. 
 
-## Push to talk on COSMIC
+**Call**: then 120 s in a colleague's call with the mic on and no noise cancelling; only measured when the run
+names one (`--join <name>`), "—" otherwise.
 
-COSMIC has no global-shortcut portal, so bind `soworker --talk` to a key yourself (once). A desktop shortcut cannot report
-the key release, so press once to open the mic and again to close it. From a terminal, with `BIN` set to your built binary:
+To reproduce, run with SoWorker and any SoWork tab closed:
 
 ```
-BIN=$PWD/target/release/soworker        # run from the repo root after `make build`
-f=~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom
-cp "$f" "$f.bak"                         # undo with: mv "$f.bak" "$f"
-sed -i '$ d' "$f"                        # drop the closing }
-cat >> "$f" <<EOF
-    (
-        modifiers: [
-            Super,
-        ],
-        key: "apostrophe",
-    ): Spawn("$BIN --talk"),
-}
-EOF
+make bench-login                          # once: sign the benchmark's Chrome in to SoWork
+make bench [JOIN=<name>] [RUNS=3] [README=1]
 ```
 
-COSMIC reloads the file by itself (or add the same thing in Settings > Keyboard > Custom shortcuts). Change `Super` /
-`apostrophe` for another key, and set `talkKey` in `~/.config/soworker/settings.json` to the same keys (e.g. `"Super+'"`)
-so the in-app hint matches. Test with `soworker --talk` in a terminal while the app is running.
-
-## Minecraft
-
-The SoWork office inside Minecraft, as a Fabric mod that carries everything it needs: you do not need to install
-SoWorker for it.
-
-1. **Requirements.** Minecraft Java 26.3 on Linux x86_64 or Windows x86_64 (no macOS build). Chrome, Chromium or Edge,
-   for signing in the first time. On Linux: PulseAudio or PipeWire (`pactl`, and `parec` or `pw-record`), and
-   `ffmpeg` for recordings with video. On Windows nothing else.
-2. **Fabric.** Install Fabric Loader 0.20 or newer for 26.3 with the installer from
-   [fabricmc.net](https://fabricmc.net/use/installer/), and put [Fabric API](https://modrinth.com/mod/fabric-api) for
-   26.3 into your `mods/` folder (`~/.minecraft/mods`, or `%APPDATA%\.minecraft\mods` on Windows).
-3. **The mod.** Download `soworker-mc-<version>.jar` from the
-   [latest release](../../releases/latest) into the same `mods/` folder (remove an older `soworker-mc` jar).
-4. **A world for the office.** Start Minecraft with the Fabric profile and create a new singleplayer world: World
-   type "Superflat", preset "The Void". The office is built around block 0 64 0 and replaces the ground there, so do
-   not use a world you care about.
-5. **Switch it on.** Type `/sw enable`. The first time, a browser window opens on SoWork's sign-in page: sign in, and
-   the office builds. Next time it remembers you (the sign-in is saved next to the desktop SoWorker's, so if you use
-   that too you are already signed in).
-6. **What you can do.** Walking moves your avatar; cobblestone is a meeting room (walk in to join the call). In a
-   meeting the hotbar holds mic, screen share, record and camera; always there are "walk to your desk", available /
-   away, a spyglass, snowballs and an ender pearl (right click the tools to use them). Throw a snowball at a coworker to wave at them, or at a screen share to watch it full screen; an ender pearl teleports
-   you. Plain chat goes to the room chat in a meeting. Commands: `/sw mic`, `share`, `rec`, `cam`, `desk`, `away`,
-   `hand`, `leave`, `wave <name>`, `say <text>`, `status`, `login`, `logout` (sign in as someone else), `disable`
-   (switch the office off; the blocks stay).
-7. **One place at a time.** SoWork lets each account be connected once: opening the desktop SoWorker (or SoWork in a
-   browser) while you are in Minecraft disconnects the Minecraft one, and the other way round. `/sw login` takes it
-   back into Minecraft.
-8. **Bug reports.** The mod's soworker writes its log to `~/.local/state/soworker/soworker.log` on Linux and
-   `%LOCALAPPDATA%\soworker\soworker.log` on Windows; Minecraft's own log (`logs/latest.log`) has the rest.
-
-Building it: `make mc` builds the mod's soworker for Linux and Windows (`--features mc,calls`, no window code; the
-Windows half needs the `build-windows` setup) and the jar (`mc/build/`), and installs it into `~/.minecraft/mods`.
-`make mc-test` runs its tests. For development, `-Dsoworker.bin=<path>` in the game's JVM arguments runs another
-soworker binary, and `-Dsoworker.args="--mc-demo"` passes arguments (the demo office needs no SoWork account).
+Results land in `bench/results/`; `README=1` updates the table above.
 
 ## More
 
-- `docs/`: reverse-engineered protocol and behaviour notes (start with `docs/FINDINGS.md`).
-- `src/`: the core has no drawing in it: `session` (sign-in), `net` (socket), `proto` (events), `world` (collision,
-  pathfinding), `app` (state), `directory` / `meeting` / `chatstate` (what the people list, the call and the chat show),
-  `media` (calls), `mic` (the noise-cancelled microphone), `record` / `transcribe` (recordings and their transcripts), `backend` (the threads behind a session). `tui/` is the terminal client (`view` draws, `kitty` is
-  the inline video), `videowin` the bare video window, `gui/` the window client.
+Push to talk outside the app: see [docs/push-to-talk.md](docs/push-to-talk.md) (includes COSMIC setup).
+
+Minecraft mod: see [docs/minecraft.md](docs/minecraft.md).
+
+`docs/` has the reverse-engineered protocol notes (start with `docs/FINDINGS.md`).

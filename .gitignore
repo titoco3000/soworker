@@ -22,3 +22,4 @@ mc/build/
 .zprofile 
 .zshrc
 __pycache__/
+bench/results/

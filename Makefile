@@ -12,7 +12,7 @@ endif
 # release bumps this part of the version: patch (default), minor or major
 BUMP ?= patch
 
-.PHONY: dev build build-tui build-windows install test release mc mc-linux mc-windows mc-jar mc-test
+.PHONY: dev build build-tui build-windows install test bench bench-login release mc mc-linux mc-windows mc-jar mc-test
 
 # Rebuild and restart the app whenever a source file changes (needs cargo-watch).
 dev:
@@ -55,6 +55,17 @@ install:
 
 test:
 	cargo test
+
+# CPU and memory of the window, the terminal client and SoWork in Chrome (tools/bench.mjs, README "Performance").
+# JOIN: colleague whose call to join (idle only without it). RUNS (default 3). README=1 updates the README table.
+# `make bench-login` once first.
+JOIN ?=
+RUNS ?= 3
+bench:
+	node tools/bench.mjs run --runs $(RUNS) $(if $(JOIN),--join "$(JOIN)") $(if $(README),--readme)
+
+bench-login:
+	node tools/bench.mjs login
 
 # The Minecraft mod (mc/) carries its own soworker: the bridge only (`mc` feature, no windows, no terminal client),
 # for Linux and Windows, stripped (release profile), in a target dir of its own. The jar is built with javac against the installed game

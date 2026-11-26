@@ -9,7 +9,7 @@ Calls start muted. Three ways to talk without clicking the mic button (all end i
 | Way | Behaviour |
 |---|---|
 | Key in the window (`gui`) | the **talk key** (default `Super+'`; `talkKey` in `~/.config/soworker/settings.json`, written like `F1`, `Pause` or `Ctrl+Alt+Space`) opens the mic while held, if it was muted. Modifiers must be down when the key goes down; on release only the key counts |
-| `soworker --talk [toggle\|down\|up]` | talks to the running app over `$XDG_RUNTIME_DIR/soworker/ctl.sock` (mode 600). Bind `soworker --talk` to a key in the desktop's keyboard settings (COSMIC: Settings > Keyboard > Custom shortcuts, or the one-time terminal command in `README.md`). Desktop shortcuts only report a press, so the default `toggle` flips the mic |
+| `soworker --talk [toggle\|down\|up]` | talks to the running app over `$XDG_RUNTIME_DIR/soworker/ctl.sock` (mode 600). Bind `soworker --talk` to a key in the desktop's keyboard settings (COSMIC: Settings > Keyboard > Custom shortcuts, or the one-time terminal command below). Desktop shortcuts only report a press, so the default `toggle` flips the mic |
 | GlobalShortcuts portal | registers "Push to talk" (preferred trigger = the talk key) and gets press and release events, so the mic is open while the key is held. **COSMIC has no such portal yet** ([xdg-desktop-portal-cosmic#4](https://github.com/pop-os/xdg-desktop-portal-cosmic/issues/4)); KDE and GNOME 48+ do. Untested on a real portal; without one the app logs a line and carries on. Build without it: `--no-default-features --features calls` |
 
 **Reminder:** when the window loses focus during a meeting while the mic is muted (at most once a minute), or when a
@@ -28,3 +28,28 @@ cannot do this on Wayland (no always-on-top, no placement), so `overlay.rs` uses
 (overlay layer, top-right, 16 px margin, no keyboard focus, clicks pass through). COSMIC, sway, Hyprland and KDE have
 it; GNOME does not, where the same text is sent as a short notification instead. Focusing the window hides the pill.
 `soworker --overlay-test` shows it for a few seconds. Build without it: drop the `overlay` feature.
+
+## Setup on COSMIC
+
+COSMIC has no global-shortcut portal, so bind `soworker --talk` to a key yourself (once). A desktop shortcut cannot report
+the key release, so press once to open the mic and again to close it. From a terminal, with `BIN` set to your built binary:
+
+```
+BIN=$PWD/target/release/soworker        # run from the repo root after `make build`
+f=~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom
+cp "$f" "$f.bak"                         # undo with: mv "$f.bak" "$f"
+sed -i '$ d' "$f"                        # drop the closing }
+cat >> "$f" <<EOF
+    (
+        modifiers: [
+            Super,
+        ],
+        key: "apostrophe",
+    ): Spawn("$BIN --talk"),
+}
+EOF
+```
+
+COSMIC reloads the file by itself (or add the same thing in Settings > Keyboard > Custom shortcuts). Change `Super` /
+`apostrophe` for another key, and set `talkKey` in `~/.config/soworker/settings.json` to the same keys (e.g. `"Super+'"`)
+so the in-app hint matches. Test with `soworker --talk` in a terminal while the app is running.

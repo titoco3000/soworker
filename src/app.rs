@@ -244,6 +244,8 @@ pub struct State {
     /// At start-up we walk to our desk once everything needed for it has arrived (see `walk_to_desk_at_start`): whether
     /// that is still to do, how many routes were tried, and the map's size with when it last changed.
     desk_at_start: bool,
+    /// Benchmark mode: the scenario this run plays by itself (see `bench.rs`).
+    bench: Option<crate::bench::Plan>,
     desk_tries: u8,
     desk_map: (usize, f64),
     cur_zone: Option<Option<String>>, // None = not reported yet
@@ -252,7 +254,8 @@ pub struct State {
 
 impl State {
     pub fn new(me_id: &str, dry: bool) -> Self {
-        let noise_cancel = crate::calls::noise_cancel_setting();
+        // a benchmark measures the plain microphone (SoWork's page has no noise cancellation by default); not saved
+        let noise_cancel = crate::calls::noise_cancel_setting() && std::env::var_os("SOWORKER_BENCH").is_none();
         let noise_strength = crate::calls::noise_strength_setting();
         crate::calls::set_noise_strength(noise_strength);
         let low_data_user = crate::calls::low_data_setting();
@@ -324,7 +327,8 @@ impl State {
             moving: false,
             last_send: 0.0,
             stuck: 0.0,
-            desk_at_start: true,
+            desk_at_start: true, // a benchmark too: each run starts from the desk, not where the last one left us
+            bench: crate::bench::Plan::from_env(),
             desk_tries: 0,
             desk_map: (0, 0.0),
             cur_zone: None,
@@ -603,6 +607,57 @@ impl State {
             }
             None => self.say("You have no desk in this room", now),
         }
+    }
+
+    /// Benchmark mode, every frame: note when the office is in; when the script says so, walk to the person; once in
+    /// their call, turn on what the scenario wants.
+    fn bench_step(&mut self, now: f64) {
+        use crate::bench::{mark, Stage};
+        let Some(mut b) = self.bench.take() else { return };
+        match b.stage {
+            Stage::Loading => {
+                let floors = self.world.floors.len();
+                if floors != b.map.0 {
+                    b.map = (floors, now);
+                } else if floors > 0 && now - b.map.1 >= 1.0 && self.me().is_some() && !self.desk_at_start && self.path.is_none() && !self.moving {
+                    // in once the map holds and the walk to the desk (if any) is over
+                    b.stage = Stage::Office;
+                    mark("office");
+                }
+            }
+            Stage::Walking if self.call.joined.is_some() && self.call.joined != b.from => {
+                b.stage = Stage::Joined;
+                if b.mic {
+                    self.media_out.push(MediaCmd::Mic(true));
+                }
+                if b.cam {
+                    self.media_out.push(MediaCmd::Camera(true));
+                }
+                mark("joined");
+            }
+            Stage::Office | Stage::Walking if b.join.is_some() && b.go() && now - b.walked_at >= 15.0 && self.path.is_none() && !self.moving => {
+                let name = b.join.clone().unwrap_or_default();
+                let who = crate::directory::people(self).into_iter().find(|p| p.online && !p.me && p.name.eq_ignore_ascii_case(&name));
+                match who.and_then(|p| crate::directory::join_target(self, &p.id)) {
+                    Some(((x, y), _)) => {
+                        self.click(x, y, false, now);
+                        b.walked_at = now;
+                        if b.stage == Stage::Office {
+                            b.stage = Stage::Walking;
+                            b.from = self.call.joined.clone();
+                            mark("walking");
+                        }
+                    }
+                    None if now - b.walked_at >= 15.0 => {
+                        b.walked_at = now;
+                        mark(&format!("waiting: {name} is not online here"));
+                    }
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+        self.bench = Some(b);
     }
 
     /// The walk to our desk at start-up: once the desks, who owns them and our position are known and the map has
@@ -1354,6 +1409,7 @@ impl State {
 
     /// Advance the simulation. Returns true if the screen needs a redraw (movement or events).
     pub fn update(&mut self, dt: f32, now: f64) -> bool {
+        self.bench_step(now);
         if self.call.rejoin_at.is_some_and(|t| now >= t) {
             self.call.rejoin_at = None;
             eprintln!("[{now:6.1}] rejoining the call");
